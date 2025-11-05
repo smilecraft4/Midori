@@ -1,0 +1,6 @@
+Checks: "bugprone-*,clang-diagnostic-*,clang-analyzer-*,modernize-*,performance-*,readability-*"
+WarningsAsErrors: ""
+HeaderFilterRegex: ""
+CheckOptions:
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: "_"
