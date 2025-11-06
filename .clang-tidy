@@ -1,4 +1,4 @@
-Checks: "bugprone-*,clang-diagnostic-*,clang-analyzer-*,modernize-*,performance-*,readability-*"
+Checks: "bugprone-*, -bugprone-easily-swappable-parameters, clang-diagnostic-*,clang-analyzer-*,modernize-*,-modernize-use-trailing-return-type,performance-*,readability-*"
 WarningsAsErrors: ""
 HeaderFilterRegex: ""
 CheckOptions:
