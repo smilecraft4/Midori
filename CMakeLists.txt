@@ -45,9 +45,7 @@ FetchContent_MakeAvailable(tracy)
 ## Library
 
 add_library(midori_lib 
-    "src/app.cpp"
-    "src/renderer.cpp"
-    "src/canvas.cpp"
+  "src/app.cpp"
 )
 target_include_directories(midori_lib PUBLIC include)
 target_compile_features(midori_lib PUBLIC cxx_std_23)

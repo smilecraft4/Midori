@@ -1,85 +1,87 @@
 #include "midori/app.h"
 
-#include "SDL3/SDL_events.h"
-#include "SDL3/SDL_log.h"
-#include "SDL3/SDL_video.h"
-#include "glm/gtc/type_ptr.hpp"
-#include "imgui.h"
-#include "imgui_impl_sdl3.h"
-#include "imgui_impl_sdlgpu3.h"
-#include "midori/renderer.h"
-#include "tracy/Tracy.hpp"
+namespace Midori {
 
-App::App() : renderer_(this) {}
+constexpr int WINDOW_DEFAULT_WIDTH = 1280;
+constexpr int WINDOW_DEFAULT_HEIGHT = 720;
+
+App::App(int argc, char *argv[]) {
+  args.Reserve(argc);
+  for (size_t i = 0; i < argc; i++) {
+    args.Push(std::string(argv[i]));
+  }
+}
 
 bool App::Init() {
-  ZoneScoped;
-  window_ = SDL_CreateWindow("Midori", window_width_, window_height_,
-                             SDL_WINDOW_RESIZABLE);
-  if (window_ == nullptr) {
+  window = SDL_CreateWindow("Midori", WINDOW_DEFAULT_WIDTH,
+                            WINDOW_DEFAULT_HEIGHT, SDL_WINDOW_RESIZABLE);
+  if (window == nullptr) {
     SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create window: %s",
                     SDL_GetError());
     return false;
   }
 
-  if (!renderer_.Init(window_)) {
+  gpu_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, "vulkan");
+  if (gpu_device == nullptr) {
     SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION,
-                    "Failed to Initialize renderer");
+                    "Failed to create gpu device: %s", SDL_GetError());
+    return false;
+  }
+
+  if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
+    SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to create gpu device: %s", SDL_GetError());
     return false;
   }
 
   return true;
 }
 
-bool App::Update() {
-  FrameMark;
-  ZoneScoped;
-  /* Call some function on the ui, canvas, and other (not the renderer)*/
-
-  // TODO: Move this somewhere else
-  {
-    ImGui_ImplSDLGPU3_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-
-    ImGuiIO& io = ImGui::GetIO();
-    ImGui::Begin("Test");
-    ImGui::Text("This is some useful stuff");
-    ImGui::Text("Midori average %.3f ms/frame (%.1f FPS)",
-                1000.0f / io.Framerate, io.Framerate);
-    ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color_));
-    ImGui::End();
-
-    ImGui::Render();
-  }
-
-  if (!renderer_.Render(window_)) {
-    SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to render");
+bool App::Render() {
+  SDL_GPUCommandBuffer *command_buffer =
+      SDL_AcquireGPUCommandBuffer(gpu_device);
+  if (command_buffer == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to acquire gpu command buffer: %s", SDL_GetError());
     return false;
   }
 
-  return true;
-}
+  SDL_GPUTexture *swapchain_texture;
+  SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, window,
+                                        &swapchain_texture, nullptr, nullptr);
+  if (swapchain_texture == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to acquire swapchain texture: %s", SDL_GetError());
+    return false;
+  }
 
-bool App::Resize(const int width, const int height) {
-  ZoneScoped;
-  window_width_ = width;
-  window_height_ = height;
+  SDL_GPUColorTargetInfo color_target_infos[1] = {{
+      .texture = swapchain_texture,
+      .clear_color = SDL_FColor{bg_color.r, bg_color.g, bg_color.b, bg_color.a},
+      .load_op = SDL_GPU_LOADOP_CLEAR,
+      .store_op = SDL_GPU_STOREOP_STORE,
+  }};
 
-  renderer_.Resize(width, height);
+  SDL_GPURenderPass *render_pass =
+      SDL_BeginGPURenderPass(command_buffer, color_target_infos, 1, nullptr);
+
+  SDL_EndGPURenderPass(render_pass);
+
+  if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to submit gpu command buffer: %s", SDL_GetError());
+    return false;
+  }
 
   return true;
 }
 
 void App::Quit() {
-  ZoneScoped;
+  SDL_DestroyGPUDevice(gpu_device);
+  gpu_device = nullptr;
 
-  renderer_.Quit();
-  SDL_DestroyWindow(window_);
+  SDL_DestroyWindow(window);
+  window = nullptr;
 }
 
-bool App::ProcessSDLEvent(SDL_Event* event) {
-  ImGui_ImplSDL3_ProcessEvent(event);
-  const ImGuiIO& io = ImGui::GetIO();
-  return io.WantCaptureMouse || io.WantCaptureKeyboard;
-}
+} // namespace Midori
