@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(Midori)
 
+# set the output directory for built objects.
+# This makes sure that the dynamic library goes into the build directory automatically.
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 # Dependencies
 
 # Fetch SDL3
@@ -22,7 +28,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glm)
 
-
 # Fetch Dear ImGui (docking branch for docking/multi-viewport support)
 FetchContent_Declare(
   imgui
@@ -41,11 +46,45 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tracy)
 
+# # Compiling shaders
+find_program(GLSLANG_VALIDATOR glslangValidator)
 
-## Library
+if(NOT GLSLANG_VALIDATOR)
+  message(FATAL_ERROR "glslangValidator not found! Install glslang or add to PATH.")
+endif()
 
-add_library(midori_lib 
+set(VULKAN_SHADER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/shaders/vulkan)
+set(VULKAN_SHADER_BINARY_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data/shaders/vulkan)
+
+file(MAKE_DIRECTORY ${VULKAN_SHADER_BINARY_DIR})
+
+set(VULKAN_SHADERS
+  ${VULKAN_SHADER_SOURCE_DIR}/layer.vert.glsl
+  ${VULKAN_SHADER_SOURCE_DIR}/layer.frag.glsl
+  ${VULKAN_SHADER_SOURCE_DIR}/tile.vert.glsl
+  ${VULKAN_SHADER_SOURCE_DIR}/tile.frag.glsl
+)
+
+foreach(SHADER IN LISTS VULKAN_SHADERS)
+  get_filename_component(SHADER_NAME ${SHADER} NAME_WLE)
+  set(SPV_OUTPUT ${VULKAN_SHADER_BINARY_DIR}/${SHADER_NAME}.spv)
+
+  add_custom_command(
+    OUTPUT ${SPV_OUTPUT}
+    COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER} -o ${SPV_OUTPUT}
+    DEPENDS ${SHADER}
+    COMMENT "Compiling ${SHADER_NAME} to SPV"
+  )
+  list(APPEND SHADERS ${SPV_OUTPUT})
+endforeach()
+
+add_custom_target(midori_shaders ALL DEPENDS ${SHADERS})
+
+# # Library
+add_library(midori_lib
   "src/app.cpp"
+  "src/canvas.cpp"
+  "src/renderer.cpp"
 )
 target_include_directories(midori_lib PUBLIC include)
 target_compile_features(midori_lib PUBLIC cxx_std_23)
@@ -53,23 +92,20 @@ target_compile_definitions(midori_lib PUBLIC TRACY_ENABLE)
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
 target_include_directories(midori_lib PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_sources(midori_lib PRIVATE
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp
+  ${imgui_SOURCE_DIR}/imgui.cpp
+  ${imgui_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp
 )
 
-
-## Application
-
+# # Application
 add_executable(midori src/main.cpp)
 target_link_libraries(midori PRIVATE midori_lib)
+add_dependencies(midori midori_shaders)
 
-
-## Tests
-
+# # Tests
 enable_testing()
 include(FetchContent)
 FetchContent_Declare(
@@ -80,15 +116,14 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(midori_test 
+add_executable(midori_test
   "test/midori_test.cpp"
 )
 target_link_libraries(midori_test PRIVATE midori_lib GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(midori_test)
 
-
-## Benchmarks
+# # Benchmarks
 
 # Fetch Google Benchmark
 include(FetchContent)

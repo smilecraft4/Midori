@@ -1,0 +1,762 @@
+#include "midori/renderer.h"
+
+#include <SDL3/SDL_assert.h>
+#include <SDL3/SDL_gpu.h>
+#include <SDL3/SDL_log.h>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <float.h>
+#include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
+#include <imgui_impl_sdlgpu3.h>
+#include <tracy/Tracy.hpp>
+#include <vector>
+
+#include "midori/app.h"
+#include "midori/canvas.h"
+#include "midori/types.h"
+
+namespace Midori {
+
+Renderer::Renderer(App *app) : app(app) {}
+
+bool Renderer::Init() {
+  ZoneScoped;
+  device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, "vulkan");
+  if (device == nullptr) {
+    SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to create gpu device: %s", SDL_GetError());
+    return false;
+  }
+
+  if (!SDL_ClaimWindowForGPUDevice(device, app->window)) {
+    SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to create gpu device: %s", SDL_GetError());
+    return false;
+  }
+  SDL_SetGPUSwapchainParameters(device, app->window,
+                                SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                                SDL_GPU_PRESENTMODE_VSYNC);
+
+  swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, app->window);
+
+  viewport_render_data.projection = glm::ortho(
+      -((float)app->window_size.x / 2.0f), ((float)app->window_size.x / 2.0f),
+      -((float)app->window_size.y / 2.0f), ((float)app->window_size.y / 2.0f));
+
+  const SDL_GPUTextureCreateInfo canvas_texture_create_info = {
+      .type = SDL_GPU_TEXTURETYPE_2D,
+      .format = texture_format,
+      .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+      .width = (Uint32)app->window_size.x,
+      .height = (Uint32)app->window_size.y,
+      .layer_count_or_depth = 1,
+      .num_levels = 1,
+      .sample_count = SDL_GPU_SAMPLECOUNT_1,
+  };
+  canvas_texture = SDL_CreateGPUTexture(device, &canvas_texture_create_info);
+  if (canvas_texture == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create canvas layer texture");
+    return false;
+  }
+
+  if (!InitLayers()) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to initialize renderer layers");
+    return false;
+  }
+
+  if (!InitTiles()) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize tiles");
+  }
+
+  return true;
+}
+
+bool Renderer::InitLayers() {
+  ZoneScoped;
+  size_t vertex_code_size = 0;
+  auto *vertex_code = (Uint8 *)SDL_LoadFile(
+      "./data/shaders/vulkan/layer.vert.spv", &vertex_code_size);
+  if (vertex_code_size == 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                 "./data/shaders/vulkan/layer.vert.spv", SDL_GetError());
+    return false;
+  }
+  const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
+      .code_size = vertex_code_size,
+      .code = vertex_code,
+      .entrypoint = "main",
+      .format = SDL_GPU_SHADERFORMAT_SPIRV,
+      .stage = SDL_GPU_SHADERSTAGE_VERTEX,
+      .num_samplers = 0,
+      .num_storage_textures = 0,
+      .num_storage_buffers = 0,
+      .num_uniform_buffers = 1,
+  };
+  layer_vertex_shader = SDL_CreateGPUShader(device, &vertex_shader_create_info);
+  if (layer_vertex_shader == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create layer vertex shader: %s", SDL_GetError());
+  }
+
+  size_t fragment_code_size = 0;
+  auto *fragment_code = (Uint8 *)SDL_LoadFile(
+      "./data/shaders/vulkan/layer.frag.spv", &fragment_code_size);
+  if (fragment_code_size == 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                 "./data/shaders/vulkan/layer.frag.spv", SDL_GetError());
+    return false;
+  }
+  const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
+      .code_size = fragment_code_size,
+      .code = fragment_code,
+      .entrypoint = "main",
+      .format = SDL_GPU_SHADERFORMAT_SPIRV,
+      .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
+      .num_samplers = 1,
+      .num_storage_textures = 0,
+      .num_storage_buffers = 0,
+      .num_uniform_buffers = 0,
+  };
+  layer_fragment_shader =
+      SDL_CreateGPUShader(device, &fragment_shader_create_info);
+  if (layer_fragment_shader == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create layer fragment shader: %s", SDL_GetError());
+  }
+
+  SDL_GPUColorTargetDescription color_target_descriptions[] = {{
+      .format = swapchain_format,
+      .blend_state =
+          {
+              .src_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .color_blend_op = SDL_GPU_BLENDOP_INVALID,
+              .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .alpha_blend_op = SDL_GPU_BLENDOP_INVALID,
+              .color_write_mask =
+                  SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
+                  SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A,
+              .enable_blend = false,
+              .enable_color_write_mask = false,
+          },
+  }};
+
+  const SDL_GPUGraphicsPipelineCreateInfo pipeline_create_info = {
+      .vertex_shader = layer_vertex_shader,
+      .fragment_shader = layer_fragment_shader,
+      .vertex_input_state =
+          {
+              .vertex_buffer_descriptions = nullptr,
+              .num_vertex_buffers = 0,
+              .vertex_attributes = nullptr,
+              .num_vertex_attributes = 0,
+          },
+      .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+      .rasterizer_state =
+          {
+              .fill_mode = SDL_GPU_FILLMODE_FILL,
+              .cull_mode = SDL_GPU_CULLMODE_BACK,
+              .front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
+              .depth_bias_constant_factor = 0.0f,
+              .depth_bias_clamp = 0.0f,
+              .depth_bias_slope_factor = 0.0f,
+              .enable_depth_bias = false,
+              .enable_depth_clip = false,
+
+          },
+      .multisample_state =
+          {
+              .sample_count = SDL_GPU_SAMPLECOUNT_1,
+              .sample_mask = 0,
+              .enable_mask = false,
+          },
+      .depth_stencil_state =
+          {
+              .compare_op = SDL_GPU_COMPAREOP_INVALID,
+              .back_stencil_state = {SDL_GPU_STENCILOP_INVALID},
+              .front_stencil_state = {SDL_GPU_STENCILOP_INVALID},
+              .compare_mask = 0,
+              .write_mask = 0,
+              .enable_depth_test = false,
+              .enable_depth_write = false,
+              .enable_stencil_test = false,
+          },
+      .target_info =
+          {
+              .color_target_descriptions = color_target_descriptions,
+              .num_color_targets = 1,
+              .depth_stencil_format = SDL_GPU_TEXTUREFORMAT_INVALID,
+              .has_depth_stencil_target = false,
+          },
+
+  };
+  layer_graphics_pipeline =
+      SDL_CreateGPUGraphicsPipeline(device, &pipeline_create_info);
+  if (layer_graphics_pipeline == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to create layer graphics pipeline: %s",
+                 SDL_GetError());
+    return false;
+  }
+
+  const SDL_GPUSamplerCreateInfo sampler_create_info = {
+      .min_filter = SDL_GPU_FILTER_NEAREST,
+      .mag_filter = SDL_GPU_FILTER_NEAREST,
+      .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+      .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+      .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+      .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+      .mip_lod_bias = 0.0f,
+      .max_anisotropy = 0.0f,
+      .compare_op = SDL_GPU_COMPAREOP_INVALID,
+      .min_lod = 0.0f,
+      .max_lod = 0.0f,
+      .enable_anisotropy = false,
+      .enable_compare = false,
+  };
+  layer_sampler = SDL_CreateGPUSampler(device, &sampler_create_info);
+  if (layer_sampler == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to create layer sampler: %s",
+                 SDL_GetError());
+    return false;
+  }
+
+  return true;
+}
+
+bool Renderer::InitTiles() {
+  ZoneScoped;
+  size_t vertex_code_size = 0;
+  auto *vertex_code = (Uint8 *)SDL_LoadFile(
+      "./data/shaders/vulkan/tile.vert.spv", &vertex_code_size);
+  if (vertex_code_size == 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                 "./data/shaders/vulkan/tile.vert.spv", SDL_GetError());
+    return false;
+  }
+  const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
+      .code_size = vertex_code_size,
+      .code = vertex_code,
+      .entrypoint = "main",
+      .format = SDL_GPU_SHADERFORMAT_SPIRV,
+      .stage = SDL_GPU_SHADERSTAGE_VERTEX,
+      .num_samplers = 0,
+      .num_storage_textures = 0,
+      .num_storage_buffers = 0,
+      .num_uniform_buffers = 2,
+  };
+  tile_vertex_shader = SDL_CreateGPUShader(device, &vertex_shader_create_info);
+  if (tile_vertex_shader == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create tile vertex shader: %s", SDL_GetError());
+  }
+  size_t fragment_code_size = 0;
+  auto *fragment_code = (Uint8 *)SDL_LoadFile(
+      "./data/shaders/vulkan/tile.frag.spv", &fragment_code_size);
+  if (fragment_code_size == 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                 "./data/shaders/vulkan/tile.frag.spv", SDL_GetError());
+    return false;
+  }
+  const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
+      .code_size = fragment_code_size,
+      .code = fragment_code,
+      .entrypoint = "main",
+      .format = SDL_GPU_SHADERFORMAT_SPIRV,
+      .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
+      .num_samplers = 1,
+      .num_storage_textures = 0,
+      .num_storage_buffers = 0,
+      .num_uniform_buffers = 0,
+  };
+  tile_fragment_shader =
+      SDL_CreateGPUShader(device, &fragment_shader_create_info);
+  if (tile_fragment_shader == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create tile fragment shader: %s", SDL_GetError());
+  }
+
+  SDL_GPUColorTargetDescription color_target_descriptions[] = {{
+      .format = texture_format,
+      .blend_state =
+          {
+              .src_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .color_blend_op = SDL_GPU_BLENDOP_INVALID,
+              .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID,
+              .alpha_blend_op = SDL_GPU_BLENDOP_INVALID,
+              .color_write_mask =
+                  SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
+                  SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A,
+              .enable_blend = false,
+              .enable_color_write_mask = false,
+          },
+  }};
+
+  const SDL_GPUGraphicsPipelineCreateInfo pipeline_create_info = {
+      .vertex_shader = tile_vertex_shader,
+      .fragment_shader = tile_fragment_shader,
+      .vertex_input_state =
+          {
+              .vertex_buffer_descriptions = nullptr,
+              .num_vertex_buffers = 0,
+              .vertex_attributes = nullptr,
+              .num_vertex_attributes = 0,
+          },
+      .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP,
+      .rasterizer_state =
+          {
+              .fill_mode = SDL_GPU_FILLMODE_FILL,
+              .cull_mode = SDL_GPU_CULLMODE_BACK,
+              .front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
+              .depth_bias_constant_factor = 0.0f,
+              .depth_bias_clamp = 0.0f,
+              .depth_bias_slope_factor = 0.0f,
+              .enable_depth_bias = false,
+              .enable_depth_clip = false,
+
+          },
+      .multisample_state =
+          {
+              .sample_count = SDL_GPU_SAMPLECOUNT_1,
+              .sample_mask = 0,
+              .enable_mask = false,
+          },
+      .depth_stencil_state =
+          {
+              .compare_op = SDL_GPU_COMPAREOP_INVALID,
+              .back_stencil_state = {SDL_GPU_STENCILOP_INVALID},
+              .front_stencil_state = {SDL_GPU_STENCILOP_INVALID},
+              .compare_mask = 0,
+              .write_mask = 0,
+              .enable_depth_test = false,
+              .enable_depth_write = false,
+              .enable_stencil_test = false,
+          },
+      .target_info =
+          {
+              .color_target_descriptions = color_target_descriptions,
+              .num_color_targets = 1,
+              .depth_stencil_format = SDL_GPU_TEXTUREFORMAT_INVALID,
+              .has_depth_stencil_target = false,
+          },
+
+  };
+  tile_graphics_pipeline =
+      SDL_CreateGPUGraphicsPipeline(device, &pipeline_create_info);
+  if (tile_graphics_pipeline == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to create tile graphics pipeline: %s", SDL_GetError());
+    return false;
+  }
+
+  const SDL_GPUSamplerCreateInfo sampler_create_info = {
+      .min_filter = SDL_GPU_FILTER_NEAREST,
+      .mag_filter = SDL_GPU_FILTER_NEAREST,
+      .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+      .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+      .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+      .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+      .mip_lod_bias = 0.0f,
+      .max_anisotropy = 0.0f,
+      .compare_op = SDL_GPU_COMPAREOP_INVALID,
+      .min_lod = 0.0f,
+      .max_lod = 0.0f,
+      .enable_anisotropy = false,
+      .enable_compare = false,
+  };
+  tile_sampler = SDL_CreateGPUSampler(device, &sampler_create_info);
+  if (tile_sampler == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to create tile sampler: %s",
+                 SDL_GetError());
+    return false;
+  }
+
+  const SDL_GPUTransferBufferCreateInfo upload_buffer_create_info = {
+      .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+      .size = TILE_MAX_UPLOAD_TRANSFER * TILE_SIZE * TILE_SIZE * 4,
+  };
+  tile_upload_buffer =
+      SDL_CreateGPUTransferBuffer(device, &upload_buffer_create_info);
+  if (tile_upload_buffer == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create tile upload buffer: %s", SDL_GetError());
+    return false;
+  }
+
+  tile_upload_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(
+      device, tile_upload_buffer, false);
+  if (tile_upload_buffer_ptr == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to map tile upload transfer buffer: %s",
+                 SDL_GetError());
+    return false;
+  }
+  free_tile_upload_offset.reserve(TILE_MAX_UPLOAD_TRANSFER);
+  for (size_t i = 0; i < TILE_MAX_UPLOAD_TRANSFER; i++) {
+    free_tile_upload_offset.push_back(i * TILE_SIZE * TILE_SIZE * 4);
+  }
+
+  const SDL_GPUTransferBufferCreateInfo download_buffer_create_info = {
+      .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+      .size = TILE_MAX_DOWNLOAD_TRANSFER * TILE_SIZE * TILE_SIZE * 4,
+  };
+  tile_download_buffer =
+      SDL_CreateGPUTransferBuffer(device, &download_buffer_create_info);
+  if (tile_download_buffer == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create tile download buffer: %s", SDL_GetError());
+    return false;
+  }
+  tile_download_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(
+      device, tile_download_buffer, false);
+  if (tile_download_buffer_ptr == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to map tile download transfer buffer: %s",
+                 SDL_GetError());
+    return false;
+  }
+  free_tile_download_offset.reserve(TILE_MAX_DOWNLOAD_TRANSFER);
+  for (size_t i = 0; i < TILE_MAX_DOWNLOAD_TRANSFER; i++) {
+    free_tile_download_offset.push_back(i * TILE_SIZE * TILE_SIZE * 4);
+  }
+
+  return true;
+}
+
+bool Renderer::Render() {
+  ZoneScoped;
+  SDL_GPUCommandBuffer *command_buffer = SDL_AcquireGPUCommandBuffer(device);
+  if (command_buffer == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to acquire gpu command buffer: %s", SDL_GetError());
+    return false;
+  }
+
+  if (!allocated_tile_upload_offset.empty()) {
+    ZoneScopedN("Tile uploading");
+    SDL_GPUCopyPass *upload_pass = SDL_BeginGPUCopyPass(command_buffer);
+
+    SDL_UnmapGPUTransferBuffer(device, tile_upload_buffer);
+    for (const auto &[tile, offset] : allocated_tile_upload_offset) {
+      const SDL_GPUTextureTransferInfo transfer_info = {
+          .transfer_buffer = tile_upload_buffer,
+          .offset = offset,
+          .pixels_per_row = TILE_SIZE,
+          .rows_per_layer = TILE_SIZE,
+      };
+      const SDL_GPUTextureRegion texture_region = {
+          .texture = tile_textures.at(tile),
+          .mip_level = 0,
+          .layer = 0,
+          .x = 0,
+          .y = 0,
+          .z = 0,
+          .w = TILE_SIZE,
+          .h = TILE_SIZE,
+          .d = 1,
+      };
+      SDL_UploadToGPUTexture(upload_pass, &transfer_info, &texture_region,
+                             false);
+      free_tile_upload_offset.push_back(offset);
+    }
+    allocated_tile_upload_offset.clear();
+    SDL_EndGPUCopyPass(upload_pass);
+    tile_upload_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(
+        device, tile_upload_buffer, false);
+  }
+  SDL_GPUTexture *swapchain_texture;
+  SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, app->window,
+                                        &swapchain_texture, nullptr, nullptr);
+  if (swapchain_texture == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to acquire swapchain texture: %s", SDL_GetError());
+    return false;
+  }
+
+  { // Tile Rendering
+    for (const auto &[layer, layer_texture] : layer_textures) {
+      ZoneScopedN("Tile rendering");
+
+      // TODO: only redraw changed & visible tiles
+      // TODO: only render process visible layers
+      const SDL_GPUColorTargetInfo target_info = {
+          .texture = layer_texture,
+          .load_op = SDL_GPU_LOADOP_CLEAR,
+          .store_op = SDL_GPU_STOREOP_STORE,
+      };
+      SDL_GPURenderPass *render_pass =
+          SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
+      SDL_BindGPUGraphicsPipeline(render_pass, tile_graphics_pipeline);
+
+      SDL_PushGPUVertexUniformData(command_buffer, 0, &viewport_render_data,
+                                   sizeof(ViewportRenderData));
+
+      for (const auto &tile : app->canvas.layer_tiles.at(layer)) {
+        const TileInfo tile_info = app->canvas.tile_infos.at(tile);
+        tile_render_data.position = tile_info.position;
+        tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
+        SDL_PushGPUVertexUniformData(command_buffer, 1, &tile_render_data,
+                                     sizeof(TileRenderData));
+
+        const SDL_GPUTextureSamplerBinding samplers[] = {{
+            .texture = tile_textures.at(tile),
+            .sampler = tile_sampler,
+        }};
+        SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
+
+        SDL_DrawGPUPrimitives(render_pass, 4, 1, 0, 0);
+      }
+
+      SDL_EndGPURenderPass(render_pass);
+    }
+  }
+
+  { // Layer rendering
+    ZoneScopedN("Layer rendering");
+
+    // TODO: sort layers based on depth (deepest first)
+    const SDL_GPUColorTargetInfo target_info = {
+        .texture = swapchain_texture,
+        .clear_color = SDL_FColor{1.0f, 1.0f, 1.0f, 0.0f},
+        .load_op = SDL_GPU_LOADOP_CLEAR,
+        .store_op = SDL_GPU_STOREOP_STORE,
+    };
+    SDL_GPURenderPass *render_pass =
+        SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(render_pass, layer_graphics_pipeline);
+
+    for (const auto &[layer, texture] : layer_textures) {
+      SDL_assert(texture != nullptr);
+      const LayerInfo info = app->canvas.layer_infos.at(layer);
+
+      if (info.hidden || info.transparency == 1.0f) {
+        continue;
+      }
+
+      layer_render_data.blend_mode = (std::uint32_t)info.blend_mode;
+      layer_render_data.opacity = info.transparency;
+      SDL_PushGPUVertexUniformData(command_buffer, 0, &layer_render_data,
+                                   sizeof(LayerRenderData));
+
+      const SDL_GPUTextureSamplerBinding samplers[] = {
+          {
+              .texture = texture,
+              .sampler = layer_sampler,
+          },
+          // {
+          //     .texture = swapchain_texture,
+          //     .sampler = layer_sampler,
+          // },
+      };
+      SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
+
+      SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+    }
+
+    SDL_EndGPURenderPass(render_pass);
+  }
+
+  { // UI Rendering
+    ZoneScopedN("UI rendering");
+    ImDrawData *draw_data = ImGui::GetDrawData();
+
+    ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
+    const SDL_GPUColorTargetInfo target_info = {
+        .texture = swapchain_texture,
+        .load_op = SDL_GPU_LOADOP_LOAD,
+        .store_op = SDL_GPU_STOREOP_STORE,
+    };
+    SDL_GPURenderPass *render_pass =
+        SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
+    ImGui_ImplSDLGPU3_RenderDrawData(draw_data, command_buffer, render_pass);
+    SDL_EndGPURenderPass(render_pass);
+  }
+
+  if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+    SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                 "Failed to submit gpu command buffer: %s", SDL_GetError());
+    return false;
+  }
+
+  return true;
+}
+
+bool Renderer::Resize() {
+  ZoneScoped;
+  // TODO: Recalculate projection
+
+  viewport_render_data.projection = glm::ortho(
+      -((float)app->window_size.x / 2.0f), ((float)app->window_size.x / 2.0f),
+      -((float)app->window_size.y / 2.0f), ((float)app->window_size.y / 2.0f),
+      0.0f, 1.0f);
+
+  std::vector<Layer> layers;
+  layers.reserve(layer_textures.size());
+  for (const auto &[layer, texture] : layer_textures) {
+    layers.push_back(layer);
+  }
+
+  SDL_ReleaseGPUTexture(device, canvas_texture);
+  const SDL_GPUTextureCreateInfo canvas_texture_create_info = {
+      .type = SDL_GPU_TEXTURETYPE_2D,
+      .format = texture_format,
+      .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+      .width = (Uint32)app->window_size.x,
+      .height = (Uint32)app->window_size.y,
+      .layer_count_or_depth = 1,
+      .num_levels = 1,
+      .sample_count = SDL_GPU_SAMPLECOUNT_1,
+  };
+  canvas_texture = SDL_CreateGPUTexture(device, &canvas_texture_create_info);
+  if (canvas_texture == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create canvas layer texture");
+    return false;
+  }
+
+  for (auto layer : layers) {
+    DeleteLayerTexture(layer);
+    CreateLayerTexture(layer);
+  }
+
+  return true;
+}
+
+void Renderer::Quit() {
+  ZoneScoped;
+
+  for (const auto &[tile, texture] : tile_textures) {
+    SDL_ReleaseGPUTexture(device, texture);
+  }
+  SDL_UnmapGPUTransferBuffer(device, tile_download_buffer);
+  SDL_ReleaseGPUTransferBuffer(device, tile_download_buffer);
+  SDL_UnmapGPUTransferBuffer(device, tile_upload_buffer);
+  SDL_ReleaseGPUTransferBuffer(device, tile_upload_buffer);
+  SDL_ReleaseGPUSampler(device, tile_sampler);
+  SDL_ReleaseGPUGraphicsPipeline(device, tile_graphics_pipeline);
+  SDL_ReleaseGPUShader(device, tile_vertex_shader);
+  SDL_ReleaseGPUShader(device, tile_fragment_shader);
+
+  for (const auto &[layer, texture] : layer_textures) {
+    SDL_ReleaseGPUTexture(device, texture);
+  }
+  SDL_ReleaseGPUSampler(device, layer_sampler);
+  SDL_ReleaseGPUGraphicsPipeline(device, layer_graphics_pipeline);
+  SDL_ReleaseGPUShader(device, layer_vertex_shader);
+  SDL_ReleaseGPUShader(device, layer_fragment_shader);
+
+  SDL_ReleaseGPUTexture(device, canvas_texture);
+
+  SDL_ReleaseWindowFromGPUDevice(device, app->window);
+  SDL_DestroyGPUDevice(device);
+
+  device = nullptr;
+}
+
+bool Renderer::CreateLayerTexture(const Layer layer) {
+  SDL_assert(!layer_textures.contains(layer));
+  SDL_assert(app->window_size.x > 0);
+  SDL_assert(app->window_size.y > 0);
+
+  const SDL_GPUTextureCreateInfo texture_create_info = {
+      .type = SDL_GPU_TEXTURETYPE_2D,
+      .format = texture_format,
+      .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+      .width = (Uint32)app->window_size.x,
+      .height = (Uint32)app->window_size.y,
+      .layer_count_or_depth = 1,
+      .num_levels = 1,
+      .sample_count = SDL_GPU_SAMPLECOUNT_1,
+  };
+  SDL_GPUTexture *texture = SDL_CreateGPUTexture(device, &texture_create_info);
+  if (texture == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create layer texture");
+    return false;
+  }
+
+  layer_textures[layer] = texture;
+  return true;
+}
+
+void Renderer::DeleteLayerTexture(const Layer layer) {
+  ZoneScoped;
+  SDL_assert(layer_textures.contains(layer));
+  SDL_ReleaseGPUTexture(device, layer_textures.at(layer));
+  layer_textures.erase(layer);
+}
+
+bool Renderer::CreateTileTexture(const Tile tile) {
+  ZoneScoped;
+  SDL_assert(!tile_textures.contains(tile));
+
+  const SDL_GPUTextureCreateInfo texture_create_info = {
+      .type = SDL_GPU_TEXTURETYPE_2D,
+      .format = texture_format,
+      .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+      .width = (Uint32)TILE_SIZE,
+      .height = (Uint32)TILE_SIZE,
+      .layer_count_or_depth = 1,
+      .num_levels = 1,
+      .sample_count = SDL_GPU_SAMPLECOUNT_1,
+  };
+  SDL_GPUTexture *texture = SDL_CreateGPUTexture(device, &texture_create_info);
+  if (texture == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tile texture");
+    return false;
+  }
+
+  tile_textures[tile] = texture;
+  return true;
+}
+
+// TODO: Find a way to deal with multiple upload to the same tile
+// TODO: Make thread safe
+bool Renderer::UploadTileTexture(const Tile tile,
+                                 const std::vector<Uint8> &raw_pixels) {
+  ZoneScoped;
+  SDL_assert(tile_textures.contains(tile));
+  SDL_assert(raw_pixels.size() == TILE_SIZE * TILE_SIZE * 4);
+  SDL_assert(!allocated_tile_upload_offset.contains(tile) && "??");
+
+  if (free_tile_upload_offset.empty()) {
+    return false;
+  }
+
+  Uint32 tile_offset = free_tile_upload_offset.back();
+  free_tile_upload_offset.pop_back();
+  SDL_assert(tile_offset <=
+             (TILE_MAX_UPLOAD_TRANSFER - 1) * TILE_SIZE * TILE_SIZE * 4);
+
+  std::ranges::copy(raw_pixels,
+                    (std::uint8_t *)(tile_upload_buffer_ptr + tile_offset));
+  allocated_tile_upload_offset[tile] = tile_offset;
+
+  return true;
+}
+
+// TODO: Find a way to deal with multiple download for the same tile
+bool Renderer::DownloadTileTexture(const Tile tile) {
+  ZoneScoped;
+  SDL_assert(tile_textures.contains(tile));
+  SDL_assert(!allocated_tile_download_offset.contains(tile) && "??");
+
+  return true;
+}
+
+void Renderer::DeleteTileTexture(const Tile tile) {
+  ZoneScoped;
+  SDL_assert(tile_textures.contains(tile) && "Tile does not exists");
+  SDL_ReleaseGPUTexture(device, tile_textures.at(tile));
+  tile_textures.erase(tile);
+}
+
+} // namespace Midori

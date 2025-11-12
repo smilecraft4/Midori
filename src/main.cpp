@@ -23,7 +23,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 SDL_AppResult SDL_AppIterate(void *appstate) {
   auto *app = static_cast<Midori::App *>(appstate);
 
-  if (!app->Render()) {
+  if (!app->Update()) {
     return SDL_APP_FAILURE;
   }
 
@@ -42,7 +42,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
   }
 
   if (event->type == SDL_EVENT_WINDOW_RESIZED) {
-    app->Resize(event->window.data1, event->window.data1);
+    app->Resize(event->window.data1, event->window.data2);
   }
 
   ImGui_ImplSDL3_ProcessEvent(event);
