@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <float.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <imgui_impl_sdlgpu3.h>
@@ -168,7 +167,6 @@ bool Renderer::InitLayers() {
               .depth_bias_slope_factor = 0.0f,
               .enable_depth_bias = false,
               .enable_depth_clip = false,
-
           },
       .multisample_state =
           {
@@ -433,6 +431,21 @@ bool Renderer::InitTiles() {
 
 bool Renderer::Render() {
   ZoneScoped;
+  last_rendered_tiles_num = 0;
+  last_layer_rendered_num = 0;
+
+  { // Compute view matrix
+    ZoneScopedN("Compute view matrix");
+
+    auto view = glm::mat4(1.0f);
+    view = glm::translate(view, glm::vec3(app->canvas.view.pan, 0.0f));
+    view = glm::rotate(view, app->canvas.view.rotation,
+                       glm::vec3(0.0f, 0.0f, 1.0f));
+    view = glm::scale(view, glm::vec3(app->canvas.view.zoom_amount,
+                                      app->canvas.view.zoom_amount, 1.0f));
+    viewport_render_data.view = view;
+  }
+
   SDL_GPUCommandBuffer *command_buffer = SDL_AcquireGPUCommandBuffer(device);
   if (command_buffer == nullptr) {
     SDL_LogError(SDL_LOG_CATEGORY_RENDER,
@@ -446,6 +459,13 @@ bool Renderer::Render() {
 
     SDL_UnmapGPUTransferBuffer(device, tile_upload_buffer);
     for (const auto &[tile, offset] : allocated_tile_upload_offset) {
+      if (!tile_textures.contains(tile)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Tile not found, discard tile gpu upload");
+        free_tile_upload_offset.push_back(offset);
+        continue;
+      }
+
       const SDL_GPUTextureTransferInfo transfer_info = {
           .transfer_buffer = tile_upload_buffer,
           .offset = offset,
@@ -484,9 +504,12 @@ bool Renderer::Render() {
   { // Tile Rendering
     for (const auto &[layer, layer_texture] : layer_textures) {
       ZoneScopedN("Tile rendering");
+      if (app->canvas.layer_infos.at(layer).hidden) {
+        continue;
+      }
 
       // TODO: only redraw changed & visible tiles
-      // TODO: only render process visible layers
+
       const SDL_GPUColorTargetInfo target_info = {
           .texture = layer_texture,
           .load_op = SDL_GPU_LOADOP_CLEAR,
@@ -513,6 +536,7 @@ bool Renderer::Render() {
         SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
 
         SDL_DrawGPUPrimitives(render_pass, 4, 1, 0, 0);
+        last_rendered_tiles_num++;
       }
 
       SDL_EndGPURenderPass(render_pass);
@@ -522,7 +546,6 @@ bool Renderer::Render() {
   { // Layer rendering
     ZoneScopedN("Layer rendering");
 
-    // TODO: sort layers based on depth (deepest first)
     const SDL_GPUColorTargetInfo target_info = {
         .texture = swapchain_texture,
         .clear_color = SDL_FColor{1.0f, 1.0f, 1.0f, 0.0f},
@@ -559,6 +582,7 @@ bool Renderer::Render() {
       SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
 
       SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+      last_layer_rendered_num++;
     }
 
     SDL_EndGPURenderPass(render_pass);
@@ -591,8 +615,6 @@ bool Renderer::Render() {
 
 bool Renderer::Resize() {
   ZoneScoped;
-  // TODO: Recalculate projection
-
   viewport_render_data.projection = glm::ortho(
       -((float)app->window_size.x / 2.0f), ((float)app->window_size.x / 2.0f),
       -((float)app->window_size.y / 2.0f), ((float)app->window_size.y / 2.0f),
@@ -718,12 +740,14 @@ bool Renderer::CreateTileTexture(const Tile tile) {
   return true;
 }
 
-// TODO: Find a way to deal with multiple upload to the same tile
 // TODO: Make thread safe
 bool Renderer::UploadTileTexture(const Tile tile,
                                  const std::vector<Uint8> &raw_pixels) {
   ZoneScoped;
-  SDL_assert(tile_textures.contains(tile));
+  if (!tile_textures.contains(tile)) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Tile not found");
+    return false;
+  }
   SDL_assert(raw_pixels.size() == TILE_SIZE * TILE_SIZE * 4);
   SDL_assert(!allocated_tile_upload_offset.contains(tile) && "??");
 
@@ -736,14 +760,16 @@ bool Renderer::UploadTileTexture(const Tile tile,
   SDL_assert(tile_offset <=
              (TILE_MAX_UPLOAD_TRANSFER - 1) * TILE_SIZE * TILE_SIZE * 4);
 
-  std::ranges::copy(raw_pixels,
-                    (std::uint8_t *)(tile_upload_buffer_ptr + tile_offset));
+  {
+    ZoneScopedN("memcpy tile texture");
+    std::ranges::copy(raw_pixels,
+                      (std::uint8_t *)(tile_upload_buffer_ptr + tile_offset));
+  }
   allocated_tile_upload_offset[tile] = tile_offset;
 
   return true;
 }
 
-// TODO: Find a way to deal with multiple download for the same tile
 bool Renderer::DownloadTileTexture(const Tile tile) {
   ZoneScoped;
   SDL_assert(tile_textures.contains(tile));

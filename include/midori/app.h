@@ -27,6 +27,12 @@ public:
   bool Resize(int width, int height);
   void Quit();
 
+  void CursorMove(glm::vec2 new_pos);
+  void CursorPress(Uint8 button);
+  void CursorRelease(Uint8 button);
+  void KeyPress(SDL_Keycode key, SDL_Keymod mods);
+  void KeyRelease(SDL_Keycode key, SDL_Keymod mods);
+
   SDL_Window *window;
   std::vector<std::string> args;
 
@@ -36,6 +42,16 @@ public:
   glm::vec4 bg_color = {1.0F, 1.0F, 1.0F, 1.0F};
   glm::ivec2 window_pos = {SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED};
   glm::ivec2 window_size = {1280, 720};
+
+  glm::vec2 cursor_last_pos = glm::vec2(0.0f);
+  glm::vec2 cursor_current_pos = glm::vec2(0.0f);
+  glm::vec2 cursor_delta_pos = glm::vec2(0.0f);
+  bool cursor_left_pressed = false;
+  bool cursor_right_pressed = false;
+
+  bool space_pressed = false;
+  bool shift_pressed = false;
+  bool ctrl_pressed = false;
 };
 } // namespace Midori
 

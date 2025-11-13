@@ -64,6 +64,7 @@ public:
   SDL_GPUGraphicsPipeline *layer_graphics_pipeline;
   SDL_GPUSampler *layer_sampler;
   std::unordered_map<Layer, SDL_GPUTexture *> layer_textures;
+  size_t last_layer_rendered_num = 0;
 
   // slot = 2
   struct TileRenderData {
@@ -75,9 +76,10 @@ public:
   SDL_GPUGraphicsPipeline *tile_graphics_pipeline;
   SDL_GPUSampler *tile_sampler;
   std::unordered_map<Tile, SDL_GPUTexture *> tile_textures;
+  size_t last_rendered_tiles_num = 0;
 
   // Is this needed ?
-  static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 32;
+  static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 64;
   SDL_GPUTransferBuffer *tile_upload_buffer;
   std::uint8_t *tile_upload_buffer_ptr;
   std::unordered_map<Tile, Uint32> allocated_tile_upload_offset;

@@ -21,11 +21,12 @@ struct LayerInfo {
   std::string name = "Layer";
   std::uint8_t depth = 0;
 
+  bool hidden = false; // TODO: change to visible
+
   // TODO: implement the rest of this
   BlendMode blend_mode = BlendMode::Normal;
-  float transparency = 0.0f;
+  float transparency = 0.0f; // TODO: Change to opacity
   bool internal = false;
-  bool hidden = false;
   bool locked = false;
 };
 

@@ -2,32 +2,55 @@
 
 #include <SDL3/SDL_assert.h>
 #include <cstdint>
-#include <cstdlib>
 #include <format>
+#include <numbers>
 #include <string>
 #include <tracy/Tracy.hpp>
 #include <unordered_set>
 #include <vector>
 
-#include "SDL3/SDL_log.h"
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+
 #include "midori/app.h"
 #include "midori/renderer.h"
 #include "midori/types.h"
 
 namespace Midori {
 
-Canvas::Canvas(App *app) : app(app) {}
+constexpr size_t MAX_RANDOM_BLANK_TEXTURE = 16;
+std::vector<std::vector<std::uint8_t>> random_blank_textures;
+
+Canvas::Canvas(App *app) : app(app) {
+
+  random_blank_textures.resize(MAX_RANDOM_BLANK_TEXTURE);
+  for (auto &blank_textures : random_blank_textures) {
+    {
+      ZoneScopedN("Creating random tile texture");
+      const std::uint8_t r = rand() % UINT8_MAX;
+      const std::uint8_t g = rand() % UINT8_MAX;
+      const std::uint8_t b = rand() % UINT8_MAX;
+      blank_textures.resize(TILE_SIZE * TILE_SIZE * 4);
+      for (size_t i = 0; i < blank_textures.size(); i += 4) {
+        blank_textures[i + 0] = r;
+        blank_textures[i + 1] = g;
+        blank_textures[i + 2] = b;
+        blank_textures[i + 3] = UINT8_MAX;
+      }
+    }
+  }
+}
 
 bool Canvas::New() {
-  constexpr int depth = 16;
+  constexpr int depth = 4;
   constexpr int width = 4;
-  constexpr int height = 4;
+  constexpr int height = 2;
 
   for (int z = 0; z < depth; z++) {
     std::string layer_name = std::format("Layer {}", z);
     const auto layer = CreateLayer(layer_name, depth);
-    for (int y = -height / 2; y < height / 2; y++) {
-      for (int x = -width / 2; x < width / 2; x++) {
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < width; x++) {
         const auto tile = CreateTile(layer, glm::ivec2(x, y));
       }
     }
@@ -47,28 +70,57 @@ void Canvas::Quit() {
 }
 
 void Canvas::Update() {
-  if (!tile_queued.empty()) {
-    std::vector<Tile> scheduled_tile;
-    scheduled_tile.reserve(app->renderer.free_tile_upload_offset.size());
-    for (const auto &tile : tile_queued) {
-      const std::uint8_t r = rand() % UINT8_MAX;
-      const std::uint8_t g = rand() % UINT8_MAX;
-      const std::uint8_t b = rand() % UINT8_MAX;
-      std::vector<std::uint8_t> tile_blank_texture(TILE_SIZE * TILE_SIZE * 4,
-                                                   0x00);
-      for (size_t i = 0; i < tile_blank_texture.size(); i += 4) {
-        tile_blank_texture[i + 0] = r;
-        tile_blank_texture[i + 1] = g;
-        tile_blank_texture[i + 2] = b;
-        tile_blank_texture[i + 3] = UINT8_MAX;
+  ZoneScoped;
+  { // Loading/Unloading culled tiles
+    ZoneScopedN("Tile culling");
+    std::vector<glm::ivec2> visible_tile_positions =
+        GetVisibleTilePositions(view, app->window_size);
+
+    for (const auto &layer : Layers()) {
+      if (layer_infos.at(layer).hidden) {
+        // Should be already culled maybe who knwon
+        continue;
       }
-      if (!app->renderer.UploadTileTexture(tile, tile_blank_texture)) {
-        break;
+      std::unordered_set<glm::ivec2> tile_positions(
+          visible_tile_positions.begin(), visible_tile_positions.end());
+
+      // Iterate over every tile in layer
+      const std::vector<Tile> layer_tiles = LayerTiles(layer);
+      std::unordered_set<Tile> remove_tiles(layer_tiles.begin(),
+                                            layer_tiles.end());
+      for (const auto &tile : layer_tiles) {
+        if (tile_positions.contains(tile_infos.at(tile).position)) {
+          tile_positions.erase(tile_infos.at(tile).position);
+          remove_tiles.erase(tile);
+        }
       }
-      scheduled_tile.push_back(tile);
+
+      for (const auto &tile : remove_tiles) {
+        DeleteTile(layer, tile);
+      }
+
+      for (const auto &tile_pos : tile_positions) {
+        CreateTile(layer, tile_pos);
+      }
     }
-    for (const auto &tile : scheduled_tile) {
-      tile_queued.erase(tile);
+  }
+
+  { // Uploading Queued tile texture
+    ZoneScopedN("Uploading Queued tile texture");
+    if (!tile_queued.empty()) {
+      const size_t tile_uploading = std::min(
+          tile_queued.size(), app->renderer.free_tile_upload_offset.size());
+
+      for (size_t i = 0; i < tile_uploading; i++) {
+        const Tile tile = *tile_queued.cbegin();
+        if (!app->renderer.UploadTileTexture(
+                tile,
+                random_blank_textures[rand() % MAX_RANDOM_BLANK_TEXTURE])) {
+          SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                       "Failed to upload tile texture");
+        }
+        tile_queued.erase(tile);
+      }
     }
   }
 }
@@ -107,18 +159,6 @@ std::vector<Tile> Canvas::LayerTiles(const Layer layer) const {
   return tiles;
 }
 
-// TODO: To Implement
-Layer Canvas::GetLayer(std::uint8_t depth) const {
-  SDL_assert(false && "To implement");
-  return 0;
-}
-
-// TODO: To Implement
-Layer Canvas::GetLayer(const std::string &name) const {
-  SDL_assert(false && "To implement");
-  return 0;
-}
-
 Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
   ZoneScoped;
   Layer layer = 0;
@@ -150,8 +190,6 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
   };
   layer_tiles[layer] = std::unordered_set<Tile>();
 
-  // TODO: Handle layer depth
-
   return layer;
 }
 
@@ -166,17 +204,9 @@ void Canvas::DeleteLayer(const Layer layer) {
 
   app->renderer.DeleteLayerTexture(layer);
 
-  // TODO: handle layer depth
-
   unassigned_layers.push_back(layer);
   layer_infos.erase(layer);
   layer_tiles.erase(layer);
-}
-
-// TODO: To implement
-Tile Canvas::GetTile(const Layer layer, const glm::ivec2 position) const {
-  SDL_assert(false && "To implement");
-  return 0;
 }
 
 Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
@@ -198,15 +228,13 @@ Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
     unassigned_tiles.pop_back();
   }
 
-  // TODO: Multithreading the tile uploading procedure
+  SDL_assert(!LayerHasTile(layer, tile) && "Layer already has tile");
+
   if (!app->renderer.CreateTileTexture(tile)) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tile texture");
     return 0;
   }
   tile_queued.insert(tile);
-
-  SDL_assert(!LayerHasTile(layer, tile) && "Layer already has tile");
-
   layer_tiles.at(layer).insert(tile);
 
   tile_infos[tile] = TileInfo{
@@ -229,4 +257,109 @@ void Canvas::DeleteTile(const Layer layer, const Tile tile) {
   layer_tiles.at(layer).erase(tile);
 }
 
+std::vector<glm::ivec2>
+Canvas::GetVisibleTilePositions(const View &view, const glm::vec2 size) const {
+  ZoneScoped;
+  constexpr auto tile_size = glm::vec2(TILE_SIZE);
+  const glm::ivec2 t_min = glm::floor((-view.pan - (size / 2.0f)) / tile_size);
+  const glm::ivec2 t_max = glm::ceil((-view.pan + (size / 2.0f)) / tile_size);
+  const glm::ivec2 t_num = t_max - t_min;
+
+  std::vector<glm::ivec2> positions;
+  positions.reserve(std::size_t(t_num.x) * std::size_t(t_num.y));
+
+  for (auto y = t_min.y; y < t_max.y; y++) {
+    for (auto x = t_min.x; x < t_max.x; x++) {
+      positions.emplace_back(x, y);
+    }
+  }
+
+  return positions;
+}
+
+void Canvas::ViewUpdateState(bool pan, bool zoom, bool rotate) {
+  if (view_panning && (!pan || (pan && zoom) || (pan && rotate))) {
+    ViewPanStop();
+  }
+  if (view_zooming && (!pan || !zoom || (pan && rotate))) {
+    ViewZoomStop();
+  }
+  if (view_rotating && (!pan || !rotate || (pan && zoom))) {
+    ViewRotateStop();
+  }
+
+  if (!view_panning && (pan && !zoom && !rotate)) {
+    ViewPanStart();
+  }
+  if (!view_zooming && (pan && zoom && !rotate)) {
+    ViewZoomStart(app->cursor_current_pos);
+  }
+  if (!view_rotating && (pan && rotate && !zoom)) {
+    ViewRotateStart(app->cursor_current_pos);
+  }
+}
+
+void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos, glm::vec2 cursor_delta) {
+  if (view_panning) {
+    ViewPan(view.pan + cursor_delta);
+  } else if (view_rotating) {
+    ViewRotate(view.rotation + (cursor_delta.x / 360.0f * std::numbers::pi));
+  } else if (view_zooming) {
+    ViewZoom(view.zoom_amount + (cursor_delta.x / 1000.0f));
+  }
+}
+
+void Canvas::ViewPanStart() {
+  SDL_assert(!view_panning);
+  SDL_assert(!view_rotating);
+  SDL_assert(!view_zooming);
+
+  view_panning = true;
+}
+void Canvas::ViewPan(glm::vec2 amount) {
+  SDL_assert(view_panning);
+  view.pan = amount;
+}
+void Canvas::ViewPanStop() {
+  SDL_assert(view_panning);
+
+  view_panning = false;
+}
+
+void Canvas::ViewRotateStart(glm::vec2 start) {
+  SDL_assert(!view_panning);
+  SDL_assert(!view_rotating);
+  SDL_assert(!view_zooming);
+
+  view.rotate_start = start;
+  view_rotating = true;
+}
+void Canvas::ViewRotate(float amount) {
+  SDL_assert(view_rotating);
+  view.rotation = amount;
+}
+void Canvas::ViewRotateStop() {
+  SDL_assert(view_rotating);
+
+  view_rotating = false;
+}
+
+void Canvas::ViewZoomStart(glm::vec2 origin) {
+  SDL_assert(!view_panning);
+  SDL_assert(!view_rotating);
+  SDL_assert(!view_zooming);
+
+  view.zoom_origin = origin;
+  view_zooming = true;
+}
+void Canvas::ViewZoom(float amount) {
+  SDL_assert(view_zooming);
+
+  view.zoom_amount = amount;
+}
+void Canvas::ViewZoomStop() {
+  SDL_assert(view_zooming);
+
+  view_zooming = false;
+}
 } // namespace Midori

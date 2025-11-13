@@ -47,6 +47,26 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
   ImGui_ImplSDL3_ProcessEvent(event);
 
+  ImGuiIO &io = ImGui::GetIO();
+
+  if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
+    if (event->type == SDL_EVENT_MOUSE_MOTION) {
+      app->CursorMove(glm::vec2(event->motion.x, event->motion.y));
+    }
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+      app->CursorPress(event->button.button);
+    }
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
+      app->CursorRelease(event->button.button);
+    }
+    if (event->type == SDL_EVENT_KEY_DOWN) {
+      app->KeyPress(event->key.key, event->key.mod);
+    }
+    if (event->type == SDL_EVENT_KEY_UP) {
+      app->KeyRelease(event->key.key, event->key.mod);
+    }
+  }
+
   return SDL_APP_CONTINUE;
 }
 
