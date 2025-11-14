@@ -32,7 +32,7 @@ struct LayerInfo {
 
 using Tile = std::uint32_t;
 constexpr size_t TILE_MAX = UINT32_MAX;
-constexpr size_t TILE_SIZE = 512;
+constexpr size_t TILE_SIZE = 256;
 
 struct TileInfo {
   Layer layer;

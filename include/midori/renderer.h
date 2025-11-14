@@ -79,7 +79,7 @@ public:
   size_t last_rendered_tiles_num = 0;
 
   // Is this needed ?
-  static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 64;
+  static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 32;
   SDL_GPUTransferBuffer *tile_upload_buffer;
   std::uint8_t *tile_upload_buffer_ptr;
   std::unordered_map<Tile, Uint32> allocated_tile_upload_offset;

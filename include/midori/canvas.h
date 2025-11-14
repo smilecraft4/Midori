@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -41,8 +43,8 @@ public:
   bool SaveAs();
   bool Save();
 
+  // TODO: Move to it's own class
   // Viewport Stuff
-
   void ViewUpdateState(bool pan, bool zoom, bool rotate);
   void ViewUpdateCursor(glm::vec2 cursor_pos, glm::vec2 cursor_delta);
   void ViewPanStart();
@@ -78,8 +80,6 @@ public:
 
   App *app;
 
-  std::unordered_set<Tile> tile_queued;
-
   std::unordered_map<Layer, LayerInfo> layer_infos;
   std::unordered_map<Layer, std::unordered_set<Tile>> layer_tiles;
   Layer last_assigned_layer = 0;
@@ -95,6 +95,25 @@ public:
   bool view_zooming = false;
   bool view_panning = false;
   bool view_rotating = false;
+
+  // ?? Stuff
+  void UpdateTileLoading();
+
+  enum class TileLoadState : std::uint8_t {
+    Queued,
+    Read,
+    Decompressed,
+    Uploaded,
+  };
+
+  struct TileLoadStatus {
+    Layer layer;
+    Tile tile;
+    TileLoadState state;
+    std::vector<std::uint8_t> read_texture;
+    std::vector<std::uint8_t> raw_texture;
+  };
+  std::unordered_map<Tile, TileLoadStatus> tile_load_queue;
 };
 } // namespace Midori
 

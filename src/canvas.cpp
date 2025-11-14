@@ -15,31 +15,12 @@
 #include "midori/app.h"
 #include "midori/renderer.h"
 #include "midori/types.h"
+#define QOI_IMPLEMENTATION
+#include "qoi/qoi.h"
 
 namespace Midori {
 
-constexpr size_t MAX_RANDOM_BLANK_TEXTURE = 16;
-std::vector<std::vector<std::uint8_t>> random_blank_textures;
-
-Canvas::Canvas(App *app) : app(app) {
-
-  random_blank_textures.resize(MAX_RANDOM_BLANK_TEXTURE);
-  for (auto &blank_textures : random_blank_textures) {
-    {
-      ZoneScopedN("Creating random tile texture");
-      const std::uint8_t r = rand() % UINT8_MAX;
-      const std::uint8_t g = rand() % UINT8_MAX;
-      const std::uint8_t b = rand() % UINT8_MAX;
-      blank_textures.resize(TILE_SIZE * TILE_SIZE * 4);
-      for (size_t i = 0; i < blank_textures.size(); i += 4) {
-        blank_textures[i + 0] = r;
-        blank_textures[i + 1] = g;
-        blank_textures[i + 2] = b;
-        blank_textures[i + 3] = UINT8_MAX;
-      }
-    }
-  }
-}
+Canvas::Canvas(App *app) : app(app) {}
 
 bool Canvas::New() {
   constexpr int depth = 4;
@@ -60,7 +41,6 @@ bool Canvas::New() {
 }
 
 void Canvas::Quit() {
-
   // TODO: Find a more elegant way to do this
   std::vector<Layer> layers = Layers();
 
@@ -105,24 +85,7 @@ void Canvas::Update() {
     }
   }
 
-  { // Uploading Queued tile texture
-    ZoneScopedN("Uploading Queued tile texture");
-    if (!tile_queued.empty()) {
-      const size_t tile_uploading = std::min(
-          tile_queued.size(), app->renderer.free_tile_upload_offset.size());
-
-      for (size_t i = 0; i < tile_uploading; i++) {
-        const Tile tile = *tile_queued.cbegin();
-        if (!app->renderer.UploadTileTexture(
-                tile,
-                random_blank_textures[rand() % MAX_RANDOM_BLANK_TEXTURE])) {
-          SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                       "Failed to upload tile texture");
-        }
-        tile_queued.erase(tile);
-      }
-    }
-  }
+  UpdateTileLoading();
 }
 
 std::vector<Layer> Canvas::Layers() const {
@@ -234,7 +197,11 @@ Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tile texture");
     return 0;
   }
-  tile_queued.insert(tile);
+  tile_load_queue[tile] = TileLoadStatus{
+      .layer = layer,
+      .tile = tile,
+      .state = TileLoadState::Queued,
+  };
   layer_tiles.at(layer).insert(tile);
 
   tile_infos[tile] = TileInfo{
@@ -362,4 +329,74 @@ void Canvas::ViewZoomStop() {
 
   view_zooming = false;
 }
+
+void Canvas::UpdateTileLoading() {
+  ZoneScoped;
+
+  std::vector<Tile> tiles_unqueued;
+  size_t i = 0;
+  for (auto &[tile, tile_load] : tile_load_queue) {
+    if (i >= Midori::Renderer::TILE_MAX_UPLOAD_TRANSFER) {
+      break;
+    }
+
+    if (!HasLayer(tile_load.layer)) {
+      tiles_unqueued.push_back(tile);
+      continue;
+    } else if (!LayerHasTile(tile_load.layer, tile_load.tile)) {
+      tiles_unqueued.push_back(tile);
+      continue;
+    }
+
+    // TODO: Make this atrocity multithreaded/async
+    if (tile_load.state == TileLoadState::Queued) {
+      ZoneScopedN("Reading Tile");
+      size_t buf_size;
+      auto *buf =
+          (std::uint8_t *)SDL_LoadFile("./data/tiles/256.qoi", &buf_size);
+
+      SDL_assert(buf_size > 0);
+      SDL_assert(buf != nullptr);
+
+      tile_load.read_texture.resize(buf_size);
+      memcpy(tile_load.read_texture.data(), buf, buf_size);
+      SDL_free(buf);
+
+      tile_load.state = TileLoadState::Read;
+    }
+    if (tile_load.state == TileLoadState::Read) {
+      ZoneScopedN("Decoding Tile");
+      qoi_desc desc;
+      auto *buf =
+          (std::uint8_t *)qoi_decode(tile_load.read_texture.data(),
+                                     tile_load.read_texture.size(), &desc, 4);
+      SDL_assert(buf != nullptr);
+      SDL_assert(desc.channels = 4);
+      SDL_assert(desc.width = TILE_SIZE);
+      SDL_assert(desc.height = TILE_SIZE);
+      tile_load.read_texture.clear();
+
+      tile_load.raw_texture.resize(TILE_SIZE * TILE_SIZE * 4);
+      memcpy(tile_load.raw_texture.data(), buf, TILE_SIZE * TILE_SIZE * 4);
+      free(buf);
+
+      tile_load.state = TileLoadState::Decompressed;
+    }
+    if (tile_load.state == TileLoadState::Decompressed) {
+      ZoneScopedN("Uploading Tile");
+      if (!app->renderer.UploadTileTexture(tile, tile_load.raw_texture)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Failed to upload tile texture");
+      } else {
+        tile_load.state = TileLoadState::Uploaded;
+        tiles_unqueued.push_back(tile);
+      }
+    }
+    i++;
+  }
+  for (const auto &tile : tiles_unqueued) {
+    tile_load_queue.erase(tile);
+  }
+}
+
 } // namespace Midori

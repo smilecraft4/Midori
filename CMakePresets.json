@@ -34,7 +34,9 @@
             "installDir": "${sourceDir}/install",
             "cacheVariables": {
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/install",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": true
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
             },
             "architecture": {
                 "value": "x64",
@@ -47,6 +49,14 @@
             "inherits": "win-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "win-release",
+            "displayName": "Windows Release",
+            "inherits": "win-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             }
         }
     ]

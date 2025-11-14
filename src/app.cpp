@@ -144,7 +144,7 @@ bool App::Update() {
 
     if (ImGui::Begin("Tile infos")) {
       ImGui::LabelText("Total tiles", "%llu", canvas.tile_infos.size());
-      ImGui::LabelText("Queued Tiles", "%llu", canvas.tile_queued.size());
+      ImGui::LabelText("Queued Tiles", "%llu", canvas.tile_load_queue.size());
       ImGui::LabelText("Tile texture", "%llu", renderer.tile_textures.size());
       ImGui::LabelText("Tile uploading allocated", "%llu",
                        renderer.allocated_tile_upload_offset.size());
