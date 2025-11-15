@@ -214,6 +214,7 @@ Header - Public functions */
 #ifndef QOI_H
 #define QOI_H
 
+#include <cstdint>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -545,12 +546,19 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
       index[QOI_COLOR_HASH(px) & (64 - 1)] = px;
     }
 
-    pixels[px_pos + 0] = px.rgba.r;
-    pixels[px_pos + 1] = px.rgba.g;
-    pixels[px_pos + 2] = px.rgba.b;
-
+    // TODO: Proper Premultiplied alpha decoding and encoding
     if (channels == 4) {
+      pixels[px_pos + 0] =
+          (uint8_t)((float)px.rgba.r * ((float)px.rgba.a / (float)UINT8_MAX));
+      pixels[px_pos + 1] =
+          (uint8_t)((float)px.rgba.g * ((float)px.rgba.a / (float)UINT8_MAX));
+      pixels[px_pos + 2] =
+          (uint8_t)((float)px.rgba.b * ((float)px.rgba.a / (float)UINT8_MAX));
       pixels[px_pos + 3] = px.rgba.a;
+    } else {
+      pixels[px_pos + 0] = px.rgba.r;
+      pixels[px_pos + 1] = px.rgba.g;
+      pixels[px_pos + 2] = px.rgba.b;
     }
   }
 

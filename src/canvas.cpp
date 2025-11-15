@@ -24,18 +24,8 @@ Canvas::Canvas(App *app) : app(app) {}
 
 bool Canvas::New() {
   constexpr int depth = 4;
-  constexpr int width = 4;
-  constexpr int height = 2;
 
-  for (int z = 0; z < depth; z++) {
-    std::string layer_name = std::format("Layer {}", z);
-    const auto layer = CreateLayer(layer_name, depth);
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        const auto tile = CreateTile(layer, glm::ivec2(x, y));
-      }
-    }
-  }
+  const auto layer = CreateLayer("Base Layer", 0);
 
   return true;
 }
@@ -57,7 +47,7 @@ void Canvas::Update() {
         GetVisibleTilePositions(view, app->window_size);
 
     for (const auto &layer : Layers()) {
-      if (layer_infos.at(layer).hidden) {
+      if (!layer_infos.at(layer).visible) {
         // Should be already culled maybe who knwon
         continue;
       }
@@ -149,7 +139,13 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
 
   layer_infos[layer] = LayerInfo{
       .name = name,
+      .opacity = 1.0f,
+      .layer = layer,
       .depth = depth,
+      .blend_mode = BlendMode::Normal,
+      .visible = true,
+      .internal = false,
+      .locked = false,
   };
   layer_tiles[layer] = std::unordered_set<Tile>();
 
@@ -350,10 +346,13 @@ void Canvas::UpdateTileLoading() {
 
     // TODO: Make this atrocity multithreaded/async
     if (tile_load.state == TileLoadState::Queued) {
+
+      std::string file =
+          std::format("./data/tiles/{}.qoi", tile_load.layer % 3);
+
       ZoneScopedN("Reading Tile");
       size_t buf_size;
-      auto *buf =
-          (std::uint8_t *)SDL_LoadFile("./data/tiles/256.qoi", &buf_size);
+      auto *buf = (std::uint8_t *)SDL_LoadFile(file.c_str(), &buf_size);
 
       SDL_assert(buf_size > 0);
       SDL_assert(buf != nullptr);

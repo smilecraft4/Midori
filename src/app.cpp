@@ -88,11 +88,12 @@ bool App::Update() {
   }
 
   { // ImGui Stuff
-    ZoneScopedN("Imgui");
+    ZoneScopedN("UI");
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
+    /*
     static bool ui_debug_culling = false;
     if (ImGui::Begin("View")) {
       ImGui::LabelText("Position", "x:%.2f y:%.2f", canvas.view.pan.x,
@@ -104,7 +105,6 @@ bool App::Update() {
       ImGui::Checkbox("Debug culling", &ui_debug_culling);
     }
     ImGui::End();
-
     if (ui_debug_culling) {
       const std::vector<glm::ivec2> visible_tiles_positions =
           canvas.GetVisibleTilePositions(canvas.view, window_size / 2);
@@ -141,6 +141,7 @@ bool App::Update() {
         draw_list->AddText(pcenter, IM_COL32(255, 255, 255, 128), text.c_str());
       }
     }
+    */
 
     if (ImGui::Begin("Tile infos")) {
       ImGui::LabelText("Total tiles", "%llu", canvas.tile_infos.size());
@@ -155,14 +156,59 @@ bool App::Update() {
 
     if (ImGui::Begin("Layers")) {
       // Temporary layer stuff
-      for (auto &[layer, info] :
-           std::ranges::reverse_view(canvas.layer_infos)) {
-        ImGui::PushID(layer);
-        std::string layer_name = std::format("{}", info.name);
-        ImGui::Checkbox(layer_name.c_str(), &info.hidden);
+      std::vector<LayerInfo> layer_info;
+      layer_info.reserve(canvas.layer_infos.size());
+      for (auto &[layer, info] : canvas.layer_infos) {
+        layer_info.push_back(info);
+      }
+
+      std::ranges::sort(layer_info, [](LayerInfo &a, LayerInfo &b) {
+        return a.depth > b.depth;
+      });
+
+      const ImVec2 image_size = {
+          window_size.x / (float)window_size.y * 50.0f,
+          50.0f,
+      };
+      for (int i = layer_info.size() - 1; i >= 0; i--) {
+        ImGui::SeparatorText(layer_info[i].name.c_str());
+        auto &real_data = canvas.layer_infos[layer_info[i].layer];
+        ImGui::PushID(real_data.layer);
+
+        ImGui::SliderFloat("", &real_data.opacity, 0.0f, 1.0f);
+
+        // ImGui::Image(
+        //     (ImTextureID)(intptr_t)renderer.layer_textures.at(real_data.layer),
+        //     image_size);
+
+        ImGui::SameLine();
+        if (ImGui::Button("▲")) {
+          // Move up
+          // canvas.LayerMerge(real_data.layer, layer_info[i - 1].layer);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("▼")) {
+          // Move down
+          // canvas.LayerMerge(real_data.layer, layer_info[i - 1].layer);
+        }
+        if (i != 0) {
+          ImGui::SameLine();
+          if (ImGui::Button("=")) {
+            // canvas.LayerMerge(real_data.layer, layer_info[i - 1].layer);
+          }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("x")) {
+          canvas.DeleteLayer(real_data.layer);
+        }
+
         ImGui::PopID();
       }
+      if (ImGui::Button("+")) {
+        canvas.CreateLayer("New Layer", 0);
+      }
     }
+    ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color));
     ImGui::End();
 
     // TODO: Debug tile multithreaded download process (GPU->CPU->Disk)
@@ -248,7 +294,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     shift_pressed = true;
   }
 
-  canvas.ViewUpdateState(space_pressed, ctrl_pressed, shift_pressed);
+  canvas.ViewUpdateState(space_pressed, false, false);
 }
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
   if (key == SDLK_SPACE) {
@@ -261,7 +307,7 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     shift_pressed = false; // FIXME: How to detect when both of them are pressed
   }
 
-  canvas.ViewUpdateState(space_pressed, ctrl_pressed, shift_pressed);
+  canvas.ViewUpdateState(space_pressed, false, false);
 }
 
 } // namespace Midori

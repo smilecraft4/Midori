@@ -19,13 +19,11 @@ constexpr size_t LAYER_MAX = UINT8_MAX;
 
 struct LayerInfo {
   std::string name = "Layer";
+  float opacity = 1.0f;
+  Layer layer = 0;
   std::uint8_t depth = 0;
-
-  bool hidden = false; // TODO: change to visible
-
-  // TODO: implement the rest of this
   BlendMode blend_mode = BlendMode::Normal;
-  float transparency = 0.0f; // TODO: Change to opacity
+  bool visible = true;
   bool internal = false;
   bool locked = false;
 };
