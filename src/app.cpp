@@ -81,6 +81,9 @@ bool App::Init() {
 
 void DebugDrawTile(ImDrawList *draw_list, glm::ivec2 pos) {}
 
+static const SDL_DialogFileFilter filters[] = {{"Midori files (.mido)", "mido"},
+                                               {"All files", "*"}};
+
 bool App::Update() {
   FrameMark;
   if (window_size.x == 0 || window_size.y == 0) {
@@ -92,6 +95,58 @@ bool App::Update() {
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+
+    if (ImGui::Begin("File")) {
+      if (ImGui::Button("New")) {
+        canvas.New();
+      }
+      if (ImGui::Button("SaveAs")) {
+        SDL_ShowSaveFileDialog(
+            [](void *userdata, const char *const *filelist, int filter) {
+              App *app = (App *)(userdata);
+
+              if (!filelist) {
+                SDL_Log("An error occured: %s", SDL_GetError());
+                return;
+              } else if (!*filelist) {
+                SDL_Log("The user did not select any file.");
+                SDL_Log("Most likely, the dialog was canceled.");
+                return;
+              }
+
+              SDL_Log("Full path to selected file: '%s'", *filelist);
+              if (!app->canvas.SaveAs(*filelist)) {
+                SDL_Log("Failed to saved file as: '%s'", *filelist);
+              }
+            },
+            this, window, filters, SDL_arraysize(filters), nullptr);
+      }
+      if (ImGui::Button("Open")) {
+        SDL_ShowOpenFileDialog(
+            [](void *userdata, const char *const *filelist, int filter) {
+              App *app = (App *)(userdata);
+
+              if (!filelist) {
+                SDL_Log("An error occured: %s", SDL_GetError());
+                return;
+              } else if (!*filelist) {
+                SDL_Log("The user did not select any file.");
+                SDL_Log("Most likely, the dialog was canceled.");
+                return;
+              }
+
+              SDL_Log("Full path to selected file: '%s'", *filelist);
+              if (!app->canvas.Open(*filelist)) {
+                SDL_Log("Failed to saved file as: '%s'", *filelist);
+              }
+            },
+            this, window, filters, SDL_arraysize(filters), nullptr, false);
+      }
+      if (ImGui::Button("Save")) {
+        canvas.Save();
+      }
+    }
+    ImGui::End();
 
     /*
     static bool ui_debug_culling = false;
@@ -142,6 +197,30 @@ bool App::Update() {
       }
     }
     */
+    {
+      ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
+      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
+                                         (glm::vec2(window_size) / 2.0f)) /
+                                        glm::vec2(TILE_SIZE));
+      const ImVec2 pmin = {
+          ((float)window_size.x / 2.0f) + canvas.view.pan.x +
+              ((float)pos.x * (float)TILE_SIZE),
+          ((float)window_size.y / 2.0f) + canvas.view.pan.y +
+              ((float)pos.y * (float)TILE_SIZE),
+      };
+      const ImVec2 pmax = {
+          pmin.x + (float)TILE_SIZE,
+          pmin.y + (float)TILE_SIZE,
+      };
+      const ImVec2 pcenter = {
+          pmin.x + (float)TILE_SIZE / 2.0f,
+          pmin.y + (float)TILE_SIZE / 2.0f,
+      };
+
+      draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 0, 255));
+      std::string text = std::format("[{}, {}]", pos.x, pos.y);
+      draw_list->AddText(pcenter, IM_COL32(255, 0, 0, 128), text.c_str());
+    }
 
     if (ImGui::Begin("Tile infos")) {
       ImGui::LabelText("Total tiles", "%llu", canvas.tile_infos.size());
@@ -175,6 +254,10 @@ bool App::Update() {
         auto &real_data = canvas.layer_infos[layer_info[i].layer];
         ImGui::PushID(real_data.layer);
 
+        bool layer_selected = real_data.layer == canvas.selected_layer;
+        if (ImGui::Checkbox("Selected", &layer_selected)) {
+          canvas.selected_layer = real_data.layer;
+        }
         ImGui::SliderFloat("", &real_data.opacity, 0.0f, 1.0f);
 
         // ImGui::Image(
@@ -194,7 +277,8 @@ bool App::Update() {
         if (i != 0) {
           ImGui::SameLine();
           if (ImGui::Button("=")) {
-            // canvas.LayerMerge(real_data.layer, layer_info[i - 1].layer);
+            canvas.MergeLayers(real_data.layer, layer_info[i - 1].layer);
+            canvas.DeleteLayer(real_data.layer);
           }
         }
         ImGui::SameLine();
@@ -261,6 +345,30 @@ void App::CursorMove(glm::vec2 new_pos) {
 
   if (cursor_left_pressed) {
     canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
+
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating) {
+      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
+                                         (glm::vec2(window_size) / 2.0f)) /
+                                        glm::vec2(TILE_SIZE));
+
+      canvas.CreateTile(canvas.selected_layer, pos);
+
+      canvas.file.layers.at(canvas.selected_layer).tile_saved.insert(pos);
+      canvas.file.saved = false;
+    }
+  }
+
+  if (cursor_right_pressed) {
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating) {
+      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
+                                         (glm::vec2(window_size) / 2.0f)) /
+                                        glm::vec2(TILE_SIZE));
+      canvas.DeleteTile(canvas.selected_layer, pos);
+
+      // TODO: Create proper save,delete tile
+      canvas.file.layers.at(canvas.selected_layer).tile_saved.erase(pos);
+      canvas.file.saved = false;
+    }
   }
 
   cursor_delta_pos = glm::vec2(0.0f);

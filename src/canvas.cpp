@@ -23,9 +23,144 @@ namespace Midori {
 Canvas::Canvas(App *app) : app(app) {}
 
 bool Canvas::New() {
-  constexpr int depth = 4;
+  ZoneScoped;
+  Quit();
 
-  const auto layer = CreateLayer("Base Layer", 0);
+  file.header.name[0] = 'm';
+  file.header.name[1] = 'i';
+  file.header.name[2] = 'd';
+  file.header.name[3] = 'o';
+  file.header.version[0] = 0;
+  file.header.version[1] = 0;
+  file.header.version[2] = 0;
+  file.header.version[3] = 0;
+
+  const Layer layer = CreateLayer("Base Layer", 0);
+  selected_layer = layer;
+
+  return true;
+}
+
+bool Canvas::SaveAs(const std::filesystem::path &filename) {
+  ZoneScoped;
+  file.filename = filename;
+  file.saved = false;
+
+  if (!Save()) {
+    return false;
+  }
+
+  return true;
+}
+
+bool Canvas::Save() {
+  ZoneScoped;
+  if (!file.filename.has_filename()) {
+    return false;
+  }
+
+  if (file.saved) {
+    return true;
+  }
+
+  const auto filestring = file.filename.string();
+  SDL_IOStream *file_io = SDL_IOFromFile(filestring.c_str(), "wb");
+  if (file_io == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file:s '%s'",
+                 filestring.c_str());
+    return false;
+  }
+  {
+    ZoneScopedN("Writing Layers");
+    SDL_WriteIO(file_io, &file.header, sizeof(file.header));
+
+    const std::uint32_t layer_num = file.layers.size();
+    SDL_WriteIO(file_io, &layer_num, sizeof(layer_num));
+    for (const auto &[layer, file_layer] : file.layers) {
+      {
+        ZoneScopedN("Writing Layer");
+        const std::uint16_t layer_name_len = file_layer.layer.name.size();
+        SDL_WriteIO(file_io, &layer_name_len, sizeof(layer_name_len));
+        SDL_WriteIO(file_io, file_layer.layer.name.data(), layer_name_len);
+        SDL_WriteIO(file_io, &file_layer.layer.depth,
+                    sizeof(file_layer.layer.depth));
+      }
+      {
+        ZoneScopedN("Writing Tiles");
+        const std::uint32_t tile_num = file_layer.tile_saved.size();
+        SDL_WriteIO(file_io, &tile_num, sizeof(tile_num));
+        for (const auto &tile_pos : file_layer.tile_saved) {
+          FileTile file_tile = {
+              .position = tile_pos,
+          };
+          SDL_WriteIO(file_io, &file_tile, sizeof(file_tile));
+        }
+      }
+    }
+  }
+  SDL_CloseIO(file_io);
+  file.saved = true;
+
+  return true;
+}
+
+bool Canvas::Open(const std::filesystem::path &filename) {
+  ZoneScoped;
+  if (file.filename.has_filename() && !file.saved) {
+    // Return a different error here prompting the user to save the current file
+    return false;
+  }
+
+  if (!std::filesystem::exists(filename)) {
+    return false;
+  }
+  Canvas::Quit();
+
+  const auto filestring = filename.string();
+  SDL_IOStream *file_io = SDL_IOFromFile(filestring.c_str(), "rb");
+  if (file_io == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file:s '%s'",
+                 filestring.c_str());
+    return false;
+  }
+
+  SDL_ReadIO(file_io, &file.header, sizeof(file.header));
+
+  {
+    ZoneScopedN("Reading Layers");
+    std::uint32_t layer_num;
+    SDL_ReadIO(file_io, &layer_num, sizeof(layer_num));
+    Layer layer;
+    for (size_t i = 0; i < layer_num; i++) {
+      {
+        ZoneScopedN("Reading Layer");
+        LayerInfo layer_info;
+        std::uint16_t layer_name_len;
+        SDL_ReadIO(file_io, &layer_name_len, sizeof(layer_name_len));
+        layer_info.name.resize(layer_name_len);
+        SDL_ReadIO(file_io, layer_info.name.data(), layer_name_len);
+        SDL_ReadIO(file_io, &layer_info.depth, sizeof(layer_info.depth));
+
+        layer = CreateLayer(layer_info.name, layer_info.depth);
+      }
+
+      {
+        ZoneScopedN("Reading Tile");
+        std::uint32_t tile_num = 0;
+        SDL_ReadIO(file_io, &tile_num, sizeof(tile_num));
+        std::vector<FileTile> file_tiles(tile_num);
+        SDL_ReadIO(file_io, file_tiles.data(), sizeof(FileTile) * tile_num);
+        for (auto file_tile : file_tiles) {
+          file.layers.at(layer).tile_saved.insert(file_tile.position);
+        }
+      }
+    }
+  }
+
+  SDL_CloseIO(file_io);
+
+  file.filename = filename;
+  file.saved = true;
 
   return true;
 }
@@ -70,7 +205,8 @@ void Canvas::Update() {
       }
 
       for (const auto &tile_pos : tile_positions) {
-        CreateTile(layer, tile_pos);
+        if (LayerHasTileFile(layer, tile_pos))
+          CreateTile(layer, tile_pos);
       }
     }
   }
@@ -137,7 +273,7 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
     return 0;
   }
 
-  layer_infos[layer] = LayerInfo{
+  const auto layer_info = LayerInfo{
       .name = name,
       .opacity = 1.0f,
       .layer = layer,
@@ -147,11 +283,18 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
       .internal = false,
       .locked = false,
   };
+
+  layer_infos[layer] = layer_info;
   layer_tiles[layer] = std::unordered_set<Tile>();
+  file.layers[layer] = FileLayer{
+      .layer = layer_info,
+      .tile_saved = std::unordered_set<glm::ivec2>(),
+  };
 
   return layer;
 }
 
+// TODO: Make this a queued action
 void Canvas::DeleteLayer(const Layer layer) {
   ZoneScoped;
   SDL_assert(HasLayer(layer) && "Layer not found");
@@ -166,6 +309,14 @@ void Canvas::DeleteLayer(const Layer layer) {
   unassigned_layers.push_back(layer);
   layer_infos.erase(layer);
   layer_tiles.erase(layer);
+  file.layers.erase(layer);
+}
+
+bool Canvas::MergeLayers(const Layer top, const Layer btm) {
+  SDL_assert(HasLayer(top));
+  SDL_assert(HasLayer(btm));
+
+  return false;
 }
 
 Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
@@ -208,6 +359,17 @@ Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
   return tile;
 }
 
+void Canvas::DeleteTile(Layer layer, glm::ivec2 position) {
+  ZoneScoped;
+  for (const auto &tile : layer_tiles.at(layer)) {
+    if (tile_infos.at(tile).position == position) {
+      DeleteTile(layer, tile);
+      return;
+    }
+  }
+}
+
+// TODO: Make this a queued action
 void Canvas::DeleteTile(const Layer layer, const Tile tile) {
   ZoneScoped;
   SDL_assert(HasLayer(layer) && "Layer not found");
@@ -215,8 +377,8 @@ void Canvas::DeleteTile(const Layer layer, const Tile tile) {
 
   app->renderer.DeleteTileTexture(tile);
   unassigned_tiles.push_back(tile);
-  tile_infos.erase(tile);
 
+  tile_infos.erase(tile);
   layer_tiles.at(layer).erase(tile);
 }
 
@@ -396,6 +558,10 @@ void Canvas::UpdateTileLoading() {
   for (const auto &tile : tiles_unqueued) {
     tile_load_queue.erase(tile);
   }
+}
+
+bool Canvas::LayerHasTileFile(const Layer layer, const glm::ivec2 tile_pos) {
+  return file.layers.at(layer).tile_saved.contains(tile_pos);
 }
 
 } // namespace Midori
