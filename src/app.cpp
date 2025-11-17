@@ -98,9 +98,11 @@ bool App::Update() {
 
     if (ImGui::Begin("File")) {
       if (ImGui::Button("New")) {
+        SDL_WaitForGPUIdle(renderer.device);
         canvas.New();
       }
       if (ImGui::Button("SaveAs")) {
+        SDL_WaitForGPUIdle(renderer.device);
         SDL_ShowSaveFileDialog(
             [](void *userdata, const char *const *filelist, int filter) {
               App *app = (App *)(userdata);
@@ -122,6 +124,7 @@ bool App::Update() {
             this, window, filters, SDL_arraysize(filters), nullptr);
       }
       if (ImGui::Button("Open")) {
+        SDL_WaitForGPUIdle(renderer.device);
         SDL_ShowOpenFileDialog(
             [](void *userdata, const char *const *filelist, int filter) {
               App *app = (App *)(userdata);
@@ -143,6 +146,7 @@ bool App::Update() {
             this, window, filters, SDL_arraysize(filters), nullptr, false);
       }
       if (ImGui::Button("Save")) {
+        SDL_WaitForGPUIdle(renderer.device);
         canvas.Save();
       }
     }
@@ -250,8 +254,10 @@ bool App::Update() {
           50.0f,
       };
       for (int i = layer_info.size() - 1; i >= 0; i--) {
-        ImGui::SeparatorText(layer_info[i].name.c_str());
         auto &real_data = canvas.layer_infos[layer_info[i].layer];
+        const std::string title =
+            std::format("-{}: {}", real_data.depth, real_data.name);
+        ImGui::SeparatorText(title.c_str());
         ImGui::PushID(real_data.layer);
 
         bool layer_selected = real_data.layer == canvas.selected_layer;
@@ -264,15 +270,17 @@ bool App::Update() {
         //     (ImTextureID)(intptr_t)renderer.layer_textures.at(real_data.layer),
         //     image_size);
 
-        ImGui::SameLine();
-        if (ImGui::Button("▲")) {
-          // Move up
-          // canvas.LayerMerge(real_data.layer, layer_info[i - 1].layer);
+        if (real_data.depth < (canvas.current_max_layer_height - 1)) {
+          ImGui::SameLine();
+          if (ImGui::Button("-")) {
+            canvas.SetLayerDepth(real_data.layer, real_data.depth + 1);
+          }
         }
-        ImGui::SameLine();
-        if (ImGui::Button("▼")) {
-          // Move down
-          // canvas.LayerMerge(real_data.layer, layer_info[i - 1].layer);
+        if (real_data.depth > 0) {
+          ImGui::SameLine();
+          if (ImGui::Button("+")) {
+            canvas.SetLayerDepth(real_data.layer, real_data.depth - 1);
+          }
         }
         if (i != 0) {
           ImGui::SameLine();
@@ -346,7 +354,8 @@ void App::CursorMove(glm::vec2 new_pos) {
   if (cursor_left_pressed) {
     canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
 
-    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating) {
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
+        (canvas.selected_layer != 0)) {
       const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
                                          (glm::vec2(window_size) / 2.0f)) /
                                         glm::vec2(TILE_SIZE));
@@ -359,7 +368,8 @@ void App::CursorMove(glm::vec2 new_pos) {
   }
 
   if (cursor_right_pressed) {
-    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating) {
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
+        (canvas.selected_layer != 0)) {
       const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
                                          (glm::vec2(window_size) / 2.0f)) /
                                         glm::vec2(TILE_SIZE));
@@ -376,9 +386,33 @@ void App::CursorMove(glm::vec2 new_pos) {
 void App::CursorPress(Uint8 button) {
   if (button == SDL_BUTTON_LEFT) {
     cursor_left_pressed = true;
+
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
+        (canvas.selected_layer != 0)) {
+      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
+                                         (glm::vec2(window_size) / 2.0f)) /
+                                        glm::vec2(TILE_SIZE));
+
+      canvas.CreateTile(canvas.selected_layer, pos);
+
+      canvas.file.layers.at(canvas.selected_layer).tile_saved.insert(pos);
+      canvas.file.saved = false;
+    }
   }
   if (button == SDL_BUTTON_RIGHT) {
     cursor_right_pressed = true;
+
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
+        (canvas.selected_layer != 0)) {
+      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
+                                         (glm::vec2(window_size) / 2.0f)) /
+                                        glm::vec2(TILE_SIZE));
+      canvas.DeleteTile(canvas.selected_layer, pos);
+
+      // TODO: Create proper save,delete tile
+      canvas.file.layers.at(canvas.selected_layer).tile_saved.erase(pos);
+      canvas.file.saved = false;
+    }
   }
 }
 void App::CursorRelease(Uint8 button) {

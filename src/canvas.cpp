@@ -131,6 +131,8 @@ bool Canvas::Open(const std::filesystem::path &filename) {
     std::uint32_t layer_num;
     SDL_ReadIO(file_io, &layer_num, sizeof(layer_num));
     Layer layer;
+    std::unordered_map<Layer, std::uint8_t> real_layer_depth;
+    real_layer_depth.reserve(layer_num);
     for (size_t i = 0; i < layer_num; i++) {
       {
         ZoneScopedN("Reading Layer");
@@ -140,8 +142,8 @@ bool Canvas::Open(const std::filesystem::path &filename) {
         layer_info.name.resize(layer_name_len);
         SDL_ReadIO(file_io, layer_info.name.data(), layer_name_len);
         SDL_ReadIO(file_io, &layer_info.depth, sizeof(layer_info.depth));
-
-        layer = CreateLayer(layer_info.name, layer_info.depth);
+        layer = CreateLayer(layer_info.name, 0);
+        real_layer_depth[layer] = layer_info.depth;
       }
 
       {
@@ -154,6 +156,9 @@ bool Canvas::Open(const std::filesystem::path &filename) {
           file.layers.at(layer).tile_saved.insert(file_tile.position);
         }
       }
+    }
+    for (auto [layer, depth] : real_layer_depth) {
+      SetLayerDepth(layer, depth);
     }
   }
 
@@ -257,8 +262,6 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
       SDL_assert(false && "Max layer reached");
       return 0;
     }
-    // It's fine to increment first because 0 is invalid so the first assigned
-    // layer is always 1
     last_assigned_layer++;
     layer = last_assigned_layer;
   } else {
@@ -271,6 +274,20 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
   if (!app->renderer.CreateLayerTexture(layer)) {
     unassigned_layers.push_back(layer);
     return 0;
+  }
+
+  current_max_layer_height++;
+  SDL_assert(depth <= current_max_layer_height);
+  for (auto &[other_layer, other_layer_info] : layer_infos) {
+    if (other_layer == layer) {
+      continue;
+    }
+    if (other_layer_info.depth >= depth) {
+      other_layer_info.depth++;
+      file.layers[layer].layer.depth++;
+    }
+
+    SDL_assert(other_layer_info.depth < current_max_layer_height);
   }
 
   const auto layer_info = LayerInfo{
@@ -294,6 +311,42 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
   return layer;
 }
 
+bool Canvas::SetLayerDepth(const Layer layer, std::uint8_t depth) {
+  SDL_assert(file.layers.contains(layer) && "Layer not found");
+
+  // No new layer are created nor destroyed so the max should stay the same
+  depth = std::min(current_max_layer_height, depth);
+
+  const auto old_depth = layer_infos[layer].depth;
+
+  const std::int8_t direction = (old_depth > depth) ? +1 : -1;
+  const auto min_depth = std::min(old_depth, depth);
+  const auto max_depth = std::max(old_depth, depth);
+
+  for (auto &[other_layer, other_layer_info] : layer_infos) {
+    if (other_layer == layer) {
+      continue;
+    }
+    const auto other_depth = other_layer_info.depth;
+    if (min_depth <= other_depth && other_depth <= max_depth) {
+      other_layer_info.depth += direction;
+      file.layers[other_layer].layer.depth += direction;
+    }
+    SDL_assert(other_depth < current_max_layer_height);
+  }
+
+  layer_infos[layer].depth = depth;
+  file.layers[layer].layer.depth = depth;
+  file.saved = false;
+
+  return true;
+}
+
+std::uint8_t Canvas::GetLayerDepth(const Layer layer) const {
+  SDL_assert(file.layers.contains(layer) && "Layer not found");
+  return file.layers.at(layer).layer.depth;
+}
+
 // TODO: Make this a queued action
 void Canvas::DeleteLayer(const Layer layer) {
   ZoneScoped;
@@ -306,10 +359,26 @@ void Canvas::DeleteLayer(const Layer layer) {
 
   app->renderer.DeleteLayerTexture(layer);
 
+  current_max_layer_height--;
+  for (auto &[layer_below, layer_below_info] : layer_infos) {
+    if (layer_below == layer) {
+      continue;
+    }
+    if (layer_below_info.depth > layer_infos.at(layer).depth) {
+      layer_below_info.depth--;
+      file.layers[layer].layer.depth--;
+    }
+    SDL_assert(layer_below_info.depth < current_max_layer_height);
+  }
+
   unassigned_layers.push_back(layer);
   layer_infos.erase(layer);
   layer_tiles.erase(layer);
   file.layers.erase(layer);
+
+  if (selected_layer == layer) {
+    selected_layer = 0;
+  }
 }
 
 bool Canvas::MergeLayers(const Layer top, const Layer btm) {
@@ -509,8 +578,8 @@ void Canvas::UpdateTileLoading() {
     // TODO: Make this atrocity multithreaded/async
     if (tile_load.state == TileLoadState::Queued) {
 
-      std::string file =
-          std::format("./data/tiles/{}.qoi", tile_load.layer % 3);
+      const auto layer_depth = file.layers.at(tile_load.layer).layer.depth;
+      std::string file = std::format("./data/tiles/{}.qoi", layer_depth % 3);
 
       ZoneScopedN("Reading Tile");
       size_t buf_size;

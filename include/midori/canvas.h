@@ -69,6 +69,8 @@ public:
   Layer CreateLayer(const std::string &name, std::uint8_t depth);
   void DeleteLayer(Layer layer);
   bool MergeLayers(Layer top, Layer bottom);
+  bool SetLayerDepth(Layer layer, std::uint8_t depth);
+  [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
 
   bool MoveTileToLayer(Tile tile, Layer new_layer);
   bool MergeTile(Tile top, Tile btm);
@@ -85,6 +87,7 @@ public:
 
   App *app;
 
+  std::uint8_t current_max_layer_height = 0;
   std::unordered_map<Layer, LayerInfo> layer_infos;
   std::unordered_map<Layer, std::unordered_set<Tile>> layer_tiles;
   Layer selected_layer = 0;
