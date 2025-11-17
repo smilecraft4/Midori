@@ -68,14 +68,10 @@ public:
 
   Layer CreateLayer(const std::string &name, std::uint8_t depth);
   void DeleteLayer(Layer layer);
-  bool MergeLayers(Layer top, Layer bottom);
   bool SetLayerDepth(Layer layer, std::uint8_t depth);
   [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
 
-  bool MoveTileToLayer(Tile tile, Layer new_layer);
-  bool MergeTile(Tile top, Tile btm);
-
-  [[nodiscard]] Layer TileLayer(Tile tile) const;
+  [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
 
   // TODO: Change for a better name, this name implies that a new tile is
   // created and maybe saved, but This should not be saved
@@ -90,6 +86,8 @@ public:
   std::uint8_t current_max_layer_height = 0;
   std::unordered_map<Layer, LayerInfo> layer_infos;
   std::unordered_map<Layer, std::unordered_set<Tile>> layer_tiles;
+  std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>>
+      layer_tile_pos;
   Layer selected_layer = 0;
   Layer last_assigned_layer = 0;
   std::vector<Layer> unassigned_layers;
@@ -151,6 +149,25 @@ public:
   File file;
 
   bool LayerHasTileFile(Layer layer, glm::ivec2 tile_pos);
+
+  struct StrokeOption {
+    glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    float flow = 1.0f;
+    float radius = 5.0f;
+    float hardness = 1.0f;
+    std::uint32_t points_num = 0;
+  } stroke_options;
+
+  struct StrokePoint {
+    glm::vec2 position;
+  };
+  std::vector<StrokePoint> stroke_points;
+  std::unordered_set<Tile> stroke_tile_affected;
+  StrokePoint previous_point = {};
+
+  void StartStroke(StrokePoint point);
+  void UpdateStroke(StrokePoint point, float spacing = 0.5f);
+  void EndStroke(StrokePoint point);
 };
 } // namespace Midori
 

@@ -111,6 +111,13 @@ public:
     glm::ivec2 dst_size;
   };
   SDL_GPUComputePipeline *merge_compute_pipeline = nullptr;
+
+  bool InitPaint();
+  static constexpr size_t MAX_PAINT_STROKE_POINTS = 2048;
+  SDL_GPUBuffer *paint_stroke_point_buffer = nullptr;
+  SDL_GPUComputePipeline *paint_compute_pipeline = nullptr;
+  SDL_GPUTransferBuffer *paint_stroke_point_transfer_buffer = nullptr;
+  std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
 };
 } // namespace Midori
 

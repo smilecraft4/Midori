@@ -64,6 +64,7 @@ set(VULKAN_SHADERS
   ${VULKAN_SHADER_SOURCE_DIR}/tile.vert.glsl
   ${VULKAN_SHADER_SOURCE_DIR}/tile.frag.glsl
   ${VULKAN_SHADER_SOURCE_DIR}/merge.comp.glsl
+  ${VULKAN_SHADER_SOURCE_DIR}/paint.comp.glsl
 )
 
 foreach(SHADER IN LISTS VULKAN_SHADERS)

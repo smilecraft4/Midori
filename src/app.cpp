@@ -6,8 +6,6 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
-#include <numbers>
-#include <ranges>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
@@ -285,8 +283,8 @@ bool App::Update() {
         if (i != 0) {
           ImGui::SameLine();
           if (ImGui::Button("=")) {
-            canvas.MergeLayers(real_data.layer, layer_info[i - 1].layer);
-            canvas.DeleteLayer(real_data.layer);
+            // canvas.MergeLayers(real_data.layer, layer_info[i - 1].layer);
+            // canvas.DeleteLayer(real_data.layer);
           }
         }
         ImGui::SameLine();
@@ -306,6 +304,17 @@ bool App::Update() {
     // TODO: Debug tile multithreaded download process (GPU->CPU->Disk)
     // TODO: Debug tile multithreaded upload process (Disk->CPU->GPU)
 
+    if (ImGui::Begin("Stroke Options")) {
+      ImGui::ColorEdit4("Color", glm::value_ptr(canvas.stroke_options.color));
+      ImGui::SliderFloat("Radius", &canvas.stroke_options.radius, 0.1f, 100.0f);
+      ImGui::SliderFloat("Flow", &canvas.stroke_options.flow, 0.0f, 1.0f);
+      ImGui::SliderFloat("Hardness", &canvas.stroke_options.hardness, 0.0f,
+                         1.0f);
+      ImGui::Separator();
+      ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
+    }
+    ImGui::End();
+
     ImGui::Render();
   }
 
@@ -316,7 +325,7 @@ bool App::Update() {
   }
 
   return true;
-} // namespace Midori
+}
 
 bool App::Resize(const int width, const int height) {
   ZoneScoped;
@@ -356,14 +365,12 @@ void App::CursorMove(glm::vec2 new_pos) {
 
     if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
         (canvas.selected_layer != 0)) {
-      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
-                                         (glm::vec2(window_size) / 2.0f)) /
-                                        glm::vec2(TILE_SIZE));
+      const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
+                              (glm::vec2(window_size) / 2.0f));
 
-      canvas.CreateTile(canvas.selected_layer, pos);
-
-      canvas.file.layers.at(canvas.selected_layer).tile_saved.insert(pos);
-      canvas.file.saved = false;
+      canvas.UpdateStroke(Canvas::StrokePoint{
+          .position = pos,
+      });
     }
   }
 
@@ -389,14 +396,12 @@ void App::CursorPress(Uint8 button) {
 
     if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
         (canvas.selected_layer != 0)) {
-      const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
-                                         (glm::vec2(window_size) / 2.0f)) /
-                                        glm::vec2(TILE_SIZE));
+      const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
+                              (glm::vec2(window_size) / 2.0f));
 
-      canvas.CreateTile(canvas.selected_layer, pos);
-
-      canvas.file.layers.at(canvas.selected_layer).tile_saved.insert(pos);
-      canvas.file.saved = false;
+      canvas.StartStroke(Canvas::StrokePoint{
+          .position = pos,
+      });
     }
   }
   if (button == SDL_BUTTON_RIGHT) {
@@ -418,6 +423,15 @@ void App::CursorPress(Uint8 button) {
 void App::CursorRelease(Uint8 button) {
   if (button == SDL_BUTTON_LEFT) {
     cursor_left_pressed = false;
+    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
+        (canvas.selected_layer != 0)) {
+      const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
+                              (glm::vec2(window_size) / 2.0f));
+
+      canvas.EndStroke(Canvas::StrokePoint{
+          .position = pos,
+      });
+    }
   }
   if (button == SDL_BUTTON_RIGHT) {
     cursor_right_pressed = false;
@@ -438,6 +452,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
 
   canvas.ViewUpdateState(space_pressed, false, false);
 }
+
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
   if (key == SDLK_SPACE) {
     space_pressed = false;

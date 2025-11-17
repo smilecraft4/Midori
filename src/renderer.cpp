@@ -47,7 +47,13 @@ bool Renderer::Init() {
 
   if (!InitMerge()) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                 "Failed to initialize merge compute pass");
+                 "Failed to initialize merge compute pipeline");
+    return false;
+  }
+
+  if (!InitPaint()) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to initialize paint compute pipeline");
     return false;
   }
 
@@ -234,41 +240,6 @@ bool Renderer::InitLayers() {
 
   return true;
 }
-bool Renderer::InitMerge() {
-  size_t code_size = 0;
-  auto *code =
-      (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/merge.comp.spv", &code_size);
-  if (code_size == 0) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                 "./data/shaders/vulkan/merge.comp.spv", SDL_GetError());
-    return false;
-  }
-  const SDL_GPUComputePipelineCreateInfo create_info = {
-      .code_size = code_size,
-      .code = code,
-      .entrypoint = "main",
-      .format = SDL_GPU_SHADERFORMAT_SPIRV,
-      .num_samplers = 1,
-      .num_readonly_storage_textures = 0, // src texture
-      .num_readonly_storage_buffers = 0,
-      .num_readwrite_storage_textures = 1, // dst texture
-      .num_readwrite_storage_buffers = 0,
-      .num_uniform_buffers = 1,
-      .threadcount_x = 32,
-      .threadcount_y = 32,
-      .threadcount_z = 1,
-  };
-  merge_compute_pipeline = SDL_CreateGPUComputePipeline(device, &create_info);
-  if (merge_compute_pipeline == nullptr) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                 "Failed to initialize merge compute pipeline: %s",
-                 SDL_GetError());
-    return false;
-  }
-
-  return true;
-}
-
 bool Renderer::InitTiles() {
   ZoneScoped;
   size_t vertex_code_size = 0;
@@ -469,6 +440,97 @@ bool Renderer::InitTiles() {
 
   return true;
 }
+bool Renderer::InitMerge() {
+  size_t code_size = 0;
+  auto *code =
+      (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/merge.comp.spv", &code_size);
+  if (code_size == 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                 "./data/shaders/vulkan/merge.comp.spv", SDL_GetError());
+    return false;
+  }
+  const SDL_GPUComputePipelineCreateInfo create_info = {
+      .code_size = code_size,
+      .code = code,
+      .entrypoint = "main",
+      .format = SDL_GPU_SHADERFORMAT_SPIRV,
+      .num_samplers = 1,
+      .num_readonly_storage_textures = 0, // src texture
+      .num_readonly_storage_buffers = 0,
+      .num_readwrite_storage_textures = 1, // dst texture
+      .num_readwrite_storage_buffers = 0,
+      .num_uniform_buffers = 1,
+      .threadcount_x = 32,
+      .threadcount_y = 32,
+      .threadcount_z = 1,
+  };
+  merge_compute_pipeline = SDL_CreateGPUComputePipeline(device, &create_info);
+  if (merge_compute_pipeline == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to initialize merge compute pipeline: %s",
+                 SDL_GetError());
+    return false;
+  }
+
+  return true;
+}
+bool Renderer::InitPaint() {
+  size_t code_size = 0;
+  auto *code =
+      (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/paint.comp.spv", &code_size);
+  if (code_size == 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                 "./data/shaders/vulkan/paint.comp.spv", SDL_GetError());
+    return false;
+  }
+  const SDL_GPUComputePipelineCreateInfo create_info = {
+      .code_size = code_size,
+      .code = code,
+      .entrypoint = "main",
+      .format = SDL_GPU_SHADERFORMAT_SPIRV,
+      .num_samplers = 0,
+      .num_readonly_storage_textures = 0,
+      .num_readonly_storage_buffers = 1,   // stroke buffer
+      .num_readwrite_storage_textures = 1, // dst texture
+      .num_readwrite_storage_buffers = 0,
+      .num_uniform_buffers = 2, // tile + stroke
+      .threadcount_x = 32,
+      .threadcount_y = 32,
+      .threadcount_z = 1,
+  };
+  paint_compute_pipeline = SDL_CreateGPUComputePipeline(device, &create_info);
+  if (paint_compute_pipeline == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to initialize paint compute pipeline: %s",
+                 SDL_GetError());
+    return false;
+  }
+  const SDL_GPUBufferCreateInfo buffer_create_info = {
+      .usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,
+      .size = MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint),
+  };
+  paint_stroke_point_buffer = SDL_CreateGPUBuffer(device, &buffer_create_info);
+  if (paint_stroke_point_buffer == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create paint stroke buffer: %s", SDL_GetError());
+    return false;
+  }
+
+  const SDL_GPUTransferBufferCreateInfo upload_buffer_create_info = {
+      .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+      .size = MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint),
+  };
+  paint_stroke_point_transfer_buffer =
+      SDL_CreateGPUTransferBuffer(device, &upload_buffer_create_info);
+  if (paint_stroke_point_transfer_buffer == nullptr) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "Failed to create paint stroke upload buffer: %s",
+                 SDL_GetError());
+    return false;
+  }
+
+  return true;
+} // namespace Midori
 
 bool Renderer::Render() {
   ZoneScoped;
@@ -539,6 +601,66 @@ bool Renderer::Render() {
     SDL_EndGPUCopyPass(upload_pass);
     tile_upload_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(
         device, tile_upload_buffer, false);
+  }
+
+  // Start painting the tiles
+  if (app->canvas.stroke_options.points_num > 0) {
+    ZoneScopedN("Painting Tiles");
+
+    // Copying data to the storage buffer
+    SDL_GPUCopyPass *stroke_copy_pass = SDL_BeginGPUCopyPass(command_buffer);
+
+    paint_stroke_point_transfer_buffer_ptr =
+        (std::uint8_t *)SDL_MapGPUTransferBuffer(
+            device, paint_stroke_point_transfer_buffer, false);
+    std::ranges::copy(
+        app->canvas.stroke_points,
+        (Canvas::StrokePoint *)paint_stroke_point_transfer_buffer_ptr);
+    SDL_UnmapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
+    const SDL_GPUTransferBufferLocation source = {
+        .transfer_buffer = paint_stroke_point_transfer_buffer,
+        .offset = 0,
+    };
+    const SDL_GPUBufferRegion destination = {
+        .buffer = paint_stroke_point_buffer,
+        .offset = 0,
+        .size = static_cast<Uint32>(app->canvas.stroke_points.size() *
+                                    sizeof(Canvas::StrokePoint)),
+    };
+    SDL_UploadToGPUBuffer(stroke_copy_pass, &source, &destination, false);
+    SDL_EndGPUCopyPass(stroke_copy_pass);
+
+    SDL_PushGPUComputeUniformData(command_buffer, 0,
+                                  &app->canvas.stroke_options,
+                                  sizeof(Canvas::StrokeOption));
+    const glm::ivec2 paint_compute_invocations =
+        glm::ceil(glm::vec2(TILE_SIZE) / 32.0f);
+    for (const auto &tile : app->canvas.stroke_tile_affected) {
+      const SDL_GPUStorageTextureReadWriteBinding paint_tile_binding[1] = {{
+          .texture = tile_textures.at(tile),
+          .mip_level = 0,
+          .layer = 0,
+      }};
+      SDL_GPUComputePass *paint_compute_pass = SDL_BeginGPUComputePass(
+          command_buffer, paint_tile_binding, 1, nullptr, 0);
+      SDL_BindGPUComputePipeline(paint_compute_pass, paint_compute_pipeline);
+
+      tile_render_data.position = app->canvas.tile_infos.at(tile).position;
+      tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
+      SDL_PushGPUComputeUniformData(command_buffer, 1, &tile_render_data,
+                                    sizeof(TileRenderData));
+
+      SDL_BindGPUComputeStorageBuffers(paint_compute_pass, 0,
+                                       &paint_stroke_point_buffer, 1);
+
+      SDL_DispatchGPUCompute(paint_compute_pass, paint_compute_invocations.x,
+                             paint_compute_invocations.y, 1);
+
+      SDL_EndGPUComputePass(paint_compute_pass);
+    }
+    app->canvas.stroke_tile_affected.clear();
+    app->canvas.stroke_options.points_num = 0;
+    app->canvas.stroke_points.clear();
   }
 
   {
@@ -773,6 +895,11 @@ bool Renderer::Resize() {
 void Renderer::Quit() {
   ZoneScoped;
 
+  SDL_UnmapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
+  SDL_ReleaseGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
+  SDL_ReleaseGPUBuffer(device, paint_stroke_point_buffer);
+  SDL_ReleaseGPUComputePipeline(device, paint_compute_pipeline);
+
   SDL_ReleaseGPUComputePipeline(device, merge_compute_pipeline);
 
   for (const auto &[tile, texture] : tile_textures) {
@@ -842,7 +969,8 @@ bool Renderer::CreateTileTexture(const Tile tile) {
   const SDL_GPUTextureCreateInfo texture_create_info = {
       .type = SDL_GPU_TEXTURETYPE_2D,
       .format = texture_format,
-      .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+      .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER |
+               SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE,
       .width = (Uint32)TILE_SIZE,
       .height = (Uint32)TILE_SIZE,
       .layer_count_or_depth = 1,
