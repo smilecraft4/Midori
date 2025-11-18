@@ -6,6 +6,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "SDL3/SDL_stdinc.h"
@@ -45,6 +46,9 @@ public:
 
   App *app;
 
+  std::unordered_set<Tile> tile_to_draw;
+  std::unordered_set<Layer> layer_to_draw;
+
   // Common data
   SDL_GPUDevice *device = nullptr;
   SDL_GPUTextureFormat texture_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -55,6 +59,7 @@ public:
     glm::mat4 projection = glm::mat4(1.0f);
     glm::mat4 view = glm::mat4(1.0f);
   } viewport_render_data;
+  bool view_changed = false;
 
   // Layer data
   struct LayerRenderData {

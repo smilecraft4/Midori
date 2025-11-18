@@ -10,6 +10,8 @@ layout(set = 2, binding = 0) uniform Stroke {
     float stroke_radius;
     float stroke_hardness;
     uint stroke_points_num;
+    float stroke_spacing;
+    float pad;
 };
 
 layout(set = 2, binding = 1) uniform Tile {

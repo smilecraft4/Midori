@@ -92,9 +92,6 @@ public:
   Layer last_assigned_layer = 0;
   std::vector<Layer> unassigned_layers;
 
-  std::unordered_set<Layer> modified_layer;
-  std::unordered_set<Tile> modified_tiles;
-
   std::unordered_map<Tile, TileInfo> tile_infos;
   Tile last_assigned_tile = 0;
   std::vector<Tile> unassigned_tiles;
@@ -156,6 +153,8 @@ public:
     float radius = 5.0f;
     float hardness = 1.0f;
     std::uint32_t points_num = 0;
+    float spacing = 0.5f;
+    float _pad0;
   } stroke_options;
 
   struct StrokePoint {
@@ -166,7 +165,7 @@ public:
   StrokePoint previous_point = {};
 
   void StartStroke(StrokePoint point);
-  void UpdateStroke(StrokePoint point, float spacing = 0.5f);
+  void UpdateStroke(StrokePoint point);
   void EndStroke(StrokePoint point);
 };
 } // namespace Midori

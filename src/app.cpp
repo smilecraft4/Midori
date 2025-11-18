@@ -310,6 +310,8 @@ bool App::Update() {
       ImGui::SliderFloat("Flow", &canvas.stroke_options.flow, 0.0f, 1.0f);
       ImGui::SliderFloat("Hardness", &canvas.stroke_options.hardness, 0.0f,
                          1.0f);
+      ImGui::SliderFloat("Spacing", &canvas.stroke_options.spacing, 0.1f,
+                         10.0f);
       ImGui::Separator();
       ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
     }

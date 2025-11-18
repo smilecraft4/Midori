@@ -704,7 +704,6 @@ bool Renderer::Render() {
     for (const auto &layer_info : layer_rendering) {
       ZoneScopedN("Render Tile");
       // TODO: only redraw changed & visible tiles
-
       const SDL_GPUColorTargetInfo target_info = {
           .texture = layer_textures.at(layer_info.layer),
           .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f},

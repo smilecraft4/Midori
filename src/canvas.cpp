@@ -529,6 +529,7 @@ void Canvas::ViewPanStart() {
 void Canvas::ViewPan(glm::vec2 amount) {
   SDL_assert(view_panning);
   view.pan = amount;
+  app->renderer.view_changed = true;
 }
 void Canvas::ViewPanStop() {
   SDL_assert(view_panning);
@@ -547,6 +548,7 @@ void Canvas::ViewRotateStart(glm::vec2 start) {
 void Canvas::ViewRotate(float amount) {
   SDL_assert(view_rotating);
   view.rotation = amount;
+  app->renderer.view_changed = true;
 }
 void Canvas::ViewRotateStop() {
   SDL_assert(view_rotating);
@@ -566,6 +568,7 @@ void Canvas::ViewZoom(float amount) {
   SDL_assert(view_zooming);
 
   view.zoom_amount = amount;
+  app->renderer.view_changed = true;
 }
 void Canvas::ViewZoomStop() {
   SDL_assert(view_zooming);
@@ -654,14 +657,41 @@ static glm::ivec2 GetTilePos(const glm::vec2 canvas_pos) {
   return glm::ivec2(glm::floor(canvas_pos / tile_size));
 }
 
+std::vector<glm::ivec2>
+GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point,
+                                Canvas::StrokeOption options) {
+  constexpr glm::vec2 tile_size = glm::vec2(TILE_SIZE);
+  std::vector<glm::ivec2> tiles_pos;
+
+  glm::ivec2 tile_pos_min =
+      glm::floor((point.position - options.radius) / tile_size);
+  glm::ivec2 tile_pos_max =
+      glm::ceil((point.position + options.radius) / tile_size);
+
+  const glm::ivec2 tile_distance = tile_pos_max - tile_pos_min;
+  tiles_pos.reserve(tile_distance.x * tile_distance.y);
+  glm::ivec2 tile_pos;
+  for (tile_pos.y = tile_pos_min.y; tile_pos.y < tile_pos_max.y; tile_pos.y++) {
+    for (tile_pos.x = tile_pos_min.x; tile_pos.x < tile_pos_max.x;
+         tile_pos.x++) {
+      tiles_pos.push_back(tile_pos);
+    }
+  }
+
+  return tiles_pos;
+}
+
 // This assumes every painted tiles are not going to be culled
 void Canvas::StartStroke(StrokePoint point) {
-  const auto tile_pos = GetTilePos(point.position);
-  Tile tile = GetTileAt(selected_layer, tile_pos);
-  if (tile == 0) {
-    tile = CreateTile(selected_layer, tile_pos);
+  const auto tiles_pos = GetTilePosAffectedByStrokePoint(point, stroke_options);
+  for (const auto &tile_pos : tiles_pos) {
+    Tile tile = GetTileAt(selected_layer, tile_pos);
+    if (tile == 0) {
+      tile = CreateTile(selected_layer, tile_pos);
+    }
+    stroke_tile_affected.insert(tile);
+    // app->renderer.tile_to_draw.insert(tile);
   }
-  stroke_tile_affected.insert(tile);
 
   previous_point = point;
   stroke_points.push_back(point);
@@ -669,50 +699,55 @@ void Canvas::StartStroke(StrokePoint point) {
 }
 
 // This assumes every painted tiles are not going to be culled
-void Canvas::UpdateStroke(StrokePoint point, const float spacing) {
+void Canvas::UpdateStroke(StrokePoint point) {
   const auto distance = glm::distance(point.position, previous_point.position);
-  float process_distance = spacing;
-  const float t_step = spacing / distance;
+  const double t_step = stroke_options.spacing / distance;
   stroke_points.reserve(stroke_points.size() +
                         std::size_t(std::ceil(1.0f / t_step)));
 
+  const auto start_point = previous_point;
   const auto start = stroke_options.points_num;
-  std::unordered_set<glm::ivec2> processed_tile_pos;
-  float t = t_step;
-  while (t < 1.0f) {
+  double t = t_step;
+  while (t < 1.0) {
     StrokePoint lerped_point;
     lerped_point.position.x =
-        std::lerp(previous_point.position.x, point.position.x, t);
+        std::lerp(start_point.position.x, point.position.x, t);
     lerped_point.position.y =
-        std::lerp(previous_point.position.y, point.position.y, t);
+        std::lerp(start_point.position.y, point.position.y, t);
     stroke_points.push_back(lerped_point);
     stroke_options.points_num++;
     t += t_step;
+    previous_point = lerped_point;
 
-    const auto tile_pos = GetTilePos(point.position);
-    if (!processed_tile_pos.contains(tile_pos)) {
-      processed_tile_pos.insert(tile_pos);
+    const auto affected_tile_pos =
+        GetTilePosAffectedByStrokePoint(lerped_point, stroke_options);
+    for (const auto &tile_pos : affected_tile_pos) {
       Tile tile = GetTileAt(selected_layer, tile_pos);
       if (tile == 0) {
         tile = CreateTile(selected_layer, tile_pos);
       }
       stroke_tile_affected.insert(tile);
+      // app->renderer.tile_to_draw.insert(tile);
     }
+    SDL_Log("Stroke num: %d | stroke_points.size(): %llu",
+            stroke_options.points_num, stroke_points.size());
   }
-  previous_point = point;
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::EndStroke(StrokePoint point) {
-  const auto tile_pos = GetTilePos(point.position);
-  Tile tile = GetTileAt(selected_layer, tile_pos);
-  if (tile == 0) {
-    tile = CreateTile(selected_layer, tile_pos);
-  }
-  stroke_tile_affected.insert(tile);
+  // const auto tiles_pos = GetTilePosAffectedByStrokePoint(point,
+  // stroke_options); for (const auto &tile_pos : tiles_pos) {
+  //   Tile tile = GetTileAt(selected_layer, tile_pos);
+  //   if (tile == 0) {
+  //     tile = CreateTile(selected_layer, tile_pos);
+  //   }
+  //   stroke_tile_affected.insert(tile);
+  //   // app->renderer.tile_to_draw.insert(tile);
+  // }
 
-  previous_point = point;
-  stroke_points.push_back(point);
-  stroke_options.points_num++;
+  // previous_point = point;
+  // stroke_points.push_back(point);
+  // stroke_options.points_num++;
 }
 } // namespace Midori
