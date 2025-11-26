@@ -551,7 +551,7 @@ bool Renderer::Render() {
     viewport_render_data.view = view;
   }
 
-  {
+  { // Acquire GPU command buffer
     ZoneScopedN("Acquire GPU command buffer");
     command_buffer = SDL_AcquireGPUCommandBuffer(device);
     if (command_buffer == nullptr) {
@@ -561,6 +561,7 @@ bool Renderer::Render() {
     }
   }
 
+  // Uploading Tiles
   if (!allocated_tile_upload_offset.empty()) {
     ZoneScopedN("Uploading Tiles");
     SDL_GPUCopyPass *upload_pass = SDL_BeginGPUCopyPass(command_buffer);
@@ -636,6 +637,11 @@ bool Renderer::Render() {
     const glm::ivec2 paint_compute_invocations =
         glm::ceil(glm::vec2(TILE_SIZE) / 32.0f);
     for (const auto &tile : app->canvas.stroke_tile_affected) {
+      if (!tile_textures.contains(tile)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to get tile texture to paint");
+        continue;
+      }
       const SDL_GPUStorageTextureReadWriteBinding paint_tile_binding[1] = {{
           .texture = tile_textures.at(tile),
           .mip_level = 0,
@@ -663,7 +669,7 @@ bool Renderer::Render() {
     app->canvas.stroke_points.clear();
   }
 
-  {
+  { // Wait and acquire GPU swapchain texture
     ZoneScopedN("Wait and acquire GPU swapchain texture");
     SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, app->window,
                                           &swapchain_texture, nullptr, nullptr);
@@ -957,7 +963,7 @@ bool Renderer::CreateLayerTexture(const Layer layer) {
 void Renderer::DeleteLayerTexture(const Layer layer) {
   ZoneScoped;
   SDL_assert(layer_textures.contains(layer));
-  SDL_ReleaseGPUTexture(device, layer_textures.at(layer));
+  textures_to_delete.push_back(layer_textures.at(layer));
   layer_textures.erase(layer);
 }
 
@@ -1026,8 +1032,92 @@ bool Renderer::DownloadTileTexture(const Tile tile) {
 void Renderer::DeleteTileTexture(const Tile tile) {
   ZoneScoped;
   SDL_assert(tile_textures.contains(tile) && "Tile does not exists");
-  SDL_ReleaseGPUTexture(device, tile_textures.at(tile));
+  textures_to_delete.push_back(tile_textures.at(tile));
   tile_textures.erase(tile);
+}
+
+// TODO: transform into a single command buffer action
+bool Renderer::MergeTileTextures(const Tile over_tile, const Tile below_tile) {
+  ZoneScoped;
+  SDL_assert(tile_textures.contains(over_tile));
+  SDL_assert(tile_textures.contains(below_tile));
+
+  const auto over_tile_info = app->canvas.tile_infos.at(over_tile);
+  const auto below_tile_info = app->canvas.tile_infos.at(below_tile);
+
+  const auto over_layer_info = app->canvas.layer_infos.at(over_tile_info.layer);
+  const auto below_layer_info =
+      app->canvas.layer_infos.at(below_tile_info.layer);
+
+  SDL_GPUCommandBuffer *command_buffer = nullptr;
+  { // Acquire GPU command buffer
+    ZoneScopedN("Acquire GPU command buffer");
+    command_buffer = SDL_AcquireGPUCommandBuffer(device);
+    if (command_buffer == nullptr) {
+      SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                   "Failed to acquire gpu command buffer: %s", SDL_GetError());
+      return false;
+    }
+  }
+
+  { // Layer rendering
+    constexpr auto tile_size = glm::vec2(TILE_SIZE);
+    ZoneScopedN("Layer blending and rendering");
+    const glm::ivec2 merge_compute_invocations = glm::ceil(tile_size / 32.0f);
+    MergeRenderData merge_render_data = {
+        .src_blend_mode =
+            static_cast<std::uint32_t>(over_layer_info.blend_mode),
+        .src_opacity = over_layer_info.opacity,
+        .src_pos = glm::vec2(0.0),
+        .src_size = tile_size,
+        .dst_blend_mode =
+            static_cast<std::uint32_t>(below_layer_info.blend_mode),
+        .dst_opacity = below_layer_info.opacity,
+        .dst_pos = glm::vec2(0.0),
+        .dst_size = tile_size,
+    };
+    const SDL_GPUStorageTextureReadWriteBinding merge_layer_binding[1] = {{
+        .texture = tile_textures.at(below_tile),
+        .mip_level = 0,
+        .layer = 0,
+    }};
+    SDL_GPUComputePass *merge_compute_pass = SDL_BeginGPUComputePass(
+        command_buffer, merge_layer_binding, 1, nullptr, 0);
+    if (merge_compute_pass == nullptr) {
+      SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                   "Failed to create merge compute pass: %s", SDL_GetError());
+      return false;
+    }
+    SDL_BindGPUComputePipeline(merge_compute_pass, merge_compute_pipeline);
+    SDL_PushGPUComputeUniformData(command_buffer, 0, &merge_render_data,
+                                  sizeof(MergeRenderData));
+
+    const SDL_GPUTextureSamplerBinding samplers[] = {{
+        .texture = tile_textures.at(over_tile),
+        .sampler = tile_sampler,
+    }};
+    SDL_BindGPUComputeSamplers(merge_compute_pass, 0, samplers, 1);
+    SDL_DispatchGPUCompute(merge_compute_pass, merge_compute_invocations.x,
+                           merge_compute_invocations.y, 1);
+
+    SDL_EndGPUComputePass(merge_compute_pass);
+  }
+
+  {
+    ZoneScopedN("Submiting GPU command buffer");
+    if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+      SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                   "Failed to submit gpu command buffer: %s", SDL_GetError());
+      return false;
+    }
+  }
+
+  for (const auto &texture : textures_to_delete) {
+    SDL_ReleaseGPUTexture(device, texture);
+  }
+  textures_to_delete.clear();
+
+  return true;
 }
 
 } // namespace Midori

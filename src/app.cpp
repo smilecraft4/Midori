@@ -397,7 +397,7 @@ void App::CursorPress(Uint8 button) {
     cursor_left_pressed = true;
 
     if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
-        (canvas.selected_layer != 0)) {
+        (canvas.selected_layer != 0) && !canvas.stroke_started) {
       const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
                               (glm::vec2(window_size) / 2.0f));
 
@@ -426,7 +426,7 @@ void App::CursorRelease(Uint8 button) {
   if (button == SDL_BUTTON_LEFT) {
     cursor_left_pressed = false;
     if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
-        (canvas.selected_layer != 0)) {
+        (canvas.selected_layer != 0) && canvas.stroke_started) {
       const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
                               (glm::vec2(window_size) / 2.0f));
 

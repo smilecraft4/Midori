@@ -21,10 +21,10 @@
 namespace Midori {
 
 static const std::vector<std::uint8_t> blank_texture(TILE_SIZE *TILE_SIZE * 4,
-                                                     0xef);
+                                                     0x00);
 
 Canvas::Canvas(App *app) : app(app) {
-  std::memset((std::uint8_t *)blank_texture.data(), 128,
+  std::memset((std::uint8_t *)blank_texture.data(), 0,
               TILE_SIZE * TILE_SIZE * 4);
 }
 
@@ -390,6 +390,24 @@ void Canvas::DeleteLayer(const Layer layer) {
   }
 }
 
+void Canvas::MergeLayer(const Layer over_layer, const Layer below_layer) {
+  SDL_assert(layer_infos.contains(over_layer));
+  SDL_assert(layer_infos.contains(below_layer));
+
+  // Do this for only visible tiles for now
+  std::vector<std::pair<Tile, Tile>> tile_to_merge;
+  std::vector<Tile> tile_to_move;
+  for (const auto &over_tile : layer_tiles.at(over_layer)) {
+    const auto tile_merge_pos = tile_infos.at(over_tile).position;
+    const auto below_tile = layer_tile_pos.at(below_layer).at(tile_merge_pos);
+    tile_to_merge.emplace_back(over_tile, below_tile);
+  }
+  for (const auto &[over, below] : tile_to_merge) {
+    MergeTiles(over, below);
+    // DeleteTile(over_layer, over);
+  }
+}
+
 Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
   ZoneScoped;
   SDL_assert(HasLayer(layer) && "Layer not found");
@@ -421,7 +439,7 @@ Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
       .state = TileLoadState::Queued,
   };
   layer_tiles.at(layer).insert(tile);
-  layer_tile_pos.at(layer)[position] = tile;
+  layer_tile_pos.at(layer).emplace(position, tile);
 
   tile_infos[tile] = TileInfo{
       .layer = layer,
@@ -462,9 +480,31 @@ void Canvas::DeleteTile(const Layer layer, const Tile tile) {
   app->renderer.DeleteTileTexture(tile);
   unassigned_tiles.push_back(tile);
 
+  layer_tiles.at(layer).erase(tile);
   layer_tile_pos.at(layer).erase(tile_infos.at(tile).position);
   tile_infos.erase(tile);
-  layer_tiles.at(layer).erase(tile);
+}
+
+void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
+  // TODO: make this a queued action and only delete tile after rendering
+  app->renderer.MergeTileTextures(over_tile, below_tile);
+  // DeleteTile(tile_infos.at(over_tile).layer, over_tile);
+}
+
+void Canvas::MoveTile(Tile tile, Layer new_layer) {
+  SDL_assert(false && "temporary");
+  SDL_assert(tile_infos.contains(tile));
+  const auto old_tile_info = tile_infos.at(tile);
+
+  SDL_assert(layer_infos.contains(old_tile_info.layer));
+  layer_tiles.at(old_tile_info.layer).erase(tile);
+  layer_tile_pos.at(old_tile_info.layer).erase(old_tile_info.position);
+
+  SDL_assert(layer_infos.contains(new_layer));
+  SDL_assert(!layer_tiles.at(new_layer).contains(tile));
+  tile_infos.at(tile).layer = new_layer;
+  layer_tiles.at(new_layer).insert(tile);
+  layer_tile_pos.at(new_layer).emplace(old_tile_info.position, tile);
 }
 
 std::vector<glm::ivec2>
@@ -683,10 +723,22 @@ GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point,
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::StartStroke(StrokePoint point) {
+  SDL_assert(!stroke_started);
+  stroke_started = true;
+
+  SDL_assert(stroke_layer == 0);
+  // Create a temporary layer above the selected layer and set it as active
+  stroke_layer =
+      CreateLayer("Stroke Layer", layer_infos.at(selected_layer).depth);
+  SDL_assert(stroke_layer != 0);
+
   const auto tiles_pos = GetTilePosAffectedByStrokePoint(point, stroke_options);
   for (const auto &tile_pos : tiles_pos) {
-    Tile tile = GetTileAt(selected_layer, tile_pos);
+    Tile tile = GetTileAt(stroke_layer, tile_pos);
     if (tile == 0) {
+      tile = CreateTile(stroke_layer, tile_pos);
+    }
+    if (!layer_tile_pos.at(selected_layer).contains(tile_pos)) {
       tile = CreateTile(selected_layer, tile_pos);
     }
     stroke_tile_affected.insert(tile);
@@ -700,6 +752,9 @@ void Canvas::StartStroke(StrokePoint point) {
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::UpdateStroke(StrokePoint point) {
+  SDL_assert(stroke_started);
+  SDL_assert(stroke_layer != 0);
+
   const auto distance = glm::distance(point.position, previous_point.position);
   const double t_step = stroke_options.spacing / distance;
   stroke_points.reserve(stroke_points.size() +
@@ -722,32 +777,29 @@ void Canvas::UpdateStroke(StrokePoint point) {
     const auto affected_tile_pos =
         GetTilePosAffectedByStrokePoint(lerped_point, stroke_options);
     for (const auto &tile_pos : affected_tile_pos) {
-      Tile tile = GetTileAt(selected_layer, tile_pos);
+      Tile tile = GetTileAt(stroke_layer, tile_pos);
       if (tile == 0) {
+        tile = CreateTile(stroke_layer, tile_pos);
+      }
+      if (!layer_tile_pos.at(selected_layer).contains(tile_pos)) {
         tile = CreateTile(selected_layer, tile_pos);
       }
       stroke_tile_affected.insert(tile);
       // app->renderer.tile_to_draw.insert(tile);
     }
-    SDL_Log("Stroke num: %d | stroke_points.size(): %llu",
-            stroke_options.points_num, stroke_points.size());
+    // SDL_Log("Stroke num: %d | stroke_points.size(): %llu",
+    //         stroke_options.points_num, stroke_points.size());
   }
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::EndStroke(StrokePoint point) {
-  // const auto tiles_pos = GetTilePosAffectedByStrokePoint(point,
-  // stroke_options); for (const auto &tile_pos : tiles_pos) {
-  //   Tile tile = GetTileAt(selected_layer, tile_pos);
-  //   if (tile == 0) {
-  //     tile = CreateTile(selected_layer, tile_pos);
-  //   }
-  //   stroke_tile_affected.insert(tile);
-  //   // app->renderer.tile_to_draw.insert(tile);
-  // }
+  SDL_assert(stroke_started);
+  // Merge stroke layer with selected layer
+  MergeLayer(stroke_layer, selected_layer);
+  DeleteLayer(stroke_layer);
+  stroke_layer = 0;
 
-  // previous_point = point;
-  // stroke_points.push_back(point);
-  // stroke_options.points_num++;
+  stroke_started = false;
 }
 } // namespace Midori

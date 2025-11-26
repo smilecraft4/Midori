@@ -43,6 +43,7 @@ public:
   bool UploadTileTexture(Tile tile, const std::vector<Uint8> &raw_pixels);
   bool DownloadTileTexture(Tile tile);
   void DeleteTileTexture(Tile tile);
+  bool MergeTileTextures(Tile over_tile, Tile below_tile);
 
   App *app;
 
@@ -54,6 +55,7 @@ public:
   SDL_GPUTextureFormat texture_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
   SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
   SDL_GPUTexture *canvas_texture = nullptr;
+  std::vector<SDL_GPUTexture *> textures_to_delete;
 
   struct ViewportRenderData {
     glm::mat4 projection = glm::mat4(1.0f);

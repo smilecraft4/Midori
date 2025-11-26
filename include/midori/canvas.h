@@ -68,6 +68,7 @@ public:
 
   Layer CreateLayer(const std::string &name, std::uint8_t depth);
   void DeleteLayer(Layer layer);
+  void MergeLayer(Layer over_layer, Layer below_layer);
   bool SetLayerDepth(Layer layer, std::uint8_t depth);
   [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
 
@@ -75,9 +76,13 @@ public:
 
   // TODO: Change for a better name, this name implies that a new tile is
   // created and maybe saved, but This should not be saved
+  // TODO: Use TilePos instead of Tile has a handle, and always operate using
+  // the layer for Tile
   Tile CreateTile(Layer layer, glm::ivec2 position);
   void DeleteTile(Layer layer, glm::ivec2 position);
-  void DeleteTile(Layer layer, Tile tile);
+  void DeleteTile(Layer layer, Tile tile); // TODO: delete
+  void MergeTiles(Tile over_tile, Tile below_tile);
+  void MoveTile(Tile tile, Layer new_layer);
 
   // Member variables
 
@@ -88,7 +93,10 @@ public:
   std::unordered_map<Layer, std::unordered_set<Tile>> layer_tiles;
   std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>>
       layer_tile_pos;
+
   Layer selected_layer = 0;
+  Layer stroke_layer = 0;
+
   Layer last_assigned_layer = 0;
   std::vector<Layer> unassigned_layers;
 
@@ -102,6 +110,8 @@ public:
   bool view_zooming = false;
   bool view_panning = false;
   bool view_rotating = false;
+
+  bool stroke_started = false;
 
   // ?? Stuff
   void UpdateTileLoading();
