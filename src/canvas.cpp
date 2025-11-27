@@ -721,11 +721,36 @@ GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
   return tiles_pos;
 }
 
+Canvas::StrokePoint Canvas::ApplyPressure(StrokePoint point, float pressure) {
+  StrokePoint pressure_point = point;
+
+  // TODO: Add min max value
+
+  if (brush_options.opacity_pressure) {
+    pressure_point.color *= pressure; // We use premultiplied alpha
+  }
+  if (brush_options.radius_pressure) {
+    pressure_point.radius *= pressure;
+  }
+  if (brush_options.flow_pressure) {
+    pressure_point.flow *= pressure;
+  }
+  if (brush_options.hardness_pressure) {
+    pressure_point.hardness *= pressure;
+  }
+
+  return pressure_point;
+}
+
 // This assumes every painted tiles are not going to be culled
 void Canvas::StartStroke(StrokePoint point) {
   ZoneScoped;
   SDL_assert(!stroke_started);
   stroke_started = true;
+
+  if (app->pen_in_range) {
+    point = ApplyPressure(point, app->pen_pressure);
+  }
 
   SDL_assert(stroke_layer == 0);
   // Create a temporary layer above the selected layer and set it as active
@@ -756,6 +781,10 @@ void Canvas::UpdateStroke(StrokePoint point) {
   SDL_assert(stroke_started);
   SDL_assert(stroke_layer != 0);
 
+  if (app->pen_in_range) {
+    point = ApplyPressure(point, app->pen_pressure);
+  }
+
   const auto distance = glm::distance(previous_point.position, point.position);
   const int stroke_num = std::floor(distance / brush_options.spacing);
   if (stroke_num == 0) {
@@ -783,16 +812,16 @@ void Canvas::UpdateStroke(StrokePoint point) {
     // Maybe use SIMD for this
     point.position = glm::mix(start_point.position, end_point.position, t);
     point.color = glm::mix(start_point.color, end_point.color, t);
-    if (brush_options.opacity_pressure) {
-      point.color.r = debug_color.r;
-      point.color.g = debug_color.g;
-      point.color.b = debug_color.b;
-    }
+    // if (brush_options.debug_color) {
+    //   point.color.r = debug_color.r;
+    //   point.color.g = debug_color.g;
+    //   point.color.b = debug_color.b;
+    // }
     point.flow = std::lerp(start_point.flow, end_point.flow, t);
     point.radius = std::lerp(start_point.radius, end_point.radius, t);
-    if (brush_options.radius_pressure) {
-      point.radius = std::lerp(0.0f, end_point.radius, t);
-    }
+    // if (brush_options.debug_radius) {
+    //   point.radius = std::lerp(0.0f, end_point.radius, t);
+    // }
     point.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
 
     stroke_points.push_back(point);
@@ -825,6 +854,11 @@ void Canvas::UpdateStroke(StrokePoint point) {
 void Canvas::EndStroke(StrokePoint point) {
   ZoneScoped;
   SDL_assert(stroke_started);
+
+  if (app->pen_in_range) {
+    point = ApplyPressure(point, app->pen_pressure);
+  }
+
   // Merge stroke layer with selected layer
   MergeLayer(stroke_layer, selected_layer);
   DeleteLayer(stroke_layer);

@@ -90,19 +90,6 @@ bool App::Update() {
     return true;
   }
 
-  if (canvas.stroke_started) {
-    const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
-                            (glm::vec2(window_size) / 2.0f));
-
-    canvas.UpdateStroke(Canvas::StrokePoint{
-        .color = canvas.brush_options.color,
-        .position = pos,
-        .radius = canvas.brush_options.radius,
-        .flow = canvas.brush_options.flow,
-        .hardness = canvas.brush_options.hardness,
-    });
-  }
-
   { // ImGui Stuff
     ZoneScopedN("UI");
     ImGui_ImplSDLGPU3_NewFrame();
@@ -356,6 +343,10 @@ bool App::Update() {
       ImGui::SliderFloat("Spacing", &canvas.brush_options.spacing, 0.1f, 50.0f);
       ImGui::Separator();
       ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
+      ImGui::Checkbox("Using pen", &pen_in_range);
+      ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x,
+                       cursor_current_pos.y);
+      ImGui::LabelText("Pressure", "%.2f", pen_pressure);
     }
     ImGui::End();
 
@@ -406,6 +397,19 @@ void App::CursorMove(glm::vec2 new_pos) {
 
   if (cursor_left_pressed) {
     canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
+
+    if (canvas.stroke_started) {
+      const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
+                              (glm::vec2(window_size) / 2.0f));
+
+      canvas.UpdateStroke(Canvas::StrokePoint{
+          .color = canvas.brush_options.color,
+          .position = pos,
+          .radius = canvas.brush_options.radius,
+          .flow = canvas.brush_options.flow,
+          .hardness = canvas.brush_options.hardness,
+      });
+    }
   }
 
   if (cursor_right_pressed) {

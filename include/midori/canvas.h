@@ -187,6 +187,8 @@ public:
   std::unordered_set<Tile> stroke_tile_affected;
   StrokePoint previous_point = {};
 
+  StrokePoint ApplyPressure(StrokePoint point, float pressure);
+
   void StartStroke(StrokePoint point);
   void UpdateStroke(StrokePoint point);
   void EndStroke(StrokePoint point);

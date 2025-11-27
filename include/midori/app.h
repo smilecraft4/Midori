@@ -52,6 +52,8 @@ public:
   bool space_pressed = false;
   bool shift_pressed = false;
   bool ctrl_pressed = false;
+  bool pen_in_range = false;
+  float pen_pressure = 1.0f;
 };
 } // namespace Midori
 

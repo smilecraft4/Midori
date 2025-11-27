@@ -474,6 +474,7 @@ bool Renderer::InitMerge() {
 
   return true;
 }
+
 bool Renderer::InitPaint() {
   size_t code_size = 0;
   auto *code =
