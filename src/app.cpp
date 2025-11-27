@@ -84,8 +84,23 @@ static const SDL_DialogFileFilter filters[] = {{"Midori files (.mido)", "mido"},
 
 bool App::Update() {
   FrameMark;
+  // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
   if (window_size.x == 0 || window_size.y == 0) {
     return true;
+  }
+
+  if (canvas.stroke_started) {
+    const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
+                            (glm::vec2(window_size) / 2.0f));
+
+    canvas.UpdateStroke(Canvas::StrokePoint{
+        .color = canvas.brush_options.color,
+        .position = pos,
+        .radius = canvas.brush_options.radius,
+        .flow = canvas.brush_options.flow,
+        .hardness = canvas.brush_options.hardness,
+    });
   }
 
   { // ImGui Stuff
@@ -219,9 +234,9 @@ bool App::Update() {
           pmin.y + (float)TILE_SIZE / 2.0f,
       };
 
-      draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 0, 255));
-      std::string text = std::format("[{}, {}]", pos.x, pos.y);
-      draw_list->AddText(pcenter, IM_COL32(255, 0, 0, 128), text.c_str());
+      // draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 0, 255));
+      // std::string text = std::format("[{}, {}]", pos.x, pos.y);
+      // draw_list->AddText(pcenter, IM_COL32(255, 0, 0, 128), text.c_str());
     }
 
     if (ImGui::Begin("Tile infos")) {
@@ -305,13 +320,40 @@ bool App::Update() {
     // TODO: Debug tile multithreaded upload process (Disk->CPU->GPU)
 
     if (ImGui::Begin("Stroke Options")) {
-      ImGui::ColorEdit4("Color", glm::value_ptr(canvas.stroke_options.color));
-      ImGui::SliderFloat("Radius", &canvas.stroke_options.radius, 0.1f, 100.0f);
-      ImGui::SliderFloat("Flow", &canvas.stroke_options.flow, 0.0f, 1.0f);
-      ImGui::SliderFloat("Hardness", &canvas.stroke_options.hardness, 0.0f,
-                         1.0f);
-      ImGui::SliderFloat("Spacing", &canvas.stroke_options.spacing, 0.1f,
-                         10.0f);
+      {
+        ImGui::PushID("Color");
+        ImGui::ColorEdit4("Color", glm::value_ptr(canvas.brush_options.color));
+        ImGui::PopID();
+      }
+      {
+        ImGui::PushID("Opacity");
+        ImGui::Checkbox("Pen", &canvas.brush_options.opacity_pressure);
+        ImGui::PopID();
+      }
+      {
+        ImGui::PushID("Radius");
+        ImGui::SliderFloat("Radius", &canvas.brush_options.radius, 0.0f,
+                           100.0f);
+        ImGui::SameLine();
+        ImGui::Checkbox("Pen", &canvas.brush_options.radius_pressure);
+        ImGui::PopID();
+      }
+      {
+        ImGui::PushID("Flow");
+        ImGui::SliderFloat("Flow", &canvas.brush_options.flow, 0.0f, 1.0f);
+        ImGui::SameLine();
+        ImGui::Checkbox("Pen", &canvas.brush_options.flow_pressure);
+        ImGui::PopID();
+      }
+      {
+        ImGui::PushID("Hardness");
+        ImGui::SliderFloat("Hardness", &canvas.brush_options.hardness, 0.0f,
+                           1.0f);
+        ImGui::SameLine();
+        ImGui::Checkbox("Pen", &canvas.brush_options.hardness_pressure);
+        ImGui::PopID();
+      }
+      ImGui::SliderFloat("Spacing", &canvas.brush_options.spacing, 0.1f, 50.0f);
       ImGui::Separator();
       ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
     }
@@ -364,16 +406,6 @@ void App::CursorMove(glm::vec2 new_pos) {
 
   if (cursor_left_pressed) {
     canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
-
-    if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating &&
-        (canvas.selected_layer != 0)) {
-      const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan -
-                              (glm::vec2(window_size) / 2.0f));
-
-      canvas.UpdateStroke(Canvas::StrokePoint{
-          .position = pos,
-      });
-    }
   }
 
   if (cursor_right_pressed) {
@@ -402,7 +434,11 @@ void App::CursorPress(Uint8 button) {
                               (glm::vec2(window_size) / 2.0f));
 
       canvas.StartStroke(Canvas::StrokePoint{
+          .color = canvas.brush_options.color,
           .position = pos,
+          .radius = canvas.brush_options.radius,
+          .flow = canvas.brush_options.flow,
+          .hardness = canvas.brush_options.hardness,
       });
     }
   }
@@ -431,7 +467,11 @@ void App::CursorRelease(Uint8 button) {
                               (glm::vec2(window_size) / 2.0f));
 
       canvas.EndStroke(Canvas::StrokePoint{
+          .color = canvas.brush_options.color,
           .position = pos,
+          .radius = canvas.brush_options.radius,
+          .flow = canvas.brush_options.flow,
+          .hardness = canvas.brush_options.hardness,
       });
     }
   }

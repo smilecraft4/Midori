@@ -120,6 +120,9 @@ public:
   SDL_GPUComputePipeline *merge_compute_pipeline = nullptr;
 
   bool InitPaint();
+  struct StrokeRenderData {
+    std::uint32_t points_num = 0;
+  };
   static constexpr size_t MAX_PAINT_STROKE_POINTS = 2048;
   SDL_GPUBuffer *paint_stroke_point_buffer = nullptr;
   SDL_GPUComputePipeline *paint_compute_pipeline = nullptr;

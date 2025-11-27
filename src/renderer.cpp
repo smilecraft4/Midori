@@ -551,22 +551,24 @@ bool Renderer::Render() {
     viewport_render_data.view = view;
   }
 
-  { // Acquire GPU command buffer
-    ZoneScopedN("Acquire GPU command buffer");
-    command_buffer = SDL_AcquireGPUCommandBuffer(device);
-    if (command_buffer == nullptr) {
-      SDL_LogError(SDL_LOG_CATEGORY_RENDER,
-                   "Failed to acquire gpu command buffer: %s", SDL_GetError());
-      return false;
-    }
-  }
-
   // Uploading Tiles
   if (!allocated_tile_upload_offset.empty()) {
+    SDL_UnmapGPUTransferBuffer(device, tile_upload_buffer);
+
+    { // Acquire GPU command buffer
+      ZoneScopedN("Acquire GPU command buffer");
+      command_buffer = SDL_AcquireGPUCommandBuffer(device);
+      if (command_buffer == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                     "Failed to acquire gpu command buffer: %s",
+                     SDL_GetError());
+        return false;
+      }
+    }
+
     ZoneScopedN("Uploading Tiles");
     SDL_GPUCopyPass *upload_pass = SDL_BeginGPUCopyPass(command_buffer);
 
-    SDL_UnmapGPUTransferBuffer(device, tile_upload_buffer);
     for (const auto &[tile, offset] : allocated_tile_upload_offset) {
       ZoneScopedN("Uploading Tile");
       if (!tile_textures.contains(tile)) {
@@ -600,24 +602,50 @@ bool Renderer::Render() {
 
     allocated_tile_upload_offset.clear();
     SDL_EndGPUCopyPass(upload_pass);
+
+    {
+      ZoneScopedN("Submiting GPU command buffer");
+      if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                     "Failed to submit gpu command buffer: %s", SDL_GetError());
+        return false;
+      }
+    }
+
     tile_upload_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(
         device, tile_upload_buffer, false);
   }
 
   // Start painting the tiles
-  if (app->canvas.stroke_options.points_num > 0) {
+  if (!app->canvas.stroke_points.empty() && app->canvas.stroke_started) {
+    paint_stroke_point_transfer_buffer_ptr =
+        (std::uint8_t *)SDL_MapGPUTransferBuffer(
+            device, paint_stroke_point_transfer_buffer, false);
+    // memset(paint_stroke_point_transfer_buffer_ptr, 0,
+    //        MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint));
+    SDL_Log("app->canvas.stroke_points: %llu",
+            app->canvas.stroke_points.size());
+    memcpy(paint_stroke_point_transfer_buffer_ptr,
+           app->canvas.stroke_points.data(),
+           app->canvas.stroke_points.size() * sizeof(Canvas::StrokePoint));
+    SDL_UnmapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
+
+    { // Acquire GPU command buffer
+      ZoneScopedN("Acquire GPU command buffer");
+      command_buffer = SDL_AcquireGPUCommandBuffer(device);
+      if (command_buffer == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                     "Failed to acquire gpu command buffer: %s",
+                     SDL_GetError());
+        return false;
+      }
+    }
+
     ZoneScopedN("Painting Tiles");
 
     // Copying data to the storage buffer
     SDL_GPUCopyPass *stroke_copy_pass = SDL_BeginGPUCopyPass(command_buffer);
 
-    paint_stroke_point_transfer_buffer_ptr =
-        (std::uint8_t *)SDL_MapGPUTransferBuffer(
-            device, paint_stroke_point_transfer_buffer, false);
-    std::ranges::copy(
-        app->canvas.stroke_points,
-        (Canvas::StrokePoint *)paint_stroke_point_transfer_buffer_ptr);
-    SDL_UnmapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
     const SDL_GPUTransferBufferLocation source = {
         .transfer_buffer = paint_stroke_point_transfer_buffer,
         .offset = 0,
@@ -627,13 +655,17 @@ bool Renderer::Render() {
         .offset = 0,
         .size = static_cast<Uint32>(app->canvas.stroke_points.size() *
                                     sizeof(Canvas::StrokePoint)),
+        // .size = MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint),
     };
-    SDL_UploadToGPUBuffer(stroke_copy_pass, &source, &destination, false);
+    SDL_UploadToGPUBuffer(stroke_copy_pass, &source, &destination, true);
     SDL_EndGPUCopyPass(stroke_copy_pass);
 
-    SDL_PushGPUComputeUniformData(command_buffer, 0,
-                                  &app->canvas.stroke_options,
-                                  sizeof(Canvas::StrokeOption));
+    const StrokeRenderData stroke_render_data = {
+        .points_num =
+            static_cast<std::uint32_t>(app->canvas.stroke_points.size()),
+    };
+    SDL_PushGPUComputeUniformData(command_buffer, 0, &stroke_render_data,
+                                  sizeof(StrokeRenderData));
     const glm::ivec2 paint_compute_invocations =
         glm::ceil(glm::vec2(TILE_SIZE) / 32.0f);
     for (const auto &tile : app->canvas.stroke_tile_affected) {
@@ -665,8 +697,26 @@ bool Renderer::Render() {
       SDL_EndGPUComputePass(paint_compute_pass);
     }
     app->canvas.stroke_tile_affected.clear();
-    app->canvas.stroke_options.points_num = 0;
     app->canvas.stroke_points.clear();
+
+    {
+      ZoneScopedN("Submiting GPU command buffer");
+      if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                     "Failed to submit gpu command buffer: %s", SDL_GetError());
+        return false;
+      }
+    }
+  }
+
+  { // Acquire GPU command buffer
+    ZoneScopedN("Acquire GPU command buffer");
+    command_buffer = SDL_AcquireGPUCommandBuffer(device);
+    if (command_buffer == nullptr) {
+      SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                   "Failed to acquire gpu command buffer: %s", SDL_GetError());
+      return false;
+    }
   }
 
   { // Wait and acquire GPU swapchain texture

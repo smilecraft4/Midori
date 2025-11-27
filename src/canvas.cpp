@@ -3,6 +3,7 @@
 #include <SDL3/SDL_assert.h>
 #include <cstdint>
 #include <format>
+#include <imgui.h>
 #include <numbers>
 #include <string>
 #include <tracy/Tracy.hpp>
@@ -698,15 +699,14 @@ static glm::ivec2 GetTilePos(const glm::vec2 canvas_pos) {
 }
 
 std::vector<glm::ivec2>
-GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point,
-                                Canvas::StrokeOption options) {
+GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
   constexpr glm::vec2 tile_size = glm::vec2(TILE_SIZE);
   std::vector<glm::ivec2> tiles_pos;
 
   glm::ivec2 tile_pos_min =
-      glm::floor((point.position - options.radius) / tile_size);
+      glm::floor((point.position - point.radius) / tile_size);
   glm::ivec2 tile_pos_max =
-      glm::ceil((point.position + options.radius) / tile_size);
+      glm::ceil((point.position + point.radius) / tile_size);
 
   const glm::ivec2 tile_distance = tile_pos_max - tile_pos_min;
   tiles_pos.reserve(tile_distance.x * tile_distance.y);
@@ -723,6 +723,7 @@ GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point,
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::StartStroke(StrokePoint point) {
+  ZoneScoped;
   SDL_assert(!stroke_started);
   stroke_started = true;
 
@@ -732,7 +733,7 @@ void Canvas::StartStroke(StrokePoint point) {
       CreateLayer("Stroke Layer", layer_infos.at(selected_layer).depth);
   SDL_assert(stroke_layer != 0);
 
-  const auto tiles_pos = GetTilePosAffectedByStrokePoint(point, stroke_options);
+  const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
   for (const auto &tile_pos : tiles_pos) {
     Tile tile = GetTileAt(stroke_layer, tile_pos);
     if (tile == 0) {
@@ -747,53 +748,82 @@ void Canvas::StartStroke(StrokePoint point) {
 
   previous_point = point;
   stroke_points.push_back(point);
-  stroke_options.points_num++;
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::UpdateStroke(StrokePoint point) {
+  ZoneScoped;
   SDL_assert(stroke_started);
   SDL_assert(stroke_layer != 0);
 
-  const auto distance = glm::distance(point.position, previous_point.position);
-  const double t_step = stroke_options.spacing / distance;
-  stroke_points.reserve(stroke_points.size() +
-                        std::size_t(std::ceil(1.0f / t_step)));
+  const auto distance = glm::distance(previous_point.position, point.position);
+  const int stroke_num = std::floor(distance / brush_options.spacing);
+  if (stroke_num == 0) {
+    return;
+  }
 
   const auto start_point = previous_point;
-  const auto start = stroke_options.points_num;
-  double t = t_step;
-  while (t < 1.0) {
-    StrokePoint lerped_point;
-    lerped_point.position.x =
-        std::lerp(start_point.position.x, point.position.x, t);
-    lerped_point.position.y =
-        std::lerp(start_point.position.y, point.position.y, t);
-    stroke_points.push_back(lerped_point);
-    stroke_options.points_num++;
-    t += t_step;
-    previous_point = lerped_point;
+  const auto end_point = point;
 
-    const auto affected_tile_pos =
-        GetTilePosAffectedByStrokePoint(lerped_point, stroke_options);
-    for (const auto &tile_pos : affected_tile_pos) {
-      Tile tile = GetTileAt(stroke_layer, tile_pos);
-      if (tile == 0) {
-        tile = CreateTile(stroke_layer, tile_pos);
-      }
-      if (!layer_tile_pos.at(selected_layer).contains(tile_pos)) {
-        tile = CreateTile(selected_layer, tile_pos);
-      }
-      stroke_tile_affected.insert(tile);
-      // app->renderer.tile_to_draw.insert(tile);
+  static int round = 0;
+  round = (round + 1) % 4;
+  glm::vec4 debug_color;
+  ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debug_color.r,
+                              debug_color.g, debug_color.b);
+
+  const auto t_step = brush_options.spacing / distance;
+  SDL_Log("spacing: %f, d: %f, step: %f", t_step * distance, distance, t_step);
+  float t = t_step;
+  int i = 1;
+  while (t < 1.0f) {
+    ZoneScoped;
+
+    StrokePoint point;
+
+    // Maybe use SIMD for this
+    point.position = glm::mix(start_point.position, end_point.position, t);
+    point.color = glm::mix(start_point.color, end_point.color, t);
+    if (brush_options.opacity_pressure) {
+      point.color.r = debug_color.r;
+      point.color.g = debug_color.g;
+      point.color.b = debug_color.b;
     }
-    // SDL_Log("Stroke num: %d | stroke_points.size(): %llu",
-    //         stroke_options.points_num, stroke_points.size());
+    point.flow = std::lerp(start_point.flow, end_point.flow, t);
+    point.radius = std::lerp(start_point.radius, end_point.radius, t);
+    if (brush_options.radius_pressure) {
+      point.radius = std::lerp(0.0f, end_point.radius, t);
+    }
+    point.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
+
+    stroke_points.push_back(point);
+    previous_point = point;
+
+    SDL_Log("%d/%d/%llu: t: %f", i, stroke_num, stroke_points.size(), t);
+
+    t += t_step;
+    i++;
+
+    {
+      ZoneScoped;
+      const auto affected_tile_pos =
+          GetTilePosAffectedByStrokePoint(previous_point);
+      for (const auto &tile_pos : affected_tile_pos) {
+        Tile tile = GetTileAt(stroke_layer, tile_pos);
+        if (tile == 0) {
+          tile = CreateTile(stroke_layer, tile_pos);
+        }
+        if (!layer_tile_pos.at(selected_layer).contains(tile_pos)) {
+          tile = CreateTile(selected_layer, tile_pos);
+        }
+        stroke_tile_affected.insert(tile);
+      }
+    }
   }
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::EndStroke(StrokePoint point) {
+  ZoneScoped;
   SDL_assert(stroke_started);
   // Merge stroke layer with selected layer
   MergeLayer(stroke_layer, selected_layer);

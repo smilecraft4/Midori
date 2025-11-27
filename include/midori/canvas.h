@@ -157,18 +157,31 @@ public:
 
   bool LayerHasTileFile(Layer layer, glm::ivec2 tile_pos);
 
-  struct StrokeOption {
+  struct BrushOptions {
     glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    float flow = 1.0f;
-    float radius = 5.0f;
-    float hardness = 1.0f;
-    std::uint32_t points_num = 0;
+    bool opacity_pressure = false;
+
+    float flow = 0.5f;
+    bool flow_pressure = false;
+
+    float radius = 8.0f;
+    bool radius_pressure = false;
+
+    float hardness = 0.5f;
+    bool hardness_pressure = false;
+
     float spacing = 0.5f;
-    float _pad0;
-  } stroke_options;
+  } brush_options;
 
   struct StrokePoint {
+    glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     glm::vec2 position;
+    float radius = 8.0f;
+    float flow = 0.5f;
+    float hardness = 0.5f;
+    float _pad0;
+    float _pad1;
+    float _pad2;
   };
   std::vector<StrokePoint> stroke_points;
   std::unordered_set<Tile> stroke_tile_affected;
