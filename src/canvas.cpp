@@ -190,16 +190,16 @@ void Canvas::Update() {
   ZoneScoped;
   { // Loading/Unloading culled tiles
     ZoneScopedN("Tile culling");
-    std::vector<glm::ivec2> visible_tile_positions =
-        GetVisibleTilePositions(view, app->window_size);
+    std::vector<glm::ivec2> view_visible_tiles =
+        GetViewVisibleTiles(view, app->window_size);
 
     for (const auto &layer : Layers()) {
       if (!layer_infos.at(layer).visible) {
         // Should be already culled maybe who knwon
         continue;
       }
-      std::unordered_set<glm::ivec2> tile_positions(
-          visible_tile_positions.begin(), visible_tile_positions.end());
+      std::unordered_set<glm::ivec2> tile_positions(view_visible_tiles.begin(),
+                                                    view_visible_tiles.end());
 
       // Iterate over every tile in layer
       const std::vector<Tile> layer_tiles = LayerTiles(layer);
@@ -213,17 +213,79 @@ void Canvas::Update() {
       }
 
       for (const auto &tile : remove_tiles) {
-        DeleteTile(layer, tile);
+        UnloadTile(tile, true);
       }
 
       for (const auto &tile_pos : tile_positions) {
-        if (LayerHasTileFile(layer, tile_pos))
-          CreateTile(layer, tile_pos);
+        LoadTile(layer, tile_pos);
       }
     }
   }
 
   UpdateTileLoading();
+  UpdateTileUnloading();
+
+  { // Deleting tiles
+    ZoneScopedN("Deleting tiles");
+
+    std::vector<Tile> clear_tiles;
+    for (const auto &tile : tile_to_delete) {
+      SDL_assert(!tile_load_queue.contains(tile));
+
+      if (tile_unload_queue.contains(tile)) {
+        continue;
+      }
+
+      SDL_assert(tile_infos.contains(tile));
+      const auto tile_info = tile_infos.at(tile);
+      SDL_assert(layer_infos.contains(tile_info.layer));
+
+      // const auto layer_depth = layer_infos.at(tile_info.layer).depth;
+      // const std::string tile_filename =
+      //     std::format("./data/tiles/{}-{}-{}.qoi", tile_info.position.x,
+      //                 tile_info.position.y, layer_depth);
+      // remove(tile_filename.c_str());
+
+      app->renderer.DeleteTileTexture(tile);
+      unassigned_tiles.push_back(tile);
+
+      layer_tiles.at(tile_info.layer).erase(tile);
+      layer_tile_pos.at(tile_info.layer).erase(tile_infos.at(tile).position);
+      tile_infos.erase(tile);
+      clear_tiles.push_back(tile);
+    }
+    for (const auto tile : clear_tiles) {
+      tile_to_delete.erase(tile);
+    }
+  }
+
+  { // Deleting layers
+    ZoneScopedN("Delete layer");
+
+    std::vector<Layer> layer_cleared;
+    for (const auto layer : layer_to_delete) {
+      if (!layer_tiles.at(layer).empty()) {
+        continue;
+      }
+
+      SDL_assert(layer_tiles.at(layer).empty());
+      SDL_assert(selected_layer != layer);
+
+      app->renderer.DeleteLayerTexture(layer);
+
+      unassigned_layers.push_back(layer);
+      layer_infos.erase(layer);
+      layer_tiles.erase(layer);
+      layer_tile_pos.erase(layer);
+      file.layers.erase(layer);
+
+      layer_cleared.push_back(layer);
+    }
+
+    for (const auto layer : layer_cleared) {
+      layer_to_delete.erase(layer);
+    }
+  }
 }
 
 std::vector<Layer> Canvas::Layers() const {
@@ -286,6 +348,10 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
   current_max_layer_height++;
   SDL_assert(depth <= current_max_layer_height);
   for (auto &[other_layer, other_layer_info] : layer_infos) {
+    if (layer_to_delete.contains(other_layer)) {
+      continue;
+    }
+
     if (other_layer == layer) {
       continue;
     }
@@ -304,7 +370,7 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
       .depth = depth,
       .blend_mode = BlendMode::Normal,
       .visible = true,
-      .internal = false,
+      .temporary = false,
       .locked = false,
   };
 
@@ -361,15 +427,12 @@ void Canvas::DeleteLayer(const Layer layer) {
   ZoneScoped;
   SDL_assert(HasLayer(layer) && "Layer not found");
 
-  std::vector<Tile> tiles = LayerTiles(layer);
-  for (const auto tile : tiles) {
-    DeleteTile(layer, tile);
-  }
-
-  app->renderer.DeleteLayerTexture(layer);
-
   current_max_layer_height--;
   for (auto &[layer_below, layer_below_info] : layer_infos) {
+    if (layer_to_delete.contains(layer)) {
+      continue;
+    }
+
     if (layer_below == layer) {
       continue;
     }
@@ -379,23 +442,24 @@ void Canvas::DeleteLayer(const Layer layer) {
     }
     SDL_assert(layer_below_info.depth < current_max_layer_height);
   }
-
-  unassigned_layers.push_back(layer);
-  layer_infos.erase(layer);
-  layer_tiles.erase(layer);
-  layer_tile_pos.erase(layer);
-  file.layers.erase(layer);
-
   if (selected_layer == layer) {
     selected_layer = 0;
   }
+
+  std::vector<Tile> tiles = LayerTiles(layer);
+  for (const auto tile : tiles) {
+    DeleteTile(tile);
+  }
+  layer_to_delete.insert(layer);
 }
 
 void Canvas::MergeLayer(const Layer over_layer, const Layer below_layer) {
   SDL_assert(layer_infos.contains(over_layer));
+  SDL_assert(!layer_to_delete.contains(over_layer));
   SDL_assert(layer_infos.contains(below_layer));
+  SDL_assert(!layer_to_delete.contains(below_layer));
 
-  // Do this for only visible tiles for now
+  // TODO: Do this for all the tiles stored in file
   std::vector<std::pair<Tile, Tile>> tile_to_merge;
   std::vector<Tile> tile_to_move;
   for (const auto &over_tile : layer_tiles.at(over_layer)) {
@@ -405,13 +469,13 @@ void Canvas::MergeLayer(const Layer over_layer, const Layer below_layer) {
   }
   for (const auto &[over, below] : tile_to_merge) {
     MergeTiles(over, below);
-    // DeleteTile(over_layer, over);
+    DeleteTile(over);
   }
 }
 
 Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
   ZoneScoped;
-  SDL_assert(HasLayer(layer) && "Layer not found");
+  SDL_assert(layer_infos.contains(layer));
   Tile tile = 0;
 
   if (unassigned_tiles.empty()) {
@@ -434,8 +498,9 @@ Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tile texture");
     return 0;
   }
+  const auto layer_info = layer_infos.at(layer);
   tile_load_queue[tile] = TileLoadStatus{
-      .layer = layer,
+      .layer_uid = layer_info.depth,
       .tile = tile,
       .state = TileLoadState::Queued,
   };
@@ -450,13 +515,40 @@ Tile Canvas::CreateTile(const Layer layer, const glm::ivec2 position) {
   return tile;
 }
 
+void Canvas::LoadTile(Layer layer, glm::ivec2 position) {
+  if (!LayerHasTileFile(layer, position)) {
+    return;
+  }
+
+  CreateTile(layer, position);
+}
+
+void Canvas::UnloadTile(const Tile tile, const bool save) {
+  ZoneScoped;
+  SDL_assert(tile_infos.contains(tile));
+  const TileInfo tile_info = tile_infos.at(tile);
+  SDL_assert(layer_infos.contains(tile_info.layer));
+  const LayerInfo layer_info = layer_infos.at(tile_info.layer);
+
+  if (layer_info.temporary) {
+    // We don't save temporary layers
+    DeleteTile(tile);
+    return;
+  } else {
+    tile_unload_queue.emplace(tile, TileUnloadStatus{
+                                        .layer_uid = layer_info.depth,
+                                        .tile = tile,
+                                        .state = TileUnloadState::Queued,
+                                    });
+  }
+}
+
 void Canvas::DeleteTile(Layer layer, glm::ivec2 position) {
   ZoneScoped;
-  for (const auto &tile : layer_tiles.at(layer)) {
-    if (tile_infos.at(tile).position == position) {
-      DeleteTile(layer, tile);
-      return;
-    }
+  SDL_assert(layer_tile_pos.contains(layer));
+
+  if (layer_tile_pos.at(layer).contains(position)) {
+    DeleteTile(layer_tile_pos.at(layer).at(position));
   }
 }
 
@@ -472,44 +564,27 @@ Tile Canvas::GetTileAt(const Layer layer, const glm::ivec2 position) const {
   return tile;
 }
 
-// TODO: Make this a queued action
-void Canvas::DeleteTile(const Layer layer, const Tile tile) {
+// TODO: Make this queued
+void Canvas::DeleteTile(const Tile tile) {
   ZoneScoped;
-  SDL_assert(HasLayer(layer) && "Layer not found");
-  SDL_assert(LayerHasTile(layer, tile) && "Layer does not have tile");
-
-  app->renderer.DeleteTileTexture(tile);
-  unassigned_tiles.push_back(tile);
-
-  layer_tiles.at(layer).erase(tile);
-  layer_tile_pos.at(layer).erase(tile_infos.at(tile).position);
-  tile_infos.erase(tile);
-}
-
-void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
-  // TODO: make this a queued action and only delete tile after rendering
-  app->renderer.MergeTileTextures(over_tile, below_tile);
-  // DeleteTile(tile_infos.at(over_tile).layer, over_tile);
-}
-
-void Canvas::MoveTile(Tile tile, Layer new_layer) {
-  SDL_assert(false && "temporary");
   SDL_assert(tile_infos.contains(tile));
-  const auto old_tile_info = tile_infos.at(tile);
+  const auto tile_info = tile_infos.at(tile);
+  tile_to_delete.insert(tile);
+}
 
-  SDL_assert(layer_infos.contains(old_tile_info.layer));
-  layer_tiles.at(old_tile_info.layer).erase(tile);
-  layer_tile_pos.at(old_tile_info.layer).erase(old_tile_info.position);
+// TODO: Batch all merging action to only have a single command_buffer for this
+// per frame
+void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
+  SDL_assert(tile_infos.contains(over_tile));
+  SDL_assert(!tile_to_delete.contains(over_tile));
+  SDL_assert(tile_infos.contains(below_tile));
+  SDL_assert(!tile_to_delete.contains(below_tile));
 
-  SDL_assert(layer_infos.contains(new_layer));
-  SDL_assert(!layer_tiles.at(new_layer).contains(tile));
-  tile_infos.at(tile).layer = new_layer;
-  layer_tiles.at(new_layer).insert(tile);
-  layer_tile_pos.at(new_layer).emplace(old_tile_info.position, tile);
+  app->renderer.MergeTileTextures(over_tile, below_tile);
 }
 
 std::vector<glm::ivec2>
-Canvas::GetVisibleTilePositions(const View &view, const glm::vec2 size) const {
+Canvas::GetViewVisibleTiles(const View &view, const glm::vec2 size) const {
   ZoneScoped;
   constexpr auto tile_size = glm::vec2(TILE_SIZE);
   const glm::ivec2 t_min = glm::floor((-view.pan - (size / 2.0f)) / tile_size);
@@ -627,44 +702,60 @@ void Canvas::UpdateTileLoading() {
       break;
     }
 
-    if (!HasLayer(tile_load.layer)) {
-      tiles_unqueued.push_back(tile);
-      continue;
-    } else if (!LayerHasTile(tile_load.layer, tile_load.tile)) {
+    bool unqueue = true;
+    for (const auto &[layer, layer_info] : layer_infos) {
+      if (layer_info.depth == tile_load.layer_uid) {
+        if (LayerHasTile(layer, tile)) {
+          unqueue = false;
+          break;
+        }
+      }
+    }
+    if (unqueue) {
       tiles_unqueued.push_back(tile);
       continue;
     }
 
     // TODO: Make this atrocity multithreaded/async
     if (tile_load.state == TileLoadState::Queued) {
-
-      const auto layer_depth = file.layers.at(tile_load.layer).layer.depth;
-      std::string file = std::format("./data/tiles/{}.qoi", layer_depth % 3);
+      SDL_assert(tile_infos.contains(tile));
+      const auto tile_info = tile_infos.at(tile);
+      const std::string tile_filename =
+          std::format("./data/tiles/{}-{}-{}.qoi", tile_info.position.x,
+                      tile_info.position.y, tile_load.layer_uid);
 
       ZoneScopedN("Reading Tile");
       size_t buf_size;
-      auto *buf = (std::uint8_t *)SDL_LoadFile(file.c_str(), &buf_size);
+      auto *buf =
+          (std::uint8_t *)SDL_LoadFile(tile_filename.c_str(), &buf_size);
 
-      SDL_assert(buf_size > 0);
-      SDL_assert(buf != nullptr);
+      if (buf_size > 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found tile encoded texture");
+        SDL_assert(buf_size > 0);
+        SDL_assert(buf != nullptr);
 
-      tile_load.read_texture.resize(buf_size);
-      memcpy(tile_load.read_texture.data(), buf, buf_size);
+        tile_load.encoded_texture.resize(buf_size);
+        memcpy(tile_load.encoded_texture.data(), buf, buf_size);
+
+        tile_load.state = TileLoadState::Read;
+      } else {
+        tile_load.raw_texture = blank_texture;
+        tile_load.state = TileLoadState::Decompressed;
+      }
+
       SDL_free(buf);
-
-      tile_load.state = TileLoadState::Read;
     }
     if (tile_load.state == TileLoadState::Read) {
       ZoneScopedN("Decoding Tile");
       qoi_desc desc;
-      auto *buf =
-          (std::uint8_t *)qoi_decode(tile_load.read_texture.data(),
-                                     tile_load.read_texture.size(), &desc, 4);
+      auto *buf = (std::uint8_t *)qoi_decode(tile_load.encoded_texture.data(),
+                                             tile_load.encoded_texture.size(),
+                                             &desc, 4);
       SDL_assert(buf != nullptr);
       SDL_assert(desc.channels = 4);
       SDL_assert(desc.width = TILE_SIZE);
       SDL_assert(desc.height = TILE_SIZE);
-      tile_load.read_texture.clear();
+      tile_load.encoded_texture.clear();
 
       tile_load.raw_texture.resize(TILE_SIZE * TILE_SIZE * 4);
       memcpy(tile_load.raw_texture.data(), buf, TILE_SIZE * TILE_SIZE * 4);
@@ -674,7 +765,7 @@ void Canvas::UpdateTileLoading() {
     }
     if (tile_load.state == TileLoadState::Decompressed) {
       ZoneScopedN("Uploading Tile");
-      if (!app->renderer.UploadTileTexture(tile, blank_texture)) {
+      if (!app->renderer.UploadTileTexture(tile, tile_load.raw_texture)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "Failed to upload tile texture");
       } else {
@@ -689,8 +780,92 @@ void Canvas::UpdateTileLoading() {
   }
 }
 
+void Canvas::UpdateTileUnloading() {
+  ZoneScoped;
+
+  std::vector<Tile> tiles_unqueued;
+  size_t i = 0;
+  for (auto &[tile, tile_unload] : tile_unload_queue) {
+    if (i >= Midori::Renderer::TILE_MAX_DOWNLOAD_TRANSFER) {
+      break;
+    }
+    if (tile_unload.state == TileUnloadState::Queued) {
+      if (app->renderer.DownloadTileTexture(tile)) {
+        tile_unload.state = TileUnloadState::Downloading;
+      }
+    }
+    if (tile_unload.state == TileUnloadState::Downloading) {
+      if (app->renderer.IsTileTextureDownloaded(tile)) {
+        if (app->renderer.CopyTileTextureDownloaded(tile,
+                                                    tile_unload.raw_texture)) {
+          tile_unload.state = TileUnloadState::Downloaded;
+        }
+      }
+    }
+    if (tile_unload.state == TileUnloadState::Downloaded) {
+      ZoneScopedN("Encoding tile");
+      const qoi_desc desc = {
+          .width = TILE_SIZE,
+          .height = TILE_SIZE,
+          .channels = 4,
+          .colorspace = QOI_LINEAR,
+      };
+      int out_len = 0;
+      auto *buf = (uint8_t *)qoi_encode(tile_unload.raw_texture.data(), &desc,
+                                        &out_len);
+      SDL_assert(out_len > 0);
+      SDL_assert(buf != nullptr);
+
+      tile_unload.encoded_texture.resize(out_len);
+      memcpy(tile_unload.encoded_texture.data(), buf, out_len);
+      free(buf);
+
+      tile_unload.state = TileUnloadState::Encoded;
+    }
+    if (tile_unload.state == TileUnloadState::Encoded) {
+      ZoneScopedN("Write Tile file");
+      SDL_assert(tile_infos.contains(tile));
+      const auto tile_info = tile_infos.at(tile);
+      const std::string tile_filename =
+          std::format("./data/tiles/{}-{}-{}.qoi", tile_info.position.x,
+                      tile_info.position.y, tile_unload.layer_uid);
+
+      SDL_IOStream *file_io = SDL_IOFromFile(tile_filename.c_str(), "wb");
+      SDL_assert(file_io != nullptr);
+      SDL_WriteIO(file_io, tile_unload.encoded_texture.data(),
+                  tile_unload.encoded_texture.size());
+      SDL_CloseIO(file_io);
+      SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Wrote tile encoded texture");
+
+      tile_unload.state = TileUnloadState::Written;
+    }
+    if (tile_unload.state == TileUnloadState::Written) {
+      ZoneScopedN("Write Tile file");
+      SDL_assert(tile_infos.contains(tile));
+      const auto tile_info = tile_infos.at(tile);
+      const std::string tile_filename =
+          std::format("./data/tiles/{}-{}-{}.qoi", tile_info.position.x,
+                      tile_info.position.y, tile_unload.layer_uid);
+      tile_cached.insert(tile_filename);
+
+      tiles_unqueued.push_back(tile);
+    }
+  }
+
+  {
+    ZoneScopedN("Unqueing unload queue");
+    for (const auto &tile : tiles_unqueued) {
+      tile_unload_queue.erase(tile);
+      DeleteTile(tile);
+    }
+  }
+}
+
 bool Canvas::LayerHasTileFile(const Layer layer, const glm::ivec2 tile_pos) {
-  return file.layers.at(layer).tile_saved.contains(tile_pos);
+  const std::string tile_filename =
+      std::format("./data/tiles/{}-{}-{}.qoi", tile_pos.x, tile_pos.y,
+                  layer_infos.at(layer).depth);
+  return tile_cached.contains(tile_filename);
 }
 
 static glm::ivec2 GetTilePos(const glm::vec2 canvas_pos) {
@@ -757,6 +932,7 @@ void Canvas::StartStroke(StrokePoint point) {
   stroke_layer =
       CreateLayer("Stroke Layer", layer_infos.at(selected_layer).depth);
   SDL_assert(stroke_layer != 0);
+  layer_infos.at(stroke_layer).temporary = true;
 
   const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
   for (const auto &tile_pos : tiles_pos) {
@@ -801,7 +977,6 @@ void Canvas::UpdateStroke(StrokePoint point) {
                               debug_color.g, debug_color.b);
 
   const auto t_step = brush_options.spacing / distance;
-  SDL_Log("spacing: %f, d: %f, step: %f", t_step * distance, distance, t_step);
   float t = t_step;
   int i = 1;
   while (t < 1.0f) {
@@ -826,8 +1001,6 @@ void Canvas::UpdateStroke(StrokePoint point) {
 
     stroke_points.push_back(point);
     previous_point = point;
-
-    SDL_Log("%d/%d/%llu: t: %f", i, stroke_num, stroke_points.size(), t);
 
     t += t_step;
     i++;

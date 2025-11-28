@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
+#include <numbers>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
@@ -152,34 +153,35 @@ bool App::Update() {
     }
     ImGui::End();
 
-    /*
     static bool ui_debug_culling = false;
     if (ImGui::Begin("View")) {
       ImGui::LabelText("Position", "x:%.2f y:%.2f", canvas.view.pan.x,
                        canvas.view.pan.y);
       ImGui::LabelText("Zoom", "%.2f", canvas.view.zoom_amount);
       ImGui::LabelText("Rotation", "%.2f",
-                       canvas.view.rotation / std::numbers::pi * 360.0f);
+                       canvas.view.rotation / std::numbers::pi_v<float> *
+                           360.0f);
       ImGui::Separator();
-      ImGui::Checkbox("Debug culling", &ui_debug_culling);
+      ImGui::Checkbox("Show loaded tiles", &ui_debug_culling);
     }
     ImGui::End();
     if (ui_debug_culling) {
-      const std::vector<glm::ivec2> visible_tiles_positions =
-          canvas.GetVisibleTilePositions(canvas.view, window_size / 2);
+      // const std::vector<glm::ivec2> visible_tiles_positions =
+      //     canvas.GetVisibleTilePositions(canvas.view, window_size / 2);
       ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-      {
-        const ImVec2 pmin = {
-            ((float)window_size.x / 2.0f) + ((float)window_size.x / -4.0f),
-            ((float)window_size.y / 2.0f) + ((float)window_size.y / -4.0f),
-        };
-        const ImVec2 pmax = {
-            pmin.x + ((float)window_size.x / 2.0f),
-            pmin.y + ((float)window_size.y / 2.0f),
-        };
-        draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 255, 255));
-      }
-      for (const auto &pos : visible_tiles_positions) {
+      //{
+      //  const ImVec2 pmin = {
+      //      ((float)window_size.x / 2.0f) + ((float)window_size.x / -4.0f),
+      //      ((float)window_size.y / 2.0f) + ((float)window_size.y / -4.0f),
+      //  };
+      //  const ImVec2 pmax = {
+      //      pmin.x + ((float)window_size.x / 2.0f),
+      //      pmin.y + ((float)window_size.y / 2.0f),
+      //  };
+      //  draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 255, 255));
+      //}
+      for (const auto &[pos, tile] :
+           canvas.layer_tile_pos.at(canvas.selected_layer)) {
         const ImVec2 pmin = {
             ((float)window_size.x / 2.0f) + canvas.view.pan.x +
                 ((float)pos.x * (float)TILE_SIZE),
@@ -195,13 +197,13 @@ bool App::Update() {
             pmin.y + (float)TILE_SIZE / 2.0f,
         };
 
-        draw_list->AddRect(pmin, pmax, IM_COL32(255, 255, 255, 255));
+        draw_list->AddRect(pmin, pmax, IM_COL32(0, 0, 0, 64));
         std::string text = std::format("[{}, {}]", pos.x, pos.y);
-        draw_list->AddText(pcenter, IM_COL32(255, 255, 255, 128), text.c_str());
+        draw_list->AddText(pcenter, IM_COL32(0, 0, 0, 64), text.c_str());
       }
     }
-    */
-    {
+
+    /*{
       ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
       const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
                                          (glm::vec2(window_size) / 2.0f)) /
@@ -224,7 +226,7 @@ bool App::Update() {
       // draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 0, 255));
       // std::string text = std::format("[{}, {}]", pos.x, pos.y);
       // draw_list->AddText(pcenter, IM_COL32(255, 0, 0, 128), text.c_str());
-    }
+    }*/
 
     if (ImGui::Begin("Tile infos")) {
       ImGui::LabelText("Total tiles", "%llu", canvas.tile_infos.size());

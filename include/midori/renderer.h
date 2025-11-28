@@ -41,7 +41,6 @@ public:
 
   bool CreateTileTexture(Tile tile);
   bool UploadTileTexture(Tile tile, const std::vector<Uint8> &raw_pixels);
-  bool DownloadTileTexture(Tile tile);
   void DeleteTileTexture(Tile tile);
   bool MergeTileTextures(Tile over_tile, Tile below_tile);
 
@@ -89,18 +88,26 @@ public:
   std::unordered_map<Tile, SDL_GPUTexture *> tile_textures;
   size_t last_rendered_tiles_num = 0;
 
-  // Tile download/upload
+  // Tile upload
   static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 32;
   SDL_GPUTransferBuffer *tile_upload_buffer = nullptr;
   std::uint8_t *tile_upload_buffer_ptr = nullptr;
   std::unordered_map<Tile, Uint32> allocated_tile_upload_offset;
   std::vector<Uint32> free_tile_upload_offset;
 
+  // Tile download
+
+  bool DownloadTileTexture(Tile tile);
+  bool IsTileTextureDownloaded(Tile tile) const;
+  bool CopyTileTextureDownloaded(Tile tile, std::vector<uint8_t> &tile_texture);
+
   static constexpr size_t TILE_MAX_DOWNLOAD_TRANSFER = 32;
   SDL_GPUTransferBuffer *tile_download_buffer = nullptr;
   std::uint8_t *tile_download_buffer_ptr = nullptr;
   std::unordered_map<Tile, Uint32> allocated_tile_download_offset;
+  std::unordered_set<Tile> tile_downloaded;
   std::vector<Uint32> free_tile_download_offset;
+  SDL_GPUFence *tile_download_fence = nullptr; // TODO: Use multiple fences
 
   // OPERATIONS
 

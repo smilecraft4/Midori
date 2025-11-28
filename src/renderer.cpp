@@ -240,6 +240,7 @@ bool Renderer::InitLayers() {
 
   return true;
 }
+
 bool Renderer::InitTiles() {
   ZoneScoped;
   size_t vertex_code_size = 0;
@@ -440,6 +441,7 @@ bool Renderer::InitTiles() {
 
   return true;
 }
+
 bool Renderer::InitMerge() {
   size_t code_size = 0;
   auto *code =
@@ -617,15 +619,78 @@ bool Renderer::Render() {
         device, tile_upload_buffer, false);
   }
 
+  // Download Tiles
+  if (!allocated_tile_download_offset.empty()) {
+    SDL_UnmapGPUTransferBuffer(device, tile_download_buffer);
+
+    { // Acquire GPU command buffer
+      ZoneScopedN("Acquire GPU command buffer");
+      command_buffer = SDL_AcquireGPUCommandBuffer(device);
+      if (command_buffer == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                     "Failed to acquire gpu command buffer: %s",
+                     SDL_GetError());
+        return false;
+      }
+    }
+
+    ZoneScopedN("Downloading Tiles");
+    SDL_GPUCopyPass *download_pass = SDL_BeginGPUCopyPass(command_buffer);
+
+    for (const auto &[tile, offset] : allocated_tile_download_offset) {
+      ZoneScopedN("Downloading Tile");
+      SDL_assert(tile_textures.contains(tile) && "Downloading missing texture");
+
+      const SDL_GPUTextureTransferInfo destination = {
+          .transfer_buffer = tile_download_buffer,
+          .offset = offset,
+          .pixels_per_row = TILE_SIZE,
+          .rows_per_layer = TILE_SIZE,
+      };
+      const SDL_GPUTextureRegion source = {
+          .texture = tile_textures.at(tile),
+          .mip_level = 0,
+          .layer = 0,
+          .x = 0,
+          .y = 0,
+          .z = 0,
+          .w = TILE_SIZE,
+          .h = TILE_SIZE,
+          .d = 1,
+      };
+      SDL_DownloadFromGPUTexture(download_pass, &source, &destination);
+    }
+
+    SDL_EndGPUCopyPass(download_pass);
+
+    {
+      ZoneScopedN("Submiting GPU command buffer");
+      tile_download_fence =
+          SDL_SubmitGPUCommandBufferAndAcquireFence(command_buffer);
+      if (tile_download_fence == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER,
+                     "Failed to submit gpu command buffer: %s", SDL_GetError());
+        return false;
+      }
+    }
+
+    {
+      ZoneScopedN("Waiting for texture download");
+      // This can be a silent trigger
+      SDL_WaitForGPUFences(device, true, &tile_download_fence, 1);
+      tile_download_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(
+          device, tile_download_buffer, false);
+      for (const auto [tile, offset] : allocated_tile_download_offset) {
+        tile_downloaded.insert(tile);
+      }
+    }
+  }
+
   // Start painting the tiles
   if (!app->canvas.stroke_points.empty() && app->canvas.stroke_started) {
     paint_stroke_point_transfer_buffer_ptr =
         (std::uint8_t *)SDL_MapGPUTransferBuffer(
             device, paint_stroke_point_transfer_buffer, false);
-    // memset(paint_stroke_point_transfer_buffer_ptr, 0,
-    //        MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint));
-    SDL_Log("app->canvas.stroke_points: %llu",
-            app->canvas.stroke_points.size());
     memcpy(paint_stroke_point_transfer_buffer_ptr,
            app->canvas.stroke_points.data(),
            app->canvas.stroke_points.size() * sizeof(Canvas::StrokePoint));
@@ -742,6 +807,10 @@ bool Renderer::Render() {
         if (!info.visible || info.opacity == 0.0f) {
           continue;
         }
+        if (app->canvas.layer_to_delete.contains(layer)) {
+          continue;
+        }
+
         SDL_assert(layer_textures.contains(layer) && "Layer texture not found");
         // would be could to add bubbles sort right here
         layer_rendering.push_back(info);
@@ -775,6 +844,10 @@ bool Renderer::Render() {
                                    sizeof(ViewportRenderData));
 
       for (const auto &tile : app->canvas.layer_tiles.at(layer_info.layer)) {
+        if (app->canvas.tile_to_delete.contains(tile)) {
+          continue;
+        }
+
         const TileInfo tile_info = app->canvas.tile_infos.at(tile);
         tile_render_data.position = tile_info.position;
         tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
@@ -1072,14 +1145,6 @@ bool Renderer::UploadTileTexture(const Tile tile,
   return true;
 }
 
-bool Renderer::DownloadTileTexture(const Tile tile) {
-  ZoneScoped;
-  SDL_assert(tile_textures.contains(tile));
-  SDL_assert(!allocated_tile_download_offset.contains(tile) && "??");
-
-  return true;
-}
-
 void Renderer::DeleteTileTexture(const Tile tile) {
   ZoneScoped;
   SDL_assert(tile_textures.contains(tile) && "Tile does not exists");
@@ -1167,6 +1232,61 @@ bool Renderer::MergeTileTextures(const Tile over_tile, const Tile below_tile) {
     SDL_ReleaseGPUTexture(device, texture);
   }
   textures_to_delete.clear();
+
+  return true;
+}
+
+bool Renderer::DownloadTileTexture(Tile tile) {
+  ZoneScoped;
+  SDL_assert(tile > 0 && "Tile is invalid");
+  SDL_assert(tile_textures.contains(tile));
+  SDL_assert(!allocated_tile_download_offset.contains(tile) && "??");
+  SDL_assert(!tile_downloaded.contains(tile));
+
+  if (free_tile_download_offset.empty()) {
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "No slot buffer slot for donwloading tile");
+    return false;
+  }
+
+  const auto tile_offset = free_tile_download_offset.back();
+  free_tile_download_offset.pop_back();
+  SDL_assert(tile_offset <=
+             (TILE_MAX_DOWNLOAD_TRANSFER - 1) * TILE_TEXTURE_SIZE);
+
+  allocated_tile_download_offset[tile] = tile_offset;
+
+  return true;
+}
+
+bool Renderer::IsTileTextureDownloaded(Tile tile) const {
+  ZoneScoped;
+  SDL_assert(tile > 0 && "Tile is invalid");
+  SDL_assert(allocated_tile_download_offset.contains(tile) &&
+             "Tile not allocated");
+
+  return tile_downloaded.contains(tile);
+}
+
+bool Renderer::CopyTileTextureDownloaded(const Tile tile,
+                                         std::vector<uint8_t> &tile_texture) {
+  ZoneScoped;
+  SDL_assert(tile > 0 && "Tile is invalid");
+  SDL_assert(IsTileTextureDownloaded(tile));
+
+  tile_texture.resize(TILE_TEXTURE_SIZE);
+
+  SDL_assert(tile_download_buffer_ptr != nullptr);
+  SDL_assert(allocated_tile_download_offset.at(tile) >= 0);
+  SDL_assert(allocated_tile_download_offset.at(tile) <=
+             (TILE_MAX_DOWNLOAD_TRANSFER - 1) * TILE_TEXTURE_SIZE);
+  memcpy(tile_texture.data(),
+         tile_download_buffer_ptr + allocated_tile_download_offset.at(tile),
+         TILE_TEXTURE_SIZE);
+
+  free_tile_download_offset.push_back(allocated_tile_download_offset.at(tile));
+  tile_downloaded.erase(tile);
+  allocated_tile_download_offset.erase(tile);
 
   return true;
 }

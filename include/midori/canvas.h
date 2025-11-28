@@ -59,7 +59,7 @@ public:
   void ViewZoom(float amount);
   void ViewZoomStop();
   [[nodiscard]] std::vector<glm::ivec2>
-  GetVisibleTilePositions(const View &view, glm::vec2 size) const;
+  GetViewVisibleTiles(const View &view, glm::vec2 size) const;
 
   [[nodiscard]] bool HasLayer(Layer layer) const;
   [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
@@ -79,10 +79,12 @@ public:
   // TODO: Use TilePos instead of Tile has a handle, and always operate using
   // the layer for Tile
   Tile CreateTile(Layer layer, glm::ivec2 position);
+  void LoadTile(Layer layer, glm::ivec2 position);
+  void UnloadTile(Tile tile, bool save = true);
+
   void DeleteTile(Layer layer, glm::ivec2 position);
-  void DeleteTile(Layer layer, Tile tile); // TODO: delete
+  void DeleteTile(Tile tile);
   void MergeTiles(Tile over_tile, Tile below_tile);
-  void MoveTile(Tile tile, Layer new_layer);
 
   // Member variables
 
@@ -93,6 +95,7 @@ public:
   std::unordered_map<Layer, std::unordered_set<Tile>> layer_tiles;
   std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>>
       layer_tile_pos;
+  std::unordered_set<Layer> layer_to_delete;
 
   Layer selected_layer = 0;
   Layer stroke_layer = 0;
@@ -103,6 +106,8 @@ public:
   std::unordered_map<Tile, TileInfo> tile_infos;
   Tile last_assigned_tile = 0;
   std::vector<Tile> unassigned_tiles;
+  std::unordered_set<Tile> tile_to_delete;
+  std::unordered_set<std::string> tile_cached;
 
   View view;
   glm::mat4 view_mat = glm::mat4(1.0f);
@@ -124,13 +129,35 @@ public:
   };
 
   struct TileLoadStatus {
-    Layer layer;
+    int layer_uid;
     Tile tile;
     TileLoadState state;
-    std::vector<std::uint8_t> read_texture;
+    std::vector<std::uint8_t> encoded_texture;
     std::vector<std::uint8_t> raw_texture;
   };
   std::unordered_map<Tile, TileLoadStatus> tile_load_queue;
+
+  //
+  void UpdateTileUnloading();
+
+  enum class TileUnloadState : std::uint8_t {
+    Queued,
+    Downloading,
+    Downloaded,
+    Encoded,
+    Written,
+  };
+
+  struct TileUnloadStatus {
+    int layer_uid;
+    Tile tile;
+    TileUnloadState state;
+    std::vector<std::uint8_t> encoded_texture;
+    std::vector<std::uint8_t> raw_texture;
+  };
+  std::unordered_map<Tile, TileUnloadStatus> tile_unload_queue;
+
+  //
 
   struct FileHeader {
     char name[4] = {'m', 'i', 'd', 'o'};
