@@ -1,6 +1,10 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 project(Midori)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # set the output directory for built objects.
 # This makes sure that the dynamic library goes into the build directory automatically.
@@ -90,7 +94,7 @@ add_library(midori_lib
 )
 target_include_directories(midori_lib PUBLIC include)
 target_compile_features(midori_lib PUBLIC cxx_std_23)
-target_compile_definitions(midori_lib PUBLIC TRACY_ENABLE)
+target_compile_definitions(midori_lib PUBLIC TRACY_ENABLE PLATFORM_SDL3 RENDERER_SDL3)
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
 target_include_directories(midori_lib PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_sources(midori_lib PRIVATE

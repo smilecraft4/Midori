@@ -1,4 +1,4 @@
-{
+﻿{
     "version": 8,
     "configurePresets": [
         {
@@ -34,9 +34,7 @@
             "installDir": "${sourceDir}/install",
             "cacheVariables": {
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/install",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": true,
-                "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++"
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true
             },
             "architecture": {
                 "value": "x64",

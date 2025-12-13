@@ -1,4 +1,4 @@
-#include "midori/renderer.h"
+﻿#include "midori/renderer.h"
 
 #include <SDL3/SDL_assert.h>
 #include <SDL3/SDL_gpu.h>

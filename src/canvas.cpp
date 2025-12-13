@@ -1,4 +1,4 @@
-#include "midori/canvas.h"
+﻿#include "midori/canvas.h"
 
 #include <SDL3/SDL_assert.h>
 #include <cstdint>

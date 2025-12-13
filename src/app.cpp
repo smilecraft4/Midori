@@ -1,4 +1,4 @@
-#include "midori/app.h"
+﻿#include "midori/app.h"
 #include "SDL3/SDL_log.h"
 
 #include <format>
@@ -56,6 +56,7 @@ bool App::Init() {
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/Segoeui.ttf", 16.0f);
 
   ImGui::StyleColorsLight();
 
