@@ -14,12 +14,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Dependencies
 
+Set(FETCHCONTENT_QUIET FALSE)
+
 # Fetch SDL3
 include(FetchContent)
 FetchContent_Declare(
   SDL3
   GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
   GIT_TAG release-3.2.26
+  GIT_PROGRESS TRUE
 )
 FetchContent_MakeAvailable(SDL3)
 
@@ -29,6 +32,7 @@ FetchContent_Declare(
   glm
   GIT_REPOSITORY https://github.com/g-truc/glm.git
   GIT_TAG 1.0.2
+  GIT_PROGRESS TRUE
 )
 FetchContent_MakeAvailable(glm)
 
@@ -37,6 +41,7 @@ FetchContent_Declare(
   imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
   GIT_TAG v1.92.4-docking
+  GIT_PROGRESS TRUE
 )
 
 FetchContent_MakeAvailable(imgui)
@@ -47,6 +52,7 @@ FetchContent_Declare(
   tracy
   GIT_REPOSITORY https://github.com/wolfpld/tracy.git
   GIT_TAG v0.12.2
+  GIT_PROGRESS TRUE
 )
 FetchContent_MakeAvailable(tracy)
 
@@ -91,8 +97,9 @@ add_library(midori_lib
   "src/app.cpp"
   "src/canvas.cpp"
   "src/renderer.cpp"
+  "src/sqlite/sqlite3.c"
 )
-target_include_directories(midori_lib PUBLIC include)
+target_include_directories(midori_lib PUBLIC "include/")
 target_compile_features(midori_lib PUBLIC cxx_std_23)
 target_compile_definitions(midori_lib PUBLIC TRACY_ENABLE PLATFORM_SDL3 RENDERER_SDL3)
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
@@ -118,6 +125,7 @@ FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
   GIT_TAG v1.17.0
+  GIT_PROGRESS TRUE
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
@@ -137,6 +145,7 @@ FetchContent_Declare(
   googlebenchmark
   GIT_REPOSITORY https://github.com/google/benchmark.git
   GIT_TAG v1.9.4
+  GIT_PROGRESS TRUE
 )
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
