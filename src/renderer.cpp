@@ -510,6 +510,7 @@ bool Renderer::Render() {
     SDL_GPUCommandBuffer *command_buffer = nullptr;
     SDL_GPUTexture *swapchain_texture = nullptr;
 
+    // Initializing undefined tiles
     if (!tile_texture_uninitialized.empty()) {
         ZoneScopedN("Initialize uninitialized textures");
         {  // Acquire GPU command buffer
@@ -551,16 +552,6 @@ bool Renderer::Render() {
                 return false;
             }
         }
-    }
-
-    {  // Compute view matrix
-        ZoneScopedN("Compute view matrix");
-
-        auto view = glm::mat4(1.0f);
-        view = glm::translate(view, glm::vec3(app->canvas.view.pan, 0.0f));
-        view = glm::rotate(view, app->canvas.view.rotation, glm::vec3(0.0f, 0.0f, 1.0f));
-        view = glm::scale(view, glm::vec3(app->canvas.view.zoom_amount, app->canvas.view.zoom_amount, 1.0f));
-        viewport_render_data.view = view;
     }
 
     // Uploading Tiles
@@ -677,6 +668,8 @@ bool Renderer::Render() {
             ZoneScopedN("Waiting for texture download");
             // This can be a silent trigger
             SDL_WaitForGPUFences(device, true, &tile_download_fence, 1);
+            SDL_ReleaseGPUFence(device, tile_download_fence);
+            tile_download_fence = nullptr;
             tile_download_buffer_ptr = (std::uint8_t *)SDL_MapGPUTransferBuffer(device, tile_download_buffer, false);
             for (const auto [tile, offset] : allocated_tile_download_offset) {
                 tile_downloaded.insert(tile);
@@ -764,187 +757,199 @@ bool Renderer::Render() {
         }
     }
 
-    {  // Acquire GPU command buffer
-        ZoneScopedN("Acquire GPU command buffer");
-        command_buffer = SDL_AcquireGPUCommandBuffer(device);
-        if (command_buffer == nullptr) {
-            SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
-            return false;
+    if (app->window_size.x > 0 && app->window_size.y > 0 && !app->hidden) {
+        {  // Compute view matrix
+            ZoneScopedN("Compute view matrix");
+
+            auto view = glm::mat4(1.0f);
+            view = glm::translate(view, glm::vec3(app->canvas.view.pan, 0.0f));
+            view = glm::rotate(view, app->canvas.view.rotation, glm::vec3(0.0f, 0.0f, 1.0f));
+            view = glm::scale(view, glm::vec3(app->canvas.view.zoom_amount, app->canvas.view.zoom_amount, 1.0f));
+            viewport_render_data.view = view;
         }
-    }
 
-    {  // Wait and acquire GPU swapchain texture
-        ZoneScopedN("Wait and acquire GPU swapchain texture");
-        SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, app->window, &swapchain_texture, nullptr, nullptr);
-        if (swapchain_texture == nullptr) {
-            SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire swapchain texture: %s", SDL_GetError());
-            return false;
-        }
-    }
-
-    // Get all layers that needs redrawing
-    std::vector<LayerInfo> layer_rendering;
-    {
-        ZoneScopedN("Layer Culling");
-        {
-            ZoneScopedN("Filtering layers");
-            layer_rendering.reserve(app->canvas.layer_infos.size());
-            for (const auto &[layer, info] : app->canvas.layer_infos) {
-                if (!info.visible || info.opacity == 0.0f) {
-                    continue;
-                }
-                if (app->canvas.layer_to_delete.contains(layer)) {
-                    continue;
-                }
-
-                SDL_assert(layer_textures.contains(layer) && "Layer texture not found");
-                // would be could to add bubbles sort right here
-                layer_rendering.push_back(info);
+        {  // Acquire GPU command buffer
+            ZoneScopedN("Acquire GPU command buffer");
+            command_buffer = SDL_AcquireGPUCommandBuffer(device);
+            if (command_buffer == nullptr) {
+                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
+                return false;
             }
         }
-        {
-            ZoneScopedN("Sorting layer by depth");
-            // Sort the layers based on depth
-            std::ranges::sort(layer_rendering, [](LayerInfo &a, LayerInfo &b) { return a.depth > b.depth; });
-        }
-    }
 
-    {  // Tile Rendering
-        ZoneScopedN("Rendering Tile");
-        for (const auto &layer_info : layer_rendering) {
-            ZoneScopedN("Render Tile");
-            // TODO: only redraw changed & visible tiles
+        {  // Wait and acquire GPU swapchain texture
+            ZoneScopedN("Wait and acquire GPU swapchain texture");
+            SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, app->window, &swapchain_texture, nullptr, nullptr);
+            if (swapchain_texture == nullptr) {
+                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire swapchain texture: %s", SDL_GetError());
+                return false;
+            }
+        }
+
+        // Get all layers that needs redrawing
+        std::vector<LayerInfo> layer_rendering;
+        {
+            ZoneScopedN("Layer Culling");
+            {
+                ZoneScopedN("Filtering layers");
+                layer_rendering.reserve(app->canvas.layer_infos.size());
+                for (const auto &[layer, info] : app->canvas.layer_infos) {
+                    if (!info.visible || info.opacity == 0.0f) {
+                        continue;
+                    }
+                    if (app->canvas.layer_to_delete.contains(layer)) {
+                        continue;
+                    }
+
+                    SDL_assert(layer_textures.contains(layer) && "Layer texture not found");
+                    // would be could to add bubbles sort right here
+                    layer_rendering.push_back(info);
+                }
+            }
+            {
+                ZoneScopedN("Sorting layer by depth");
+                // Sort the layers based on depth
+                std::ranges::sort(layer_rendering, [](LayerInfo &a, LayerInfo &b) { return a.depth > b.depth; });
+            }
+        }
+
+        {  // Tile Rendering
+            ZoneScopedN("Rendering Tile");
+            for (const auto &layer_info : layer_rendering) {
+                ZoneScopedN("Render Tile");
+                // TODO: only redraw changed & visible tiles
+                const SDL_GPUColorTargetInfo target_info = {
+                    .texture = layer_textures.at(layer_info.layer),
+                    .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f},
+                    .load_op = SDL_GPU_LOADOP_CLEAR,
+                    .store_op = SDL_GPU_STOREOP_STORE,
+                };
+                SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
+                SDL_BindGPUGraphicsPipeline(render_pass, tile_graphics_pipeline);
+
+                SDL_PushGPUVertexUniformData(command_buffer, 0, &viewport_render_data, sizeof(ViewportRenderData));
+
+                for (const auto &tile : app->canvas.layer_tiles.at(layer_info.layer)) {
+                    if (app->canvas.tile_to_delete.contains(tile) || app->canvas.tile_to_unload.contains(tile)) {
+                        continue;
+                    }
+
+                    const TileInfo tile_info = app->canvas.tile_infos.at(tile);
+                    tile_render_data.position = tile_info.position;
+                    tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
+                    SDL_PushGPUVertexUniformData(command_buffer, 1, &tile_render_data, sizeof(TileRenderData));
+
+                    const SDL_GPUTextureSamplerBinding samplers[] = {{
+                        .texture = tile_textures.at(tile),
+                        .sampler = tile_sampler,
+                    }};
+                    SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
+
+                    SDL_DrawGPUPrimitives(render_pass, 4, 1, 0, 0);
+                    last_rendered_tiles_num++;
+                }
+
+                SDL_EndGPURenderPass(render_pass);
+            }
+        }
+
+        {  // Layer rendering
+            ZoneScopedN("Layer blending and rendering");
+
             const SDL_GPUColorTargetInfo target_info = {
-                .texture = layer_textures.at(layer_info.layer),
-                .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f},
+                .texture = canvas_texture,
+                .clear_color = SDL_FColor{app->bg_color.r, app->bg_color.g, app->bg_color.b, app->bg_color.a},
                 .load_op = SDL_GPU_LOADOP_CLEAR,
                 .store_op = SDL_GPU_STOREOP_STORE,
             };
             SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
-            SDL_BindGPUGraphicsPipeline(render_pass, tile_graphics_pipeline);
+            SDL_EndGPURenderPass(render_pass);
 
-            SDL_PushGPUVertexUniformData(command_buffer, 0, &viewport_render_data, sizeof(ViewportRenderData));
+            const glm::ivec2 merge_compute_invocations = glm::ceil(glm::vec2(app->window_size) / 32.0f);
+            MergeRenderData merge_render_data = {
+                .src_blend_mode = static_cast<std::uint32_t>(BlendMode::Normal),
+                .src_opacity = 1.0f,
+                .src_pos = glm::vec2(0.0),
+                .src_size = app->window_size,
+                .dst_blend_mode = static_cast<std::uint32_t>(BlendMode::Normal),
+                .dst_opacity = 1.0f,
+                .dst_pos = glm::vec2(0.0),
+                .dst_size = app->window_size,
+            };
+            const SDL_GPUStorageTextureReadWriteBinding merge_layer_binding[1] = {{
+                .texture = canvas_texture,
+                .mip_level = 0,
+                .layer = 0,
+            }};
+            SDL_GPUComputePass *merge_compute_pass =
+                SDL_BeginGPUComputePass(command_buffer, merge_layer_binding, 1, nullptr, 0);
+            if (merge_compute_pass == nullptr) {
+                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to create merge compute pass: %s", SDL_GetError());
+                return false;
+            }
+            SDL_BindGPUComputePipeline(merge_compute_pass, merge_compute_pipeline);
 
-            for (const auto &tile : app->canvas.layer_tiles.at(layer_info.layer)) {
-                if (app->canvas.tile_to_delete.contains(tile) || app->canvas.tile_to_unload.contains(tile)) {
-                    continue;
-                }
-
-                const TileInfo tile_info = app->canvas.tile_infos.at(tile);
-                tile_render_data.position = tile_info.position;
-                tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
-                SDL_PushGPUVertexUniformData(command_buffer, 1, &tile_render_data, sizeof(TileRenderData));
+            for (const auto &layer_info : layer_rendering) {
+                ZoneScopedN("Blend layer to canvas");
+                merge_render_data.src_blend_mode = static_cast<std::uint32_t>(layer_info.blend_mode);
+                merge_render_data.src_opacity = layer_info.opacity;
+                // Maybe dividing the buffer into a dst and src could be benificial
+                SDL_PushGPUComputeUniformData(command_buffer, 0, &merge_render_data, sizeof(MergeRenderData));
 
                 const SDL_GPUTextureSamplerBinding samplers[] = {{
-                    .texture = tile_textures.at(tile),
-                    .sampler = tile_sampler,
+                    .texture = layer_textures.at(layer_info.layer),
+                    .sampler = layer_sampler,
                 }};
-                SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
-
-                SDL_DrawGPUPrimitives(render_pass, 4, 1, 0, 0);
-                last_rendered_tiles_num++;
+                SDL_BindGPUComputeSamplers(merge_compute_pass, 0, samplers, 1);
+                SDL_DispatchGPUCompute(merge_compute_pass, merge_compute_invocations.x, merge_compute_invocations.y, 1);
             }
+
+            SDL_EndGPUComputePass(merge_compute_pass);
+        }
+
+        {
+            ZoneScopedN("Render canvas texture");
+            const SDL_GPUColorTargetInfo target_info = {
+                .texture = swapchain_texture,
+                .clear_color = SDL_FColor{1.0f, 1.0f, 1.0f, 0.0f},
+                .load_op = SDL_GPU_LOADOP_CLEAR,
+                .store_op = SDL_GPU_STOREOP_STORE,
+            };
+            SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
+            SDL_BindGPUGraphicsPipeline(render_pass, layer_graphics_pipeline);
+
+            const SDL_GPUTextureSamplerBinding samplers[] = {{
+                .texture = canvas_texture,
+                .sampler = layer_sampler,
+            }};
+            SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
+
+            SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
 
             SDL_EndGPURenderPass(render_pass);
         }
-    }
 
-    {  // Layer rendering
-        ZoneScopedN("Layer blending and rendering");
+        {  // UI Rendering
+            ZoneScopedN("UI rendering");
+            ImDrawData *draw_data = ImGui::GetDrawData();
 
-        const SDL_GPUColorTargetInfo target_info = {
-            .texture = canvas_texture,
-            .clear_color = SDL_FColor{app->bg_color.r, app->bg_color.g, app->bg_color.b, app->bg_color.a},
-            .load_op = SDL_GPU_LOADOP_CLEAR,
-            .store_op = SDL_GPU_STOREOP_STORE,
-        };
-        SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
-        SDL_EndGPURenderPass(render_pass);
-
-        const glm::ivec2 merge_compute_invocations = glm::ceil(glm::vec2(app->window_size) / 32.0f);
-        MergeRenderData merge_render_data = {
-            .src_blend_mode = static_cast<std::uint32_t>(BlendMode::Normal),
-            .src_opacity = 1.0f,
-            .src_pos = glm::vec2(0.0),
-            .src_size = app->window_size,
-            .dst_blend_mode = static_cast<std::uint32_t>(BlendMode::Normal),
-            .dst_opacity = 1.0f,
-            .dst_pos = glm::vec2(0.0),
-            .dst_size = app->window_size,
-        };
-        const SDL_GPUStorageTextureReadWriteBinding merge_layer_binding[1] = {{
-            .texture = canvas_texture,
-            .mip_level = 0,
-            .layer = 0,
-        }};
-        SDL_GPUComputePass *merge_compute_pass =
-            SDL_BeginGPUComputePass(command_buffer, merge_layer_binding, 1, nullptr, 0);
-        if (merge_compute_pass == nullptr) {
-            SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to create merge compute pass: %s", SDL_GetError());
-            return false;
-        }
-        SDL_BindGPUComputePipeline(merge_compute_pass, merge_compute_pipeline);
-
-        for (const auto &layer_info : layer_rendering) {
-            ZoneScopedN("Blend layer to canvas");
-            merge_render_data.src_blend_mode = static_cast<std::uint32_t>(layer_info.blend_mode);
-            merge_render_data.src_opacity = layer_info.opacity;
-            // Maybe dividing the buffer into a dst and src could be benificial
-            SDL_PushGPUComputeUniformData(command_buffer, 0, &merge_render_data, sizeof(MergeRenderData));
-
-            const SDL_GPUTextureSamplerBinding samplers[] = {{
-                .texture = layer_textures.at(layer_info.layer),
-                .sampler = layer_sampler,
-            }};
-            SDL_BindGPUComputeSamplers(merge_compute_pass, 0, samplers, 1);
-            SDL_DispatchGPUCompute(merge_compute_pass, merge_compute_invocations.x, merge_compute_invocations.y, 1);
+            ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
+            const SDL_GPUColorTargetInfo target_info = {
+                .texture = swapchain_texture,
+                .load_op = SDL_GPU_LOADOP_LOAD,
+                .store_op = SDL_GPU_STOREOP_STORE,
+            };
+            SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
+            ImGui_ImplSDLGPU3_RenderDrawData(draw_data, command_buffer, render_pass);
+            SDL_EndGPURenderPass(render_pass);
         }
 
-        SDL_EndGPUComputePass(merge_compute_pass);
-    }
-
-    {
-        ZoneScopedN("Render canvas texture");
-        const SDL_GPUColorTargetInfo target_info = {
-            .texture = swapchain_texture,
-            .clear_color = SDL_FColor{1.0f, 1.0f, 1.0f, 0.0f},
-            .load_op = SDL_GPU_LOADOP_CLEAR,
-            .store_op = SDL_GPU_STOREOP_STORE,
-        };
-        SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
-        SDL_BindGPUGraphicsPipeline(render_pass, layer_graphics_pipeline);
-
-        const SDL_GPUTextureSamplerBinding samplers[] = {{
-            .texture = canvas_texture,
-            .sampler = layer_sampler,
-        }};
-        SDL_BindGPUFragmentSamplers(render_pass, 0, samplers, 1);
-
-        SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
-
-        SDL_EndGPURenderPass(render_pass);
-    }
-
-    {  // UI Rendering
-        ZoneScopedN("UI rendering");
-        ImDrawData *draw_data = ImGui::GetDrawData();
-
-        ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
-        const SDL_GPUColorTargetInfo target_info = {
-            .texture = swapchain_texture,
-            .load_op = SDL_GPU_LOADOP_LOAD,
-            .store_op = SDL_GPU_STOREOP_STORE,
-        };
-        SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &target_info, 1, nullptr);
-        ImGui_ImplSDLGPU3_RenderDrawData(draw_data, command_buffer, render_pass);
-        SDL_EndGPURenderPass(render_pass);
-    }
-
-    {
-        ZoneScopedN("Submiting GPU command buffer");
-        if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
-            SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
-            return false;
+        {
+            ZoneScopedN("Submiting GPU command buffer");
+            if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
+                return false;
+            }
         }
     }
 

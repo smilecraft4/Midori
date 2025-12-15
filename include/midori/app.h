@@ -41,6 +41,7 @@ class App {
     std::vector<std::string> args;
 
     bool should_quit = false;
+    bool hidden = false;
 
     Canvas canvas;
     Renderer renderer;

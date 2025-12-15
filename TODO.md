@@ -16,11 +16,13 @@
 
 ### In Progress
 
-- directory file format
-- better loading/unloading logic
+- eraser
 
 ### Done
 
+- file saving on close
+- better loading/unloading logic
+- directory file format
 - layer creation
 - tile creation
 - viewport panning
