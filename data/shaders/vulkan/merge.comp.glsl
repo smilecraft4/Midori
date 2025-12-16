@@ -23,6 +23,8 @@
 // Multiply
 // Overlay
 
+// All layers texture are treated as premultiplied alpha Linear 
+// All color inputs are treated as startight alpha SRGB
 
 layout(set = 2, binding = 0) uniform Merge {
     uint src_blend_mode;
@@ -40,18 +42,14 @@ layout(set = 1, binding = 0, rgba8) uniform image2D dst_tex;
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 void main() {
-    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
 
-    vec4 src_color = texelFetch(src_tex, coord, 0) * src_opacity;
-    vec4 dst_color = imageLoad(dst_tex, coord);
+    vec4 dstColor = imageLoad(dst_tex, coord);
+    vec4 srcColor = texelFetch(src_tex, coord, 0);
+    srcColor *= src_opacity;
 
-    vec4 out_color; 
-    // Straight Alpha
-    // out_color.a = src_color.a + dst_color.a * (1.0 - src_color.a);
-    // out_color.rgb = ((src_color.rgb * src_color.a) + (dst_color.rgb * dst_color.a) * (1.0 - src_color.a)) / out_color.a;
-    // Premultiplied
-    out_color.rgb = dst_color.rgb * (1.0 - src_color.a) + src_color.rgb;
-    out_color.a = dst_color.a * (1.0 - src_color.a) + src_color.a;
+    dstColor.rgb = srcColor.rgb + dstColor.rgb * (1.0 - srcColor.a);
+    dstColor.a = srcColor.a + dstColor.a * (1.0 - srcColor.a);
 
-    imageStore(dst_tex, coord, out_color);
+    imageStore(dst_tex, coord, dstColor);
 }

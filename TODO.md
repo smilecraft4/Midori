@@ -17,6 +17,7 @@
 ### In Progress
 
 - eraser
+- fix stroke blending
 
 ### Done
 

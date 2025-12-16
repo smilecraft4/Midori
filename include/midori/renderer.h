@@ -164,6 +164,8 @@ class Renderer {
     SDL_GPUBuffer *paint_stroke_point_buffer = nullptr;
     SDL_GPUComputePipeline *paint_compute_pipeline = nullptr;
     SDL_GPUTransferBuffer *paint_stroke_point_transfer_buffer = nullptr;
+    SDL_GPUTexture *brush_texture = nullptr;
+    SDL_GPUSampler *brush_sampler = nullptr;
     std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
 };
 }  // namespace Midori

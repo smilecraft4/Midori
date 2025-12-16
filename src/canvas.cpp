@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <format>
+#include <map>
 #include <numbers>
 #include <string>
 #include <tracy/Tracy.hpp>
@@ -28,7 +29,7 @@ namespace Midori {
 Canvas::Canvas(App *app) : app(app) {}
 
 SDL_EnumerationResult findLayersCallback(void *userdata, const char *dirname, const char *fname) {
-    if (dirname) {
+    if (dirname != nullptr) {
         auto *canvas = (Canvas *)userdata;
         const std::string folder = std::format("{}{}", dirname, fname);
         const std::string path = std::format("{}/layer.json", folder);
@@ -86,13 +87,14 @@ bool Canvas::CanQuit() { return tile_to_unload.empty() && layer_to_delete.empty(
 
 bool Canvas::Open() {
     ZoneScoped;
-    const std::string path = SDL_GetPrefPath(NULL, "midori");
+    const std::string path = SDL_GetPrefPath(nullptr, "midori");
     filename = std::format("{}file", path);
     const bool exists = SDL_CreateDirectory(filename.c_str());
     SDL_Log("%s", filename.c_str());
 
     if (exists) {
         SDL_EnumerateDirectory(filename.c_str(), findLayersCallback, this);
+        CompactLayerHeight();
     }
 
     if (layer_infos.empty()) {
@@ -105,9 +107,17 @@ bool Canvas::Open() {
     return true;
 }
 
-bool Canvas::Save() {
-    // Maybe force save
-    return true;
+void Canvas::CompactLayerHeight() {
+    std::map<uint8_t, Layer> sortedDepthLayers;
+    for (auto &[layer, layer_info] : layer_infos) {
+        sortedDepthLayers[layer_info.depth] = layer;
+    }
+
+    int previousDepth = 0;
+    for (auto &[depth, layer] : sortedDepthLayers) {
+        SetLayerDepth(layer, previousDepth);
+        previousDepth++;
+    }
 }
 
 void Canvas::Update() {
@@ -177,6 +187,7 @@ void Canvas::DeleteUpdate() {
             layerTilesSaved[tile_info.layer].erase(tile_infos.at(tile).position);
             app->renderer.ReleaseTileTexture(tile);
             tile_infos.erase(tile);
+            unassigned_tiles.push_back(tile);
             clear_tiles.push_back(tile);
         }
         for (const auto tile : clear_tiles) {
@@ -211,7 +222,6 @@ void Canvas::DeleteUpdate() {
             layerTilesModified.erase(layer);
             layerTilesSaved.erase(layer);
             layer_tile_pos.erase(layer);
-            file.layers.erase(layer);
 
             layer_cleared.push_back(layer);
         }
@@ -280,7 +290,6 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
     }
 
     current_max_layer_height++;
-    SDL_assert(depth <= current_max_layer_height);
     for (auto &[other_layer, other_layer_info] : layer_infos) {
         if (layer_to_delete.contains(other_layer)) {
             continue;
@@ -291,10 +300,8 @@ Layer Canvas::CreateLayer(const std::string &name, const std::uint8_t depth) {
         }
         if (other_layer_info.depth >= depth) {
             other_layer_info.depth++;
-            file.layers[layer].layer.depth++;
+            layersModified.insert(other_layer);
         }
-
-        SDL_assert(other_layer_info.depth < current_max_layer_height);
     }
 
     const auto layer_info = LayerInfo{
@@ -337,12 +344,13 @@ bool Canvas::SaveLayer(Layer layer) {
     SDL_assert(file_io != nullptr);
     SDL_WriteIO(file_io, layerDump.data(), layerDump.size());
     SDL_CloseIO(file_io);
+    layersModified.erase(layer);
 
     return true;
 }
 
 bool Canvas::SetLayerDepth(const Layer layer, std::uint8_t depth) {
-    SDL_assert(file.layers.contains(layer) && "Layer not found");
+    SDL_assert(layer_infos.contains(layer) && "Layer not found");
 
     // No new layer are created nor destroyed so the max should stay the same
     depth = std::min(current_max_layer_height, depth);
@@ -360,21 +368,14 @@ bool Canvas::SetLayerDepth(const Layer layer, std::uint8_t depth) {
         const auto other_depth = other_layer_info.depth;
         if (min_depth <= other_depth && other_depth <= max_depth) {
             other_layer_info.depth += direction;
-            file.layers[other_layer].layer.depth += direction;
+            layersModified.insert(other_layer);
         }
-        SDL_assert(other_depth < current_max_layer_height);
     }
 
     layer_infos[layer].depth = depth;
-    file.layers[layer].layer.depth = depth;
-    file.saved = false;
+    layersModified.insert(layer);
 
     return true;
-}
-
-std::uint8_t Canvas::GetLayerDepth(const Layer layer) const {
-    SDL_assert(file.layers.contains(layer) && "Layer not found");
-    return file.layers.at(layer).layer.depth;
 }
 
 // TODO: Make this a queued action
@@ -393,9 +394,8 @@ void Canvas::DeleteLayer(const Layer layer) {
         }
         if (layer_below_info.depth > layer_infos.at(layer).depth) {
             layer_below_info.depth--;
-            file.layers[layer].layer.depth--;
+            layersModified.insert(layer_below);
         }
-        SDL_assert(layer_below_info.depth < current_max_layer_height);
     }
     if (selected_layer == layer) {
         selected_layer = 0;
@@ -411,6 +411,10 @@ void Canvas::DeleteLayer(const Layer layer) {
         for (const auto tile : tiles) {
             DeleteTile(layer, tile);
         }
+    }
+
+    if (layersModified.contains(layer)) {
+        layersModified.erase(layer);
     }
 
     layer_to_delete.insert(layer);
@@ -546,7 +550,7 @@ void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
     layerTilesModified[tile_infos.at(below_tile).layer].insert(below_tile);
 }
 
-std::vector<glm::ivec2> Canvas::GetViewVisibleTiles(const View &view, const glm::vec2 size) const {
+std::vector<glm::ivec2> Canvas::GetViewVisibleTiles(const View &view, const glm::vec2 size) {
     ZoneScoped;
     constexpr auto tile_size = glm::vec2(TILE_SIZE);
     const glm::ivec2 t_min = glm::floor((-view.pan - (size / 2.0f)) / tile_size);
@@ -591,7 +595,7 @@ void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos, glm::vec2 cursor_delta) {
     if (view_panning) {
         ViewPan(view.pan + cursor_delta);
     } else if (view_rotating) {
-        ViewRotate(view.rotation + (cursor_delta.x / 360.0f * std::numbers::pi));
+        ViewRotate(view.rotation + (cursor_delta.x / 360.0f * std::numbers::pi_v<float>));
     } else if (view_zooming) {
         ViewZoom(view.zoom_amount + (cursor_delta.x / 1000.0f));
     }
@@ -805,11 +809,6 @@ void Canvas::UpdateTileUnloading() {
     }
 }
 
-bool Canvas::LayerHasTileFile(const Layer layer, const glm::ivec2 tile_pos) {
-    SDL_assert(layerTilesSaved.contains(layer));
-    return layerTilesSaved[layer].contains(tile_pos);
-}
-
 static glm::ivec2 GetTilePos(const glm::vec2 canvas_pos) {
     constexpr glm::vec2 tile_size = glm::vec2(TILE_SIZE);
     return glm::ivec2(glm::floor(canvas_pos / tile_size));
@@ -819,11 +818,11 @@ std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint poin
     constexpr glm::vec2 tile_size = glm::vec2(TILE_SIZE);
     std::vector<glm::ivec2> tiles_pos;
 
-    glm::ivec2 tile_pos_min = glm::floor((point.position - point.radius) / tile_size);
-    glm::ivec2 tile_pos_max = glm::ceil((point.position + point.radius) / tile_size);
+    glm::ivec2 tile_pos_min = glm::floor((point.position - (point.radius + 16.0f)) / tile_size);
+    glm::ivec2 tile_pos_max = glm::ceil((point.position + (point.radius + 16.0f)) / tile_size);
 
     const glm::ivec2 tile_distance = tile_pos_max - tile_pos_min;
-    tiles_pos.reserve(tile_distance.x * tile_distance.y);
+    tiles_pos.reserve((size_t)tile_distance.x * tile_distance.y);
     glm::ivec2 tile_pos;
     for (tile_pos.y = tile_pos_min.y; tile_pos.y < tile_pos_max.y; tile_pos.y++) {
         for (tile_pos.x = tile_pos_min.x; tile_pos.x < tile_pos_max.x; tile_pos.x++) {
@@ -834,35 +833,36 @@ std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint poin
     return tiles_pos;
 }
 
-Canvas::StrokePoint Canvas::ApplyPressure(StrokePoint point, float pressure) {
-    StrokePoint pressure_point = point;
-
+Canvas::StrokePoint Canvas::ApplyPressure(StrokePoint point, const float pressure) const {
     // TODO: Add min max value
 
     if (brush_options.opacity_pressure) {
-        pressure_point.color *= pressure;  // We use premultiplied alpha
+        point.color.a *= pressure;  // We use premultiplied alpha
     }
     if (brush_options.radius_pressure) {
-        pressure_point.radius *= pressure;
+        point.radius *= pressure;
     }
     if (brush_options.flow_pressure) {
-        pressure_point.flow *= pressure;
+        point.flow *= pressure;
     }
     if (brush_options.hardness_pressure) {
-        pressure_point.hardness *= pressure;
+        point.hardness *= pressure;
     }
 
-    return pressure_point;
+    return point;
 }
 
 // This assumes every painted tiles are not going to be culled
-void Canvas::StartStroke(StrokePoint point) {
+void Canvas::StartBrushStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(!stroke_started);
     stroke_started = true;
 
     if (app->pen_in_range) {
         point = ApplyPressure(point, app->pen_pressure);
+        // point.color.r *= point.color.a;
+        // point.color.g *= point.color.a;
+        // point.color.b *= point.color.a;
     }
 
     SDL_assert(stroke_layer == 0);
@@ -870,6 +870,10 @@ void Canvas::StartStroke(StrokePoint point) {
     stroke_layer = CreateLayer("Stroke Layer", layer_infos.at(selected_layer).depth);
     SDL_assert(stroke_layer != 0);
     layer_infos.at(stroke_layer).temporary = true;
+    layer_infos.at(stroke_layer).opacity = layer_infos.at(selected_layer).opacity;
+    // layer_infos.at(stroke_layer).opacity = point.color.a;
+
+    // TODO: Only affect necesary texels, (bouding box of brush)
 
     const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
     for (const auto &tile_pos : tiles_pos) {
@@ -877,32 +881,38 @@ void Canvas::StartStroke(StrokePoint point) {
         if (tile == 0) {
             if (const auto result = CreateTile(stroke_layer, tile_pos); result.has_value()) {
                 tile = result.value();
+                stroke_tile_affected.insert(tile);
             } else {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create stroke tile");
             }
+        } else {
+            stroke_tile_affected.insert(tile);
         }
+
         if (!layer_tile_pos.at(selected_layer).contains(tile_pos)) {
-            if (const auto result = CreateTile(selected_layer, tile_pos); result.has_value()) {
-                tile = result.value();
-            } else {
+            if (const auto result = CreateTile(selected_layer, tile_pos); !result.has_value()) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create under stroke tile");
             }
         }
-        stroke_tile_affected.insert(tile);
     }
 
+    // stroke_points.push_back(point);
+    stroke_points.clear();
+
     previous_point = point;
-    stroke_points.push_back(point);
 }
 
 // This assumes every painted tiles are not going to be culled
-void Canvas::UpdateStroke(StrokePoint point) {
+void Canvas::UpdateBrushStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(stroke_started);
     SDL_assert(stroke_layer != 0);
 
     if (app->pen_in_range) {
         point = ApplyPressure(point, app->pen_pressure);
+        // point.color.r *= point.color.a;
+        // point.color.g *= point.color.a;
+        // point.color.b *= point.color.a;
     }
 
     const auto distance = glm::distance(previous_point.position, point.position);
@@ -952,34 +962,38 @@ void Canvas::UpdateStroke(StrokePoint point) {
             ZoneScoped;
             const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
             for (const auto &tile_pos : tiles_pos) {
-                Tile tile = GetTileAt(stroke_layer, tile_pos);
-                if (tile == 0) {
+                Tile strokeLayertile = GetTileAt(stroke_layer, tile_pos);
+                if (strokeLayertile == 0) {
                     if (const auto result = CreateTile(stroke_layer, tile_pos); result.has_value()) {
-                        tile = result.value();
+                        strokeLayertile = result.value();
+                        stroke_tile_affected.insert(strokeLayertile);
                     } else {
                         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create stroke tile");
                     }
+                } else {
+                    stroke_tile_affected.insert(strokeLayertile);
                 }
+
                 if (!layer_tile_pos.at(selected_layer).contains(tile_pos)) {
-                    if (const auto result = CreateTile(selected_layer, tile_pos); result.has_value()) {
-                        tile = result.value();
-                    } else {
+                    if (const auto result = CreateTile(selected_layer, tile_pos); !result.has_value()) {
                         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create under stroke tile");
                     }
                 }
-                stroke_tile_affected.insert(tile);
             }
         }
     }
 }
 
 // This assumes every painted tiles are not going to be culled
-void Canvas::EndStroke(StrokePoint point) {
+void Canvas::EndBrushStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(stroke_started);
 
     if (app->pen_in_range) {
         point = ApplyPressure(point, app->pen_pressure);
+        // point.color.r *= point.color.a;
+        // point.color.g *= point.color.a;
+        // point.color.b *= point.color.a;
     }
 
     // save the modified tile before merge to the history
@@ -988,6 +1002,7 @@ void Canvas::EndStroke(StrokePoint point) {
     MergeLayer(stroke_layer, selected_layer);
     DeleteLayer(stroke_layer);
     stroke_layer = 0;
+    stroke_points.clear();
 
     // Save all the modified tiles once merged
     // for (const auto &tile : allTileStrokeAffected) {

@@ -293,7 +293,6 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels);
 
 /* -----------------------------------------------------------------------------
 Implementation */
-#define QOI_IMPLEMENTATION
 #ifdef QOI_IMPLEMENTATION
 #include <stdlib.h>
 #include <string.h>
@@ -540,16 +539,12 @@ void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels) {
             index[QOI_COLOR_HASH(px) & (64 - 1)] = px;
         }
 
-        // TODO: Proper Premultiplied alpha decoding and encoding
+        pixels[px_pos + 0] = px.rgba.r;
+        pixels[px_pos + 1] = px.rgba.g;
+        pixels[px_pos + 2] = px.rgba.b;
+
         if (channels == 4) {
-            pixels[px_pos + 0] = (uint8_t)((float)px.rgba.r * ((float)px.rgba.a / (float)UINT8_MAX));
-            pixels[px_pos + 1] = (uint8_t)((float)px.rgba.g * ((float)px.rgba.a / (float)UINT8_MAX));
-            pixels[px_pos + 2] = (uint8_t)((float)px.rgba.b * ((float)px.rgba.a / (float)UINT8_MAX));
             pixels[px_pos + 3] = px.rgba.a;
-        } else {
-            pixels[px_pos + 0] = px.rgba.r;
-            pixels[px_pos + 1] = px.rgba.g;
-            pixels[px_pos + 2] = px.rgba.b;
         }
     }
 

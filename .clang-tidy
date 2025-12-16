@@ -17,10 +17,13 @@ Checks: "\
   -readability-else-after-return,\
   -readability-uppercase-literal-suffix,\
   -readability-function-cognitive-complexity,\
-  -readability-simplify-boolean-expr\
+  -readability-simplify-boolean-expr,\
+  -readability-magic-numbers\
   "
 WarningsAsErrors: ""
 HeaderFilterRegex: ""
 CheckOptions:
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: "_"
+  - key: bugprone-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: false

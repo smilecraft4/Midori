@@ -45,9 +45,6 @@ class Canvas {
     // File Stuff
     bool CanQuit();
     bool Open();
-    bool Save();
-
-    bool SaveLayer(Layer layer);
 
     // TODO: Move to it's own class
     // Viewport Stuff
@@ -62,7 +59,7 @@ class Canvas {
     void ViewZoomStart(glm::vec2 origin);
     void ViewZoom(float amount);
     void ViewZoomStop();
-    [[nodiscard]] std::vector<glm::ivec2> GetViewVisibleTiles(const View &view, glm::vec2 size) const;
+    static std::vector<glm::ivec2> GetViewVisibleTiles(const View &view, glm::vec2 size);
 
     [[nodiscard]] bool HasLayer(Layer layer) const;
     [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
@@ -71,10 +68,12 @@ class Canvas {
 
     Layer CreateLayer(const std::string &name, std::uint8_t depth);
     void DeleteLayer(Layer layer);
+    bool SaveLayer(Layer layer);
     void MergeLayer(Layer over_layer, Layer below_layer);
     bool SetLayerDepth(Layer layer, std::uint8_t depth);
-    [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
+    void CompactLayerHeight();
 
+    [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
     [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
 
     // TODO: Change for a better name, this name implies that a new tile is
@@ -215,6 +214,7 @@ class Canvas {
     std::unordered_map<Layer, std::unordered_set<Tile>> layer_tiles;
     std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>> layer_tile_pos;
     std::unordered_set<Layer> layer_to_delete;
+    std::unordered_set<Layer> layersModified;
 
     Layer selected_layer = 0;
     Layer stroke_layer = 0;
@@ -237,10 +237,9 @@ class Canvas {
     bool view_panning = false;
     bool view_rotating = false;
 
-    bool stroke_started = false;
+    std::string filename;
 
-    // ?? Stuff
-    void UpdateTileLoading();
+    bool stroke_started = false;
 
     enum class TileReadState : std::uint8_t {
         Queued,
@@ -257,9 +256,7 @@ class Canvas {
         std::vector<std::uint8_t> raw_texture;
     };
     std::unordered_map<Tile, TileReadStatus> tile_read_queue;
-
-    //
-    void UpdateTileUnloading();
+    void UpdateTileLoading();
 
     enum class TileWriteState : std::uint8_t {
         Queued,
@@ -278,32 +275,7 @@ class Canvas {
         std::vector<std::uint8_t> raw_texture;
     };
     std::unordered_map<Tile, TileWriteStatus> tile_write_queue;
-
-    struct FileHeader {
-        char name[4] = {'m', 'i', 'd', 'o'};
-        std::uint8_t version[4] = {0, 0, 0, 0};
-    };
-
-    struct FileTile {
-        glm::ivec2 position = {0, 0};
-    };
-
-    struct FileLayer {
-        LayerInfo layer;
-        std::unordered_set<glm::ivec2> tile_saved;
-    };
-
-    struct File {
-        bool saved = false;
-        std::filesystem::path filename;
-
-        FileHeader header;
-        std::unordered_map<Layer, FileLayer> layers;
-    };
-    File file;
-
-    std::string filename;
-    bool LayerHasTileFile(Layer layer, glm::ivec2 tile_pos);
+    void UpdateTileUnloading();
 
     struct BrushOptions {
         glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -336,11 +308,11 @@ class Canvas {
     std::unordered_set<Tile> allTileStrokeAffected;
     StrokePoint previous_point = {};
 
-    StrokePoint ApplyPressure(StrokePoint point, float pressure);
+    [[nodiscard]] StrokePoint ApplyPressure(StrokePoint point, float pressure) const;
 
-    void StartStroke(StrokePoint point);
-    void UpdateStroke(StrokePoint point);
-    void EndStroke(StrokePoint point);
+    void StartBrushStroke(StrokePoint point);
+    void UpdateBrushStroke(StrokePoint point);
+    void EndBrushStroke(StrokePoint point);
 };
 }  // namespace Midori
 

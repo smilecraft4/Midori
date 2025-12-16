@@ -102,7 +102,7 @@ bool App::Update() {
                 ImGui::Checkbox("Show loaded tiles", &ui_debug_culling);
             }
             ImGui::End();
-            if (ui_debug_culling) {
+            if (ui_debug_culling && canvas.stroke_layer > 0) {
                 // const std::vector<glm::ivec2> visible_tiles_positions =
                 //     canvas.GetVisibleTilePositions(canvas.view, window_size / 2);
                 ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
@@ -117,7 +117,7 @@ bool App::Update() {
                 //  };
                 //  draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 255, 255));
                 //}
-                for (const auto &[pos, tile] : canvas.layer_tile_pos.at(canvas.selected_layer)) {
+                for (const auto &[pos, tile] : canvas.layer_tile_pos.at(canvas.stroke_layer)) {
                     const ImVec2 pmin = {
                         ((float)window_size.x / 2.0f) + canvas.view.pan.x + ((float)pos.x * (float)TILE_SIZE),
                         ((float)window_size.y / 2.0f) + canvas.view.pan.y + ((float)pos.y * (float)TILE_SIZE),
@@ -127,8 +127,8 @@ bool App::Update() {
                         pmin.y + (float)TILE_SIZE,
                     };
                     const ImVec2 pcenter = {
-                        pmin.x + (float)TILE_SIZE / 2.0f,
-                        pmin.y + (float)TILE_SIZE / 2.0f,
+                        pmin.x + ((float)TILE_SIZE / 2.0f),
+                        pmin.y + ((float)TILE_SIZE / 2.0f),
                     };
 
                     draw_list->AddRect(pmin, pmax, IM_COL32(0, 0, 0, 64));
@@ -182,7 +182,7 @@ bool App::Update() {
                 std::ranges::sort(layer_info, [](LayerInfo &a, LayerInfo &b) { return a.depth > b.depth; });
 
                 const ImVec2 image_size = {
-                    window_size.x / (float)window_size.y * 50.0f,
+                    (float)window_size.x / (float)window_size.y * 50.0f,
                     50.0f,
                 };
                 for (int i = layer_info.size() - 1; i >= 0; i--) {
@@ -308,6 +308,15 @@ bool App::Resize(const int width, const int height) {
 
 void App::ShouldQuit() {
     should_quit = true;
+    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    for (const auto &layer : layersToSave) {
+        if (canvas.layer_infos[layer].temporary) {
+            continue;
+        }
+
+        canvas.SaveLayer(layer);
+    }
+
     for (const auto &layer : canvas.Layers()) {
         if (canvas.layer_infos.at(layer).temporary) {
             canvas.DeleteLayer(layer);
@@ -346,7 +355,7 @@ void App::CursorMove(glm::vec2 new_pos) {
         if (canvas.stroke_started) {
             const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
 
-            canvas.UpdateStroke(Canvas::StrokePoint{
+            canvas.UpdateBrushStroke(Canvas::StrokePoint{
                 .color = canvas.brush_options.color,
                 .position = pos,
                 .radius = canvas.brush_options.radius,
@@ -366,7 +375,7 @@ void App::CursorPress(Uint8 button) {
             !canvas.stroke_started) {
             const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
 
-            canvas.StartStroke(Canvas::StrokePoint{
+            canvas.StartBrushStroke(Canvas::StrokePoint{
                 .color = canvas.brush_options.color,
                 .position = pos,
                 .radius = canvas.brush_options.radius,
@@ -383,7 +392,7 @@ void App::CursorRelease(Uint8 button) {
             canvas.stroke_started) {
             const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
 
-            canvas.EndStroke(Canvas::StrokePoint{
+            canvas.EndBrushStroke(Canvas::StrokePoint{
                 .color = canvas.brush_options.color,
                 .position = pos,
                 .radius = canvas.brush_options.radius,

@@ -5,6 +5,7 @@
 #include <SDL3/SDL_log.h>
 #include <imgui.h>
 #include <imgui_impl_sdlgpu3.h>
+#include <qoi/qoi.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -465,7 +466,7 @@ bool Renderer::InitPaint() {
         .code = code,
         .entrypoint = "main",
         .format = SDL_GPU_SHADERFORMAT_SPIRV,
-        .num_samplers = 0,
+        .num_samplers = 1,  // alpha brush
         .num_readonly_storage_textures = 0,
         .num_readonly_storage_buffers = 1,    // stroke buffer
         .num_readwrite_storage_textures = 1,  // dst texture
@@ -497,6 +498,107 @@ bool Renderer::InitPaint() {
     paint_stroke_point_transfer_buffer = SDL_CreateGPUTransferBuffer(device, &upload_buffer_create_info);
     if (paint_stroke_point_transfer_buffer == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create paint stroke upload buffer: %s", SDL_GetError());
+        return false;
+    }
+
+    const std::string path = SDL_GetPrefPath(nullptr, "midori");
+    const std::string brushPath = std::format("{}brushes/sphere.qoi", path);
+
+    size_t dataSize;
+    auto *data = (uint8_t *)SDL_LoadFile(brushPath.c_str(), &dataSize);
+    if (data == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read sphere brush texture: %s", SDL_GetError());
+        return false;
+    }
+
+    qoi_desc desc;
+    auto *pixels = (uint8_t *)qoi_decode(data, dataSize, &desc, 4);
+    SDL_free(data);
+    if (pixels == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to decode brush texture");
+        return false;
+    }
+
+    // for (size_t i = 0; i < (size_t)desc.width * desc.height; i++) {
+    //     pixels[i] = pixels[i * 3];
+    // }
+
+    SDL_GPUTextureCreateInfo brush_texture_create_info = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = texture_format,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+        .width = (Uint32)desc.width,
+        .height = (Uint32)desc.height,
+        .layer_count_or_depth = 1,
+        .num_levels = 10,
+        .sample_count = SDL_GPU_SAMPLECOUNT_1,
+    };
+    brush_texture = SDL_CreateGPUTexture(device, &brush_texture_create_info);
+    if (brush_texture == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create brush texture: %s", SDL_GetError());
+        return false;
+    }
+
+    SDL_GPUTransferBufferCreateInfo transferBufferCreateInfo = {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = desc.width * desc.height * 4,
+    };
+    SDL_GPUTransferBuffer *brushTransferBuffer = SDL_CreateGPUTransferBuffer(device, &transferBufferCreateInfo);
+    if (brushTransferBuffer == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create temp brush transfer buffer: %s", SDL_GetError());
+        return false;
+    }
+
+    auto *buf = (uint8_t *)SDL_MapGPUTransferBuffer(device, brushTransferBuffer, false);
+    memcpy(buf, pixels, (size_t)desc.width * desc.height * 4);
+    SDL_UnmapGPUTransferBuffer(device, brushTransferBuffer);
+    free(pixels);
+
+    SDL_GPUCommandBuffer *command_buffer = SDL_AcquireGPUCommandBuffer(device);
+    if (command_buffer == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
+        return false;
+    }
+    SDL_GPUCopyPass *upload_pass = SDL_BeginGPUCopyPass(command_buffer);
+    const SDL_GPUTextureTransferInfo transfer_info = {
+        .transfer_buffer = brushTransferBuffer,
+        .pixels_per_row = desc.width,
+        .rows_per_layer = desc.height,
+    };
+    const SDL_GPUTextureRegion texture_region = {
+        .texture = brush_texture,
+        .w = desc.width,
+        .h = desc.height,
+        .d = 1,
+    };
+    SDL_UploadToGPUTexture(upload_pass, &transfer_info, &texture_region, false);
+    SDL_EndGPUCopyPass(upload_pass);
+    SDL_GenerateMipmapsForGPUTexture(command_buffer, brush_texture);
+    if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
+        return false;
+    }
+
+    SDL_ReleaseGPUTransferBuffer(device, brushTransferBuffer);
+
+    const SDL_GPUSamplerCreateInfo brush_sampler_create_info = {
+        .min_filter = SDL_GPU_FILTER_LINEAR,
+        .mag_filter = SDL_GPU_FILTER_LINEAR,
+        .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
+        .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .mip_lod_bias = 0.0f,
+        .max_anisotropy = 0.0f,
+        .compare_op = SDL_GPU_COMPAREOP_INVALID,
+        .min_lod = 0.0f,
+        .max_lod = 0.0f,
+        .enable_anisotropy = false,
+        .enable_compare = false,
+    };
+    brush_sampler = SDL_CreateGPUSampler(device, &brush_sampler_create_info);
+    if (brush_sampler == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create brush sampler: %s", SDL_GetError());
         return false;
     }
 
@@ -681,6 +783,7 @@ bool Renderer::Render() {
     if (!app->canvas.stroke_points.empty() && app->canvas.stroke_started) {
         paint_stroke_point_transfer_buffer_ptr =
             (std::uint8_t *)SDL_MapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer, false);
+        memset(paint_stroke_point_transfer_buffer_ptr, 0, MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint));
         memcpy(paint_stroke_point_transfer_buffer_ptr, app->canvas.stroke_points.data(),
                app->canvas.stroke_points.size() * sizeof(Canvas::StrokePoint));
         SDL_UnmapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
@@ -739,6 +842,12 @@ bool Renderer::Render() {
             tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
             SDL_PushGPUComputeUniformData(command_buffer, 1, &tile_render_data, sizeof(TileRenderData));
 
+            SDL_GPUTextureSamplerBinding samplerBinding = {
+                .texture = brush_texture,
+                .sampler = brush_sampler,
+            };
+            SDL_BindGPUComputeSamplers(paint_compute_pass, 0, &samplerBinding, 1);
+
             SDL_BindGPUComputeStorageBuffers(paint_compute_pass, 0, &paint_stroke_point_buffer, 1);
 
             SDL_DispatchGPUCompute(paint_compute_pass, paint_compute_invocations.x, paint_compute_invocations.y, 1);
@@ -750,10 +859,13 @@ bool Renderer::Render() {
 
         {
             ZoneScopedN("Submiting GPU command buffer");
-            if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+            auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(command_buffer);
+            if (fence == nullptr) {
                 SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
                 return false;
             }
+            SDL_WaitForGPUFences(device, true, &fence, 1);
+            SDL_ReleaseGPUFence(device, fence);
         }
     }
 
@@ -856,9 +968,14 @@ bool Renderer::Render() {
         {  // Layer rendering
             ZoneScopedN("Layer blending and rendering");
 
+            auto rgb = glm::vec3(app->bg_color);
+            rgb = glm::mix(glm::pow((rgb + glm::vec3(0.055)) * glm::vec3(1.0 / 1.055), glm::vec3(2.4)),
+                           rgb * glm::vec3(1.0 / 12.92), glm::lessThanEqual(rgb, glm::vec3(0.04045)));
+            rgb *= app->bg_color.a;
+
             const SDL_GPUColorTargetInfo target_info = {
                 .texture = canvas_texture,
-                .clear_color = SDL_FColor{app->bg_color.r, app->bg_color.g, app->bg_color.b, app->bg_color.a},
+                .clear_color = SDL_FColor{rgb.r, rgb.g, rgb.b, app->bg_color.a},
                 .load_op = SDL_GPU_LOADOP_CLEAR,
                 .store_op = SDL_GPU_STOREOP_STORE,
             };
@@ -911,7 +1028,7 @@ bool Renderer::Render() {
             ZoneScopedN("Render canvas texture");
             const SDL_GPUColorTargetInfo target_info = {
                 .texture = swapchain_texture,
-                .clear_color = SDL_FColor{1.0f, 1.0f, 1.0f, 0.0f},
+                .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f},
                 .load_op = SDL_GPU_LOADOP_CLEAR,
                 .store_op = SDL_GPU_STOREOP_STORE,
             };
@@ -1000,6 +1117,8 @@ void Renderer::Quit() {
     ZoneScoped;
 
     SDL_UnmapGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
+    SDL_ReleaseGPUTexture(device, brush_texture);
+    SDL_ReleaseGPUSampler(device, brush_sampler);
     SDL_ReleaseGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
     SDL_ReleaseGPUBuffer(device, paint_stroke_point_buffer);
     SDL_ReleaseGPUComputePipeline(device, paint_compute_pipeline);
