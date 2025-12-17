@@ -199,36 +199,116 @@ bool App::Update() {
                 if (canvas.eraser_mode) {
                     {
                         ImGui::PushID("Opacity");
-                        ImGui::SliderFloat("Opacity", &canvas.eraser_options.opacity, 0.0f, 1.0f);
-                        ImGui::PopID();
-                    }
-                    {
-                        ImGui::PushID("Opacity");
-                        ImGui::Checkbox("Pen", &canvas.eraser_options.opacity_pressure);
+                        if (ImGui::SliderFloat("Opacity", &canvas.eraser_options.opacity, 0.0f, 1.0f)) {
+                            canvas.eraser_options.opacity = std::ceil(canvas.eraser_options.opacity * 100.0f) / 100.0f;
+                            canvas.eraser_options_modified = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Checkbox("Pen", &canvas.eraser_options.opacity_pressure)) {
+                            canvas.eraser_options_modified = true;
+                        }
+                        if (canvas.eraser_options.opacity_pressure) {
+                            if (ImGui::SliderFloat2("range",
+                                                    glm::value_ptr(canvas.eraser_options.opacity_pressure_range), 0.0f,
+                                                    1.0f)) {
+                                canvas.eraser_options.opacity_pressure_range =
+                                    glm::ceil(canvas.eraser_options.opacity_pressure_range * 100.0f) / 100.0f;
+                                canvas.eraser_options.opacity_pressure_range.x =
+                                    std::min(canvas.eraser_options.opacity_pressure_range.x,
+                                             canvas.eraser_options.opacity_pressure_range.y);
+                                canvas.eraser_options.opacity_pressure_range.y =
+                                    std::max(canvas.eraser_options.opacity_pressure_range.x,
+                                             canvas.eraser_options.opacity_pressure_range.y);
+                                canvas.eraser_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
                     {
                         ImGui::PushID("Radius");
-                        ImGui::SliderFloat("Radius", &canvas.eraser_options.radius, 0.0f, 100.0f);
+                        if (ImGui::SliderFloat("Radius", &canvas.eraser_options.radius, 0.0f, 100.0f)) {
+                            canvas.eraser_options.radius = std::ceil(canvas.eraser_options.radius * 100.0f) / 100.0f;
+                            canvas.eraser_options_modified = true;
+                        }
                         ImGui::SameLine();
-                        ImGui::Checkbox("Pen", &canvas.eraser_options.radius_pressure);
+                        if (ImGui::Checkbox("Pen", &canvas.eraser_options.radius_pressure)) {
+                            canvas.eraser_options_modified = true;
+                        }
+                        if (canvas.eraser_options.radius_pressure) {
+                            if (ImGui::SliderFloat2("Radius Range",
+                                                    glm::value_ptr(canvas.eraser_options.radius_pressure_range), 0.0f,
+                                                    1.0f)) {
+                                canvas.eraser_options.radius_pressure_range =
+                                    glm::ceil(canvas.eraser_options.radius_pressure_range * 100.0f) / 100.0f;
+                                canvas.eraser_options.radius_pressure_range.x =
+                                    std::min(canvas.eraser_options.radius_pressure_range.x,
+                                             canvas.eraser_options.radius_pressure_range.y);
+                                canvas.eraser_options.radius_pressure_range.y =
+                                    std::max(canvas.eraser_options.radius_pressure_range.x,
+                                             canvas.eraser_options.radius_pressure_range.y);
+                                canvas.eraser_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
                     {
                         ImGui::PushID("Flow");
-                        ImGui::SliderFloat("Flow", &canvas.eraser_options.flow, 0.01f, 1.0f);
+                        if (ImGui::SliderFloat("Flow", &canvas.eraser_options.flow, 0.01f, 1.0f)) {
+                            canvas.eraser_options.flow = std::ceil(canvas.eraser_options.flow * 100.0f) / 100.0f;
+                            canvas.eraser_options_modified = true;
+                        }
                         ImGui::SameLine();
-                        ImGui::Checkbox("Pen", &canvas.eraser_options.flow_pressure);
+                        if (ImGui::Checkbox("Pen", &canvas.eraser_options.flow_pressure)) {
+                            canvas.eraser_options_modified = true;
+                        }
+                        if (canvas.eraser_options.flow_pressure) {
+                            if (ImGui::SliderFloat2("range", glm::value_ptr(canvas.eraser_options.flow_pressure_range),
+                                                    0.0f, 1.0f)) {
+                                canvas.eraser_options.flow_pressure_range =
+                                    glm::ceil(canvas.eraser_options.flow_pressure_range * 100.0f) / 100.0f;
+                                canvas.eraser_options.flow_pressure_range.x =
+                                    std::min(canvas.eraser_options.flow_pressure_range.x,
+                                             canvas.eraser_options.flow_pressure_range.y);
+                                canvas.eraser_options.flow_pressure_range.y =
+                                    std::max(canvas.eraser_options.flow_pressure_range.x,
+                                             canvas.eraser_options.flow_pressure_range.y);
+                                canvas.eraser_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
                     {
                         ImGui::PushID("Hardness");
-                        ImGui::SliderFloat("Hardness", &canvas.eraser_options.hardness, 0.0f, 1.0f);
+                        if (ImGui::SliderFloat("Hardness", &canvas.eraser_options.hardness, 0.0f, 1.0f)) {
+                            canvas.eraser_options.hardness =
+                                std::ceil(canvas.eraser_options.hardness * 100.0f) / 100.0f;
+                            canvas.eraser_options_modified = true;
+                        }
                         ImGui::SameLine();
-                        ImGui::Checkbox("Pen", &canvas.eraser_options.hardness_pressure);
+                        if (ImGui::Checkbox("Pen", &canvas.eraser_options.hardness_pressure)) {
+                            canvas.eraser_options_modified = true;
+                        }
+                        if (canvas.eraser_options.hardness_pressure) {
+                            if (ImGui::SliderFloat2("range",
+                                                    glm::value_ptr(canvas.eraser_options.hardness_pressure_range), 0.0f,
+                                                    1.0f)) {
+                                canvas.eraser_options.hardness_pressure_range =
+                                    glm::ceil(canvas.eraser_options.hardness_pressure_range * 100.0f) / 100.0f;
+                                canvas.eraser_options.hardness_pressure_range.x =
+                                    std::min(canvas.eraser_options.hardness_pressure_range.x,
+                                             canvas.eraser_options.hardness_pressure_range.y);
+                                canvas.eraser_options.hardness_pressure_range.y =
+                                    std::max(canvas.eraser_options.hardness_pressure_range.x,
+                                             canvas.eraser_options.hardness_pressure_range.y);
+                                canvas.eraser_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
-                    ImGui::SliderFloat("Spacing", &canvas.eraser_options.spacing, 0.1f, 50.0f);
+                    if (ImGui::SliderFloat("Spacing", &canvas.eraser_options.spacing, 0.1f, 50.0f)) {
+                        canvas.eraser_options.spacing = std::ceil(canvas.eraser_options.spacing * 100.0f) / 100.0f;
+                        canvas.eraser_options_modified = true;
+                    }
                     ImGui::Separator();
                     ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
                     ImGui::Checkbox("Using pen", &pen_in_range);
@@ -236,37 +316,113 @@ bool App::Update() {
                     ImGui::LabelText("Pressure", "%.2f", pen_pressure);
                 } else if (canvas.brush_mode) {
                     {
-                        ImGui::PushID("Color");
-                        ImGui::ColorEdit4("Color", glm::value_ptr(canvas.brush_options.color));
-                        ImGui::PopID();
-                    }
-                    {
                         ImGui::PushID("Opacity");
-                        ImGui::Checkbox("Pen", &canvas.brush_options.opacity_pressure);
+                        if (ImGui::ColorEdit4("Color", glm::value_ptr(canvas.brush_options.color))) {
+                            canvas.brush_options_modified = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Checkbox("Pen", &canvas.brush_options.opacity_pressure)) {
+                            canvas.brush_options_modified = true;
+                        }
+                        if (canvas.brush_options.opacity_pressure) {
+                            if (ImGui::SliderFloat2(
+                                    "range", glm::value_ptr(canvas.brush_options.opacity_pressure_range), 0.0f, 1.0f)) {
+                                canvas.brush_options.opacity_pressure_range =
+                                    glm::ceil(canvas.brush_options.opacity_pressure_range * 100.0f) / 100.0f;
+                                canvas.brush_options.opacity_pressure_range.x =
+                                    std::min(canvas.brush_options.opacity_pressure_range.x,
+                                             canvas.brush_options.opacity_pressure_range.y);
+                                canvas.brush_options.opacity_pressure_range.y =
+                                    std::max(canvas.brush_options.opacity_pressure_range.x,
+                                             canvas.brush_options.opacity_pressure_range.y);
+                                canvas.brush_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
                     {
                         ImGui::PushID("Radius");
-                        ImGui::SliderFloat("Radius", &canvas.brush_options.radius, 0.0f, 100.0f);
+                        if (ImGui::SliderFloat("Radius", &canvas.brush_options.radius, 0.0f, 100.0f)) {
+                            canvas.brush_options.radius = std::ceil(canvas.brush_options.radius * 100.0f) / 100.0f;
+                            canvas.brush_options_modified = true;
+                        }
                         ImGui::SameLine();
-                        ImGui::Checkbox("Pen", &canvas.brush_options.radius_pressure);
+                        if (ImGui::Checkbox("Pen", &canvas.brush_options.radius_pressure)) {
+                            canvas.brush_options_modified = true;
+                        }
+                        if (canvas.brush_options.radius_pressure) {
+                            if (ImGui::SliderFloat2("range", glm::value_ptr(canvas.brush_options.radius_pressure_range),
+                                                    0.0f, 1.0f)) {
+                                canvas.brush_options.radius_pressure_range =
+                                    glm::ceil(canvas.brush_options.radius_pressure_range * 100.0f) / 100.0f;
+                                canvas.brush_options.radius_pressure_range.x =
+                                    std::min(canvas.brush_options.radius_pressure_range.x,
+                                             canvas.brush_options.radius_pressure_range.y);
+                                canvas.brush_options.radius_pressure_range.y =
+                                    std::max(canvas.brush_options.radius_pressure_range.x,
+                                             canvas.brush_options.radius_pressure_range.y);
+                                canvas.brush_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
                     {
                         ImGui::PushID("Flow");
-                        ImGui::SliderFloat("Flow", &canvas.brush_options.flow, 0.0f, 1.0f);
+                        if (ImGui::SliderFloat("Flow", &canvas.brush_options.flow, 0.01f, 1.0f)) {
+                            canvas.brush_options.flow = std::ceil(canvas.brush_options.flow * 100.0f) / 100.0f;
+                            canvas.brush_options_modified = true;
+                        }
                         ImGui::SameLine();
-                        ImGui::Checkbox("Pen", &canvas.brush_options.flow_pressure);
+                        if (ImGui::Checkbox("Pen", &canvas.brush_options.flow_pressure)) {
+                            canvas.brush_options_modified = true;
+                        }
+                        if (canvas.brush_options.flow_pressure) {
+                            if (ImGui::SliderFloat2("range", glm::value_ptr(canvas.brush_options.flow_pressure_range),
+                                                    0.0f, 1.0f)) {
+                                canvas.brush_options.flow_pressure_range =
+                                    glm::ceil(canvas.brush_options.flow_pressure_range * 100.0f) / 100.0f;
+                                canvas.brush_options.flow_pressure_range.x =
+                                    std::min(canvas.brush_options.flow_pressure_range.x,
+                                             canvas.brush_options.flow_pressure_range.y);
+                                canvas.brush_options.flow_pressure_range.y =
+                                    std::max(canvas.brush_options.flow_pressure_range.x,
+                                             canvas.brush_options.flow_pressure_range.y);
+                                canvas.brush_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
                     {
                         ImGui::PushID("Hardness");
-                        ImGui::SliderFloat("Hardness", &canvas.brush_options.hardness, 0.0f, 1.0f);
+                        if (ImGui::SliderFloat("Hardness", &canvas.brush_options.hardness, 0.0f, 1.0f)) {
+                            canvas.brush_options.hardness = std::ceil(canvas.brush_options.hardness * 100.0f) / 100.0f;
+                            canvas.brush_options_modified = true;
+                        }
                         ImGui::SameLine();
-                        ImGui::Checkbox("Pen", &canvas.brush_options.hardness_pressure);
+                        if (ImGui::Checkbox("Pen", &canvas.brush_options.hardness_pressure)) {
+                            canvas.brush_options_modified = true;
+                        }
+                        if (canvas.brush_options.hardness_pressure) {
+                            if (ImGui::SliderFloat2("range",
+                                                    glm::value_ptr(canvas.brush_options.hardness_pressure_range), 0.0f,
+                                                    1.0f)) {
+                                canvas.brush_options.hardness_pressure_range =
+                                    glm::ceil(canvas.brush_options.hardness_pressure_range * 100.0f) / 100.0f;
+                                canvas.brush_options.hardness_pressure_range.x =
+                                    std::min(canvas.brush_options.hardness_pressure_range.x,
+                                             canvas.brush_options.hardness_pressure_range.y);
+                                canvas.brush_options.hardness_pressure_range.y =
+                                    std::max(canvas.brush_options.hardness_pressure_range.x,
+                                             canvas.brush_options.hardness_pressure_range.y);
+                                canvas.brush_options_modified = true;
+                            }
+                        }
                         ImGui::PopID();
                     }
-                    ImGui::SliderFloat("Spacing", &canvas.brush_options.spacing, 0.1f, 50.0f);
+                    if (ImGui::SliderFloat("Spacing", &canvas.brush_options.spacing, 0.1f, 50.0f)) {
+                        canvas.brush_options.spacing = std::ceil(canvas.brush_options.spacing * 100.0f) / 100.0f;
+                        canvas.brush_options_modified = true;
+                    }
                     ImGui::Separator();
                     ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
                     ImGui::Checkbox("Using pen", &pen_in_range);
@@ -306,6 +462,13 @@ bool App::Resize(const int width, const int height) {
 void App::ShouldQuit() {
     should_quit = true;
     const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    if (canvas.brush_options_modified) {
+        canvas.SaveBrush();
+    }
+    if (canvas.eraser_options_modified) {
+        canvas.SaveEraser();
+    }
+
     for (const auto &layer : layersToSave) {
         if (canvas.layer_infos[layer].temporary) {
             continue;

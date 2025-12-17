@@ -10,6 +10,7 @@
 - fix stroke layer opacity missmatch
 - properly check srgb -> linear -> srgb
 - add opacity on eraser for soft erasing
+- add wintab for higher pen resolution
 
 ### In Progress
 
@@ -17,6 +18,7 @@
 
 ### Done
 
+- save brushes
 - hard eraser
 - load saved tile
 - save tile on unload

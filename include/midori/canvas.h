@@ -298,42 +298,56 @@ class Canvas {
     struct BrushOptions {
         glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         bool opacity_pressure = false;
+        glm::vec2 opacity_pressure_range = {0.0f, 1.0f};
 
         float flow = 0.5f;
         bool flow_pressure = false;
+        glm::vec2 flow_pressure_range = {0.0f, 1.0f};
 
         float radius = 8.0f;
         bool radius_pressure = false;
+        glm::vec2 radius_pressure_range = {0.0f, 1.0f};
 
         float hardness = 0.5f;
         bool hardness_pressure = false;
+        glm::vec2 hardness_pressure_range = {0.0f, 1.0f};
 
         float spacing = 1.5f;
     } brush_options;
+    bool brush_options_modified = false;
     [[nodiscard]] StrokePoint ApplyBrushPressure(StrokePoint point, float pressure) const;
     void StartBrushStroke(StrokePoint point);
     void UpdateBrushStroke(StrokePoint point);
     void EndBrushStroke(StrokePoint point);
+    void SaveBrush();
+    void OpenBrush();
 
     struct EraserOptions {
         float opacity = 1.0f;
         bool opacity_pressure = false;
+        glm::vec2 opacity_pressure_range = {0.0f, 1.0f};
 
         float flow = 0.5f;
         bool flow_pressure = false;
+        glm::vec2 flow_pressure_range = {0.0f, 1.0f};
 
         float radius = 8.0f;
         bool radius_pressure = false;
+        glm::vec2 radius_pressure_range = {0.0f, 1.0f};
 
         float hardness = 0.5f;
         bool hardness_pressure = false;
+        glm::vec2 hardness_pressure_range = {0.0f, 1.0f};
 
         float spacing = 1.5f;
     } eraser_options;
+    bool eraser_options_modified = false;
     [[nodiscard]] StrokePoint ApplyEraserPressure(StrokePoint point, float pressure) const;
     void StartEraserStroke(StrokePoint point);
     void UpdateEraserStroke(StrokePoint point);
     void EndEraserStroke(StrokePoint point);
+    void SaveEraser();
+    void OpenEraser();
 };
 }  // namespace Midori
 
