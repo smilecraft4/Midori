@@ -454,16 +454,16 @@ bool Renderer::InitMerge() {
 }
 
 bool Renderer::InitPaint() {
-    size_t code_size = 0;
-    auto *code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/paint.comp.spv", &code_size);
-    if (code_size == 0) {
+    size_t paint_code_size = 0;
+    auto *paint_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/paint.comp.spv", &paint_code_size);
+    if (paint_code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
                      "./data/shaders/vulkan/paint.comp.spv", SDL_GetError());
         return false;
     }
-    const SDL_GPUComputePipelineCreateInfo create_info = {
-        .code_size = code_size,
-        .code = code,
+    const SDL_GPUComputePipelineCreateInfo paint_create_info = {
+        .code_size = paint_code_size,
+        .code = paint_code,
         .entrypoint = "main",
         .format = SDL_GPU_SHADERFORMAT_SPIRV,
         .num_samplers = 1,  // alpha brush
@@ -476,11 +476,42 @@ bool Renderer::InitPaint() {
         .threadcount_y = 32,
         .threadcount_z = 1,
     };
-    paint_compute_pipeline = SDL_CreateGPUComputePipeline(device, &create_info);
+    paint_compute_pipeline = SDL_CreateGPUComputePipeline(device, &paint_create_info);
     if (paint_compute_pipeline == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize paint compute pipeline: %s", SDL_GetError());
         return false;
     }
+    SDL_free(paint_code);
+
+    size_t erase_code_size = 0;
+    auto *erase_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/erase.comp.spv", &erase_code_size);
+    if (erase_code_size == 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
+                     "./data/shaders/vulkan/erase.comp.spv", SDL_GetError());
+        return false;
+    }
+    const SDL_GPUComputePipelineCreateInfo erase_create_info = {
+        .code_size = erase_code_size,
+        .code = erase_code,
+        .entrypoint = "main",
+        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .num_samplers = 1,  // alpha brush
+        .num_readonly_storage_textures = 0,
+        .num_readonly_storage_buffers = 1,    // stroke buffer
+        .num_readwrite_storage_textures = 1,  // dst texture
+        .num_readwrite_storage_buffers = 0,
+        .num_uniform_buffers = 2,  // tile + stroke
+        .threadcount_x = 32,
+        .threadcount_y = 32,
+        .threadcount_z = 1,
+    };
+    erase_compute_pipeline = SDL_CreateGPUComputePipeline(device, &erase_create_info);
+    if (erase_compute_pipeline == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize erase compute pipeline: %s", SDL_GetError());
+        return false;
+    }
+    SDL_free(erase_code);
+
     const SDL_GPUBufferCreateInfo buffer_create_info = {
         .usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,
         .size = MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint),
@@ -834,25 +865,48 @@ bool Renderer::Render() {
                 .mip_level = 0,
                 .layer = 0,
             }};
-            SDL_GPUComputePass *paint_compute_pass =
-                SDL_BeginGPUComputePass(command_buffer, paint_tile_binding, 1, nullptr, 0);
-            SDL_BindGPUComputePipeline(paint_compute_pass, paint_compute_pipeline);
+            if (app->canvas.brush_mode) {
+                SDL_GPUComputePass *paint_compute_pass =
+                    SDL_BeginGPUComputePass(command_buffer, paint_tile_binding, 1, nullptr, 0);
+                SDL_BindGPUComputePipeline(paint_compute_pass, paint_compute_pipeline);
 
-            tile_render_data.position = app->canvas.tile_infos.at(tile).position;
-            tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
-            SDL_PushGPUComputeUniformData(command_buffer, 1, &tile_render_data, sizeof(TileRenderData));
+                tile_render_data.position = app->canvas.tile_infos.at(tile).position;
+                tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
+                SDL_PushGPUComputeUniformData(command_buffer, 1, &tile_render_data, sizeof(TileRenderData));
 
-            SDL_GPUTextureSamplerBinding samplerBinding = {
-                .texture = brush_texture,
-                .sampler = brush_sampler,
-            };
-            SDL_BindGPUComputeSamplers(paint_compute_pass, 0, &samplerBinding, 1);
+                SDL_GPUTextureSamplerBinding samplerBinding = {
+                    .texture = brush_texture,
+                    .sampler = brush_sampler,
+                };
+                SDL_BindGPUComputeSamplers(paint_compute_pass, 0, &samplerBinding, 1);
 
-            SDL_BindGPUComputeStorageBuffers(paint_compute_pass, 0, &paint_stroke_point_buffer, 1);
+                SDL_BindGPUComputeStorageBuffers(paint_compute_pass, 0, &paint_stroke_point_buffer, 1);
 
-            SDL_DispatchGPUCompute(paint_compute_pass, paint_compute_invocations.x, paint_compute_invocations.y, 1);
+                SDL_DispatchGPUCompute(paint_compute_pass, paint_compute_invocations.x, paint_compute_invocations.y, 1);
 
-            SDL_EndGPUComputePass(paint_compute_pass);
+                SDL_EndGPUComputePass(paint_compute_pass);
+
+            } else if (app->canvas.eraser_mode) {
+                SDL_GPUComputePass *erase_compute_pass =
+                    SDL_BeginGPUComputePass(command_buffer, paint_tile_binding, 1, nullptr, 0);
+                SDL_BindGPUComputePipeline(erase_compute_pass, erase_compute_pipeline);
+
+                tile_render_data.position = app->canvas.tile_infos.at(tile).position;
+                tile_render_data.size = glm::vec2(TILE_SIZE, TILE_SIZE);
+                SDL_PushGPUComputeUniformData(command_buffer, 1, &tile_render_data, sizeof(TileRenderData));
+
+                SDL_GPUTextureSamplerBinding samplerBinding = {
+                    .texture = brush_texture,
+                    .sampler = brush_sampler,
+                };
+                SDL_BindGPUComputeSamplers(erase_compute_pass, 0, &samplerBinding, 1);
+
+                SDL_BindGPUComputeStorageBuffers(erase_compute_pass, 0, &paint_stroke_point_buffer, 1);
+
+                SDL_DispatchGPUCompute(erase_compute_pass, paint_compute_invocations.x, paint_compute_invocations.y, 1);
+
+                SDL_EndGPUComputePass(erase_compute_pass);
+            }
         }
         app->canvas.stroke_tile_affected.clear();
         app->canvas.stroke_points.clear();
@@ -1121,6 +1175,7 @@ void Renderer::Quit() {
     SDL_ReleaseGPUSampler(device, brush_sampler);
     SDL_ReleaseGPUTransferBuffer(device, paint_stroke_point_transfer_buffer);
     SDL_ReleaseGPUBuffer(device, paint_stroke_point_buffer);
+    SDL_ReleaseGPUComputePipeline(device, erase_compute_pipeline);
     SDL_ReleaseGPUComputePipeline(device, paint_compute_pipeline);
 
     SDL_ReleaseGPUComputePipeline(device, merge_compute_pipeline);

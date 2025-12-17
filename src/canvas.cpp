@@ -833,11 +833,11 @@ std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint poin
     return tiles_pos;
 }
 
-Canvas::StrokePoint Canvas::ApplyPressure(StrokePoint point, const float pressure) const {
+Canvas::StrokePoint Canvas::ApplyBrushPressure(StrokePoint point, const float pressure) const {
     // TODO: Add min max value
 
     if (brush_options.opacity_pressure) {
-        point.color.a *= pressure;  // We use premultiplied alpha
+        point.color.a *= pressure;
     }
     if (brush_options.radius_pressure) {
         point.radius *= pressure;
@@ -859,10 +859,7 @@ void Canvas::StartBrushStroke(StrokePoint point) {
     stroke_started = true;
 
     if (app->pen_in_range) {
-        point = ApplyPressure(point, app->pen_pressure);
-        // point.color.r *= point.color.a;
-        // point.color.g *= point.color.a;
-        // point.color.b *= point.color.a;
+        point = ApplyBrushPressure(point, app->pen_pressure);
     }
 
     SDL_assert(stroke_layer == 0);
@@ -909,10 +906,7 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
     SDL_assert(stroke_layer != 0);
 
     if (app->pen_in_range) {
-        point = ApplyPressure(point, app->pen_pressure);
-        // point.color.r *= point.color.a;
-        // point.color.g *= point.color.a;
-        // point.color.b *= point.color.a;
+        point = ApplyBrushPressure(point, app->pen_pressure);
     }
 
     const auto distance = glm::distance(previous_point.position, point.position);
@@ -940,16 +934,8 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
         // Maybe use SIMD for this
         point.position = glm::mix(start_point.position, end_point.position, t);
         point.color = glm::mix(start_point.color, end_point.color, t);
-        // if (brush_options.debug_color) {
-        //   point.color.r = debug_color.r;
-        //   point.color.g = debug_color.g;
-        //   point.color.b = debug_color.b;
-        // }
         point.flow = std::lerp(start_point.flow, end_point.flow, t);
         point.radius = std::lerp(start_point.radius, end_point.radius, t);
-        // if (brush_options.debug_radius) {
-        //   point.radius = std::lerp(0.0f, end_point.radius, t);
-        // }
         point.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
 
         stroke_points.push_back(point);
@@ -990,7 +976,7 @@ void Canvas::EndBrushStroke(StrokePoint point) {
     SDL_assert(stroke_started);
 
     if (app->pen_in_range) {
-        point = ApplyPressure(point, app->pen_pressure);
+        point = ApplyBrushPressure(point, app->pen_pressure);
         // point.color.r *= point.color.a;
         // point.color.g *= point.color.a;
         // point.color.b *= point.color.a;
@@ -1008,6 +994,134 @@ void Canvas::EndBrushStroke(StrokePoint point) {
     // for (const auto &tile : allTileStrokeAffected) {
     //    layerTilesModified[selected_layer].insert(tile);
     //}
+
+    stroke_started = false;
+}
+
+Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float pressure) const {
+    // TODO: Add min max value
+
+    if (eraser_options.opacity_pressure) {
+        point.color.a *= pressure;
+    }
+    if (eraser_options.radius_pressure) {
+        point.radius *= pressure;
+    }
+    if (eraser_options.flow_pressure) {
+        point.flow *= pressure;
+    }
+    if (eraser_options.hardness_pressure) {
+        point.hardness *= pressure;
+    }
+
+    return point;
+}
+
+// This assumes every painted tiles are not going to be culled
+void Canvas::StartEraserStroke(StrokePoint point) {
+    ZoneScoped;
+    SDL_assert(!stroke_started);
+    stroke_started = true;
+
+    if (app->pen_in_range) {
+        point = ApplyEraserPressure(point, app->pen_pressure);
+    }
+
+    const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
+    for (const auto &tile_pos : tiles_pos) {
+        Tile tile = GetTileAt(selected_layer, tile_pos);
+        if (tile == 0) {
+            if (const auto result = CreateTile(selected_layer, tile_pos); result.has_value()) {
+                tile = result.value();
+                stroke_tile_affected.insert(tile);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create stroke tile");
+            }
+        } else {
+            stroke_tile_affected.insert(tile);
+        }
+    }
+
+    // stroke_points.push_back(point);
+    stroke_points.clear();
+
+    previous_point = point;
+}
+
+// This assumes every painted tiles are not going to be culled
+void Canvas::UpdateEraserStroke(StrokePoint point) {
+    ZoneScoped;
+    SDL_assert(stroke_started);
+
+    if (app->pen_in_range) {
+        point = ApplyEraserPressure(point, app->pen_pressure);
+    }
+
+    const auto distance = glm::distance(previous_point.position, point.position);
+    const int stroke_num = std::floor(distance / eraser_options.spacing);
+    if (stroke_num == 0) {
+        return;
+    }
+
+    const auto start_point = previous_point;
+    const auto end_point = point;
+
+    static int round = 0;
+    round = (round + 1) % 4;
+    glm::vec4 debug_color;
+    ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debug_color.r, debug_color.g, debug_color.b);
+
+    const auto t_step = eraser_options.spacing / distance;
+    float t = t_step;
+    int i = 1;
+    while (t < 1.0f) {
+        ZoneScoped;
+
+        StrokePoint point;
+
+        // Maybe use SIMD for this
+        point.position = glm::mix(start_point.position, end_point.position, t);
+        point.color = glm::mix(start_point.color, end_point.color, t);
+        point.flow = std::lerp(start_point.flow, end_point.flow, t);
+        point.radius = std::lerp(start_point.radius, end_point.radius, t);
+        point.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
+
+        stroke_points.push_back(point);
+        previous_point = point;
+
+        t += t_step;
+        i++;
+
+        {
+            ZoneScoped;
+            const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
+            for (const auto &tile_pos : tiles_pos) {
+                Tile strokeLayertile = GetTileAt(selected_layer, tile_pos);
+                if (strokeLayertile == 0) {
+                    if (const auto result = CreateTile(selected_layer, tile_pos); result.has_value()) {
+                        strokeLayertile = result.value();
+                        stroke_tile_affected.insert(strokeLayertile);
+                    } else {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create stroke tile");
+                    }
+                } else {
+                    stroke_tile_affected.insert(strokeLayertile);
+                }
+            }
+        }
+    }
+}
+
+// This assumes every painted tiles are not going to be culled
+void Canvas::EndEraserStroke(StrokePoint point) {
+    ZoneScoped;
+    SDL_assert(stroke_started);
+
+    if (app->pen_in_range) {
+        point = ApplyEraserPressure(point, app->pen_pressure);
+    }
+
+    stroke_points.clear();
 
     stroke_started = false;
 }

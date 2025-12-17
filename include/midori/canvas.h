@@ -277,22 +277,6 @@ class Canvas {
     std::unordered_map<Tile, TileWriteStatus> tile_write_queue;
     void UpdateTileUnloading();
 
-    struct BrushOptions {
-        glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        bool opacity_pressure = false;
-
-        float flow = 0.5f;
-        bool flow_pressure = false;
-
-        float radius = 8.0f;
-        bool radius_pressure = false;
-
-        float hardness = 0.5f;
-        bool hardness_pressure = false;
-
-        float spacing = 0.5f;
-    } brush_options;
-
     struct StrokePoint {
         glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         glm::vec2 position;
@@ -308,11 +292,48 @@ class Canvas {
     std::unordered_set<Tile> allTileStrokeAffected;
     StrokePoint previous_point = {};
 
-    [[nodiscard]] StrokePoint ApplyPressure(StrokePoint point, float pressure) const;
+    bool brush_mode = true;
+    bool eraser_mode = false;
 
+    struct BrushOptions {
+        glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        bool opacity_pressure = false;
+
+        float flow = 0.5f;
+        bool flow_pressure = false;
+
+        float radius = 8.0f;
+        bool radius_pressure = false;
+
+        float hardness = 0.5f;
+        bool hardness_pressure = false;
+
+        float spacing = 1.5f;
+    } brush_options;
+    [[nodiscard]] StrokePoint ApplyBrushPressure(StrokePoint point, float pressure) const;
     void StartBrushStroke(StrokePoint point);
     void UpdateBrushStroke(StrokePoint point);
     void EndBrushStroke(StrokePoint point);
+
+    struct EraserOptions {
+        float opacity = 1.0f;
+        bool opacity_pressure = false;
+
+        float flow = 0.5f;
+        bool flow_pressure = false;
+
+        float radius = 8.0f;
+        bool radius_pressure = false;
+
+        float hardness = 0.5f;
+        bool hardness_pressure = false;
+
+        float spacing = 1.5f;
+    } eraser_options;
+    [[nodiscard]] StrokePoint ApplyEraserPressure(StrokePoint point, float pressure) const;
+    void StartEraserStroke(StrokePoint point);
+    void UpdateEraserStroke(StrokePoint point);
+    void EndEraserStroke(StrokePoint point);
 };
 }  // namespace Midori
 

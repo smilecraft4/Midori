@@ -5,22 +5,22 @@
 ### Todo
 
 - viewport rotations
-- viewport zoom
 - viewport undo/redo
-- canvas undo/redo
-- alpha premultiplied everywhere
-- only render needed layers
 - shortcuts for brush setting
-- load saved tile
-- save tile on unload
+- fix stroke layer opacity missmatch
+- properly check srgb -> linear -> srgb
+- add opacity on eraser for soft erasing
 
 ### In Progress
 
-- eraser
-- fix stroke blending
+- canvas undo/redo
 
 ### Done
 
+- hard eraser
+- load saved tile
+- save tile on unload
+- fix stroke blending
 - file saving on close
 - better loading/unloading logic
 - directory file format

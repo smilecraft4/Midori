@@ -163,6 +163,7 @@ class Renderer {
     static constexpr size_t MAX_PAINT_STROKE_POINTS = 2048;
     SDL_GPUBuffer *paint_stroke_point_buffer = nullptr;
     SDL_GPUComputePipeline *paint_compute_pipeline = nullptr;
+    SDL_GPUComputePipeline *erase_compute_pipeline = nullptr;
     SDL_GPUTransferBuffer *paint_stroke_point_transfer_buffer = nullptr;
     SDL_GPUTexture *brush_texture = nullptr;
     SDL_GPUSampler *brush_sampler = nullptr;

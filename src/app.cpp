@@ -93,7 +93,7 @@ bool App::Update() {
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
-            static bool ui_debug_culling = true;
+            static bool ui_debug_culling = false;
             if (ImGui::Begin("View")) {
                 ImGui::LabelText("Position", "x:%.2f y:%.2f", canvas.view.pan.x, canvas.view.pan.y);
                 ImGui::LabelText("Zoom", "%.2f", canvas.view.zoom_amount);
@@ -103,20 +103,7 @@ bool App::Update() {
             }
             ImGui::End();
             if (ui_debug_culling && canvas.stroke_layer > 0) {
-                // const std::vector<glm::ivec2> visible_tiles_positions =
-                //     canvas.GetVisibleTilePositions(canvas.view, window_size / 2);
                 ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-                //{
-                //  const ImVec2 pmin = {
-                //      ((float)window_size.x / 2.0f) + ((float)window_size.x / -4.0f),
-                //      ((float)window_size.y / 2.0f) + ((float)window_size.y / -4.0f),
-                //  };
-                //  const ImVec2 pmax = {
-                //      pmin.x + ((float)window_size.x / 2.0f),
-                //      pmin.y + ((float)window_size.y / 2.0f),
-                //  };
-                //  draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 255, 255));
-                //}
                 for (const auto &[pos, tile] : canvas.layer_tile_pos.at(canvas.stroke_layer)) {
                     const ImVec2 pmin = {
                         ((float)window_size.x / 2.0f) + canvas.view.pan.x + ((float)pos.x * (float)TILE_SIZE),
@@ -136,40 +123,6 @@ bool App::Update() {
                     draw_list->AddText(pcenter, IM_COL32(0, 0, 0, 64), text.c_str());
                 }
             }
-
-            /*{
-              ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-              const glm::ivec2 pos = glm::floor((cursor_current_pos - canvas.view.pan -
-                                                 (glm::vec2(window_size) / 2.0f)) /
-                                                glm::vec2(TILE_SIZE));
-              const ImVec2 pmin = {
-                  ((float)window_size.x / 2.0f) + canvas.view.pan.x +
-                      ((float)pos.x * (float)TILE_SIZE),
-                  ((float)window_size.y / 2.0f) + canvas.view.pan.y +
-                      ((float)pos.y * (float)TILE_SIZE),
-              };
-              const ImVec2 pmax = {
-                  pmin.x + (float)TILE_SIZE,
-                  pmin.y + (float)TILE_SIZE,
-              };
-              const ImVec2 pcenter = {
-                  pmin.x + (float)TILE_SIZE / 2.0f,
-                  pmin.y + (float)TILE_SIZE / 2.0f,
-              };
-
-              // draw_list->AddRect(pmin, pmax, IM_COL32(255, 0, 0, 255));
-              // std::string text = std::format("[{}, {}]", pos.x, pos.y);
-              // draw_list->AddText(pcenter, IM_COL32(255, 0, 0, 128), text.c_str());
-            }*/
-
-            if (ImGui::Begin("Tile infos")) {
-                ImGui::LabelText("Total tiles", "%llu", canvas.tile_infos.size());
-                ImGui::LabelText("Queued Tiles", "%llu", canvas.tile_read_queue.size());
-                ImGui::LabelText("Tile texture", "%llu", renderer.tile_textures.size());
-                ImGui::LabelText("Tile uploading allocated", "%llu", renderer.allocated_tile_upload_offset.size());
-                ImGui::LabelText("Tile Last rendered", "%llu", renderer.last_rendered_tiles_num);
-            }
-            ImGui::End();
 
             if (ImGui::Begin("Layers")) {
                 // Temporary layer stuff
@@ -231,56 +184,100 @@ bool App::Update() {
                     const auto layer = canvas.CreateLayer("New Layer", 0);
                     canvas.SaveLayer(layer);
                 }
+                ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color));
             }
-            ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color));
             ImGui::End();
 
             // TODO: Debug tile multithreaded download process (GPU->CPU->Disk)
             // TODO: Debug tile multithreaded upload process (Disk->CPU->GPU)
 
             if (ImGui::Begin("Stroke Options")) {
-                {
-                    ImGui::PushID("Color");
-                    ImGui::ColorEdit4("Color", glm::value_ptr(canvas.brush_options.color));
-                    ImGui::PopID();
+                if (ImGui::Checkbox("Eraser", &canvas.eraser_mode)) {
+                    canvas.brush_mode = !canvas.eraser_mode;
                 }
-                {
-                    ImGui::PushID("Opacity");
-                    ImGui::Checkbox("Pen", &canvas.brush_options.opacity_pressure);
-                    ImGui::PopID();
+
+                if (canvas.eraser_mode) {
+                    {
+                        ImGui::PushID("Opacity");
+                        ImGui::SliderFloat("Opacity", &canvas.eraser_options.opacity, 0.0f, 1.0f);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Opacity");
+                        ImGui::Checkbox("Pen", &canvas.eraser_options.opacity_pressure);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Radius");
+                        ImGui::SliderFloat("Radius", &canvas.eraser_options.radius, 0.0f, 100.0f);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pen", &canvas.eraser_options.radius_pressure);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Flow");
+                        ImGui::SliderFloat("Flow", &canvas.eraser_options.flow, 0.01f, 1.0f);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pen", &canvas.eraser_options.flow_pressure);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Hardness");
+                        ImGui::SliderFloat("Hardness", &canvas.eraser_options.hardness, 0.0f, 1.0f);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pen", &canvas.eraser_options.hardness_pressure);
+                        ImGui::PopID();
+                    }
+                    ImGui::SliderFloat("Spacing", &canvas.eraser_options.spacing, 0.1f, 50.0f);
+                    ImGui::Separator();
+                    ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
+                    ImGui::Checkbox("Using pen", &pen_in_range);
+                    ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
+                    ImGui::LabelText("Pressure", "%.2f", pen_pressure);
+                } else if (canvas.brush_mode) {
+                    {
+                        ImGui::PushID("Color");
+                        ImGui::ColorEdit4("Color", glm::value_ptr(canvas.brush_options.color));
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Opacity");
+                        ImGui::Checkbox("Pen", &canvas.brush_options.opacity_pressure);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Radius");
+                        ImGui::SliderFloat("Radius", &canvas.brush_options.radius, 0.0f, 100.0f);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pen", &canvas.brush_options.radius_pressure);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Flow");
+                        ImGui::SliderFloat("Flow", &canvas.brush_options.flow, 0.0f, 1.0f);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pen", &canvas.brush_options.flow_pressure);
+                        ImGui::PopID();
+                    }
+                    {
+                        ImGui::PushID("Hardness");
+                        ImGui::SliderFloat("Hardness", &canvas.brush_options.hardness, 0.0f, 1.0f);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pen", &canvas.brush_options.hardness_pressure);
+                        ImGui::PopID();
+                    }
+                    ImGui::SliderFloat("Spacing", &canvas.brush_options.spacing, 0.1f, 50.0f);
+                    ImGui::Separator();
+                    ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
+                    ImGui::Checkbox("Using pen", &pen_in_range);
+                    ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
+                    ImGui::LabelText("Pressure", "%.2f", pen_pressure);
                 }
-                {
-                    ImGui::PushID("Radius");
-                    ImGui::SliderFloat("Radius", &canvas.brush_options.radius, 0.0f, 100.0f);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Pen", &canvas.brush_options.radius_pressure);
-                    ImGui::PopID();
-                }
-                {
-                    ImGui::PushID("Flow");
-                    ImGui::SliderFloat("Flow", &canvas.brush_options.flow, 0.0f, 1.0f);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Pen", &canvas.brush_options.flow_pressure);
-                    ImGui::PopID();
-                }
-                {
-                    ImGui::PushID("Hardness");
-                    ImGui::SliderFloat("Hardness", &canvas.brush_options.hardness, 0.0f, 1.0f);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Pen", &canvas.brush_options.hardness_pressure);
-                    ImGui::PopID();
-                }
-                ImGui::SliderFloat("Spacing", &canvas.brush_options.spacing, 0.1f, 50.0f);
-                ImGui::Separator();
-                ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
-                ImGui::Checkbox("Using pen", &pen_in_range);
-                ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
-                ImGui::LabelText("Pressure", "%.2f", pen_pressure);
             }
             ImGui::End();
-
-            ImGui::Render();
         }
+
+        ImGui::Render();
     }
 
     canvas.Update();
@@ -355,13 +352,23 @@ void App::CursorMove(glm::vec2 new_pos) {
         if (canvas.stroke_started) {
             const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
 
-            canvas.UpdateBrushStroke(Canvas::StrokePoint{
-                .color = canvas.brush_options.color,
-                .position = pos,
-                .radius = canvas.brush_options.radius,
-                .flow = canvas.brush_options.flow,
-                .hardness = canvas.brush_options.hardness,
-            });
+            if (canvas.brush_mode) {
+                canvas.UpdateBrushStroke(Canvas::StrokePoint{
+                    .color = canvas.brush_options.color,
+                    .position = pos,
+                    .radius = canvas.brush_options.radius,
+                    .flow = canvas.brush_options.flow,
+                    .hardness = canvas.brush_options.hardness,
+                });
+            } else if (canvas.eraser_mode) {
+                canvas.UpdateEraserStroke(Canvas::StrokePoint{
+                    .color = {0.0f, 0.0f, 0.0f, canvas.eraser_options.opacity},
+                    .position = pos,
+                    .radius = canvas.eraser_options.radius,
+                    .flow = canvas.eraser_options.flow,
+                    .hardness = canvas.eraser_options.hardness,
+                });
+            }
         }
     }
 
@@ -375,13 +382,23 @@ void App::CursorPress(Uint8 button) {
             !canvas.stroke_started) {
             const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
 
-            canvas.StartBrushStroke(Canvas::StrokePoint{
-                .color = canvas.brush_options.color,
-                .position = pos,
-                .radius = canvas.brush_options.radius,
-                .flow = canvas.brush_options.flow,
-                .hardness = canvas.brush_options.hardness,
-            });
+            if (canvas.brush_mode) {
+                canvas.StartBrushStroke(Canvas::StrokePoint{
+                    .color = canvas.brush_options.color,
+                    .position = pos,
+                    .radius = canvas.brush_options.radius,
+                    .flow = canvas.brush_options.flow,
+                    .hardness = canvas.brush_options.hardness,
+                });
+            } else if (canvas.eraser_mode) {
+                canvas.StartEraserStroke(Canvas::StrokePoint{
+                    .color = {0.0f, 0.0f, 0.0f, canvas.eraser_options.opacity},
+                    .position = pos,
+                    .radius = canvas.eraser_options.radius,
+                    .flow = canvas.eraser_options.flow,
+                    .hardness = canvas.eraser_options.hardness,
+                });
+            }
         }
     }
 }
@@ -392,13 +409,23 @@ void App::CursorRelease(Uint8 button) {
             canvas.stroke_started) {
             const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
 
-            canvas.EndBrushStroke(Canvas::StrokePoint{
-                .color = canvas.brush_options.color,
-                .position = pos,
-                .radius = canvas.brush_options.radius,
-                .flow = canvas.brush_options.flow,
-                .hardness = canvas.brush_options.hardness,
-            });
+            if (canvas.brush_mode) {
+                canvas.EndBrushStroke(Canvas::StrokePoint{
+                    .color = canvas.brush_options.color,
+                    .position = pos,
+                    .radius = canvas.brush_options.radius,
+                    .flow = canvas.brush_options.flow,
+                    .hardness = canvas.brush_options.hardness,
+                });
+            } else if (canvas.eraser_mode) {
+                canvas.EndEraserStroke(Canvas::StrokePoint{
+                    .color = {0.0f, 0.0f, 0.0f, canvas.eraser_options.opacity},
+                    .position = pos,
+                    .radius = canvas.eraser_options.radius,
+                    .flow = canvas.eraser_options.flow,
+                    .hardness = canvas.eraser_options.hardness,
+                });
+            }
         }
     }
     if (button == SDL_BUTTON_RIGHT) {
@@ -416,6 +443,15 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     }
     if (key == SDLK_LSHIFT || key == SDLK_RSHIFT) {
         shift_pressed = true;
+    }
+
+    if (key == SDLK_B && canvas.eraser_mode && !canvas.stroke_started) {
+        canvas.eraser_mode = false;
+        canvas.brush_mode = true;
+    }
+    if (key == SDLK_E && canvas.brush_mode && !canvas.stroke_started) {
+        canvas.brush_mode = false;
+        canvas.eraser_mode = true;
     }
 
     canvas.ViewUpdateState(space_pressed, false, false);
