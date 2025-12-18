@@ -8,6 +8,10 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <numbers>
 #include <random>
+
+#if defined(NDEBUG) && defined(TRACY_ENABLE)
+#undef TRACY_ENABLE
+#endif
 #include <tracy/Tracy.hpp>
 
 #include "SDL3/SDL_log.h"
@@ -431,6 +435,27 @@ bool App::Update() {
                 }
             }
             ImGui::End();
+
+            if (ImGui::Begin("History")) {
+                if (canvas.history_size > 0) {
+                    for (size_t i = 0; i < canvas.history_size; i++) {
+                        size_t idx = (i + canvas.history_start) % Canvas::history_capacity;
+                        if (i < canvas.history_pos) {
+                            ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: layer: %d, tiles: %llu", idx,
+                                               canvas.history_stack[idx].layer, canvas.history_stack[idx].pos.size());
+                        } else if (i == canvas.history_pos) {
+                            ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: layer: %d, tiles: %llu", idx,
+                                               canvas.history_stack[idx].layer, canvas.history_stack[idx].pos.size());
+                        } else if (i > canvas.history_pos) {
+                            ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: layer: %d, tiles: %llu", idx,
+                                               canvas.history_stack[idx].layer, canvas.history_stack[idx].pos.size());
+                        }
+                    }
+                } else {
+                    ImGui::TextColored(ImColor(0, 0, 128), "Nothing");
+                }
+            }
+            ImGui::End();
         }
 
         ImGui::Render();
@@ -461,6 +486,18 @@ bool App::Resize(const int width, const int height) {
 
 void App::ShouldQuit() {
     should_quit = true;
+
+    size_t pos = canvas.history_start;
+    for (const auto &tile_history : canvas.history_stack) {
+        if (pos != canvas.history_pos) {
+            for (const auto &texture : tile_history.textures) {
+                SDL_ReleaseGPUTexture(renderer.device, texture);
+            }
+        }
+        pos++;
+        pos %= Midori::Canvas::history_capacity;
+    }
+
     const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
     if (canvas.brush_options_modified) {
         canvas.SaveBrush();
@@ -608,13 +645,27 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         shift_pressed = true;
     }
 
-    if (key == SDLK_B && canvas.eraser_mode && !canvas.stroke_started) {
-        canvas.eraser_mode = false;
-        canvas.brush_mode = true;
+    if (key == SDLK_F11) {
+        Fullscreen(!fullscreen);
     }
-    if (key == SDLK_E && canvas.brush_mode && !canvas.stroke_started) {
-        canvas.brush_mode = false;
-        canvas.eraser_mode = true;
+
+    if (!canvas.stroke_started) {
+        if (key == SDLK_B && canvas.eraser_mode) {
+            canvas.eraser_mode = false;
+            canvas.brush_mode = true;
+        }
+        if (key == SDLK_E && canvas.brush_mode) {
+            canvas.brush_mode = false;
+            canvas.eraser_mode = true;
+        }
+
+        if (key == SDLK_Z && ctrl_pressed) {
+            if (shift_pressed) {
+                canvas.Redo();
+            } else {
+                canvas.Undo();
+            }
+        }
     }
 
     canvas.ViewUpdateState(space_pressed, false, false);
@@ -632,6 +683,11 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     }
 
     canvas.ViewUpdateState(space_pressed, false, false);
+}
+
+void App::Fullscreen(bool enable) {
+    SDL_SetWindowFullscreen(window, enable);
+    fullscreen = enable;
 }
 
 }  // namespace Midori

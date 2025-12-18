@@ -101,7 +101,9 @@ add_library(midori_lib
 )
 target_include_directories(midori_lib PUBLIC "include/")
 target_compile_features(midori_lib PUBLIC cxx_std_23)
-target_compile_definitions(midori_lib PUBLIC TRACY_ENABLE PLATFORM_SDL3 RENDERER_SDL3)
+target_compile_definitions(midori_lib PUBLIC
+  $<$<CONFIG:Debug>:TRACY_ENABLE>
+)
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
 target_include_directories(midori_lib PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_sources(midori_lib PRIVATE

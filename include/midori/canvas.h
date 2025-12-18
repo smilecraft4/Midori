@@ -1,6 +1,8 @@
 ﻿#ifndef MIDORI_CANVAS_H
 #define MIDORI_CANVAS_H
 
+#include <SDL3/SDL_gpu.h>
+
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -75,6 +77,21 @@ class Canvas {
 
     [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
     [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
+
+    struct HistoryTile {
+        Layer layer;
+        std::vector<glm::ivec2> pos;
+        std::vector<SDL_GPUTexture *> textures;
+    };
+    static constexpr size_t history_capacity = 8;
+    std::array<HistoryTile, history_capacity> history_stack = {};
+    size_t history_pos = 0;
+    size_t history_size = 0;
+    size_t history_start = 0;
+
+    void AddToHistory(HistoryTile history);
+    void Undo();
+    void Redo();
 
     // TODO: Change for a better name, this name implies that a new tile is
     // created and maybe saved, but This should not be saved
@@ -229,6 +246,7 @@ class Canvas {
     std::unordered_set<Tile> tile_to_delete;
     std::unordered_map<Layer, std::unordered_set<glm::ivec2>> layerTilesSaved;
     std::unordered_map<Layer, std::unordered_set<Tile>> layerTilesModified;
+    std::unordered_map<Layer, std::unordered_set<Tile>> allTileModified;
 
     View view;
     glm::mat4 view_mat = glm::mat4(1.0f);

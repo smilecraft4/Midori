@@ -18,6 +18,7 @@
 
 ### Done
 
+- fullscreen
 - save brushes
 - hard eraser
 - load saved tile

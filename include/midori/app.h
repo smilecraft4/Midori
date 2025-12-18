@@ -31,6 +31,8 @@ class App {
     bool CanQuit();
     void Quit();
 
+    void Fullscreen(bool enable);
+
     void CursorMove(glm::vec2 new_pos);
     void CursorPress(Uint8 button);
     void CursorRelease(Uint8 button);
@@ -42,6 +44,7 @@ class App {
 
     bool should_quit = false;
     bool hidden = false;
+    bool fullscreen = false;
 
     Canvas canvas;
     Renderer renderer;

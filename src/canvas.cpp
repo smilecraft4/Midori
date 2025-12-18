@@ -3,14 +3,20 @@
 #include <SDL3/SDL_assert.h>
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <format>
 #include <map>
 #include <numbers>
 #include <string>
-#include <tracy/Tracy.hpp>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+
+#if defined(NDEBUG) && defined(TRACY_ENABLE)
+#undef TRACY_ENABLE
+#endif
+#include <tracy/Tracy.hpp>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
@@ -87,7 +93,11 @@ bool Canvas::CanQuit() { return tile_to_unload.empty() && layer_to_delete.empty(
 
 bool Canvas::Open() {
     ZoneScoped;
+#ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
     filename = std::format("{}file", path);
     const bool exists = SDL_CreateDirectory(filename.c_str());
     SDL_Log("%s", filename.c_str());
@@ -340,7 +350,7 @@ bool Canvas::SaveLayer(Layer layer) {
         {"uuid", uuidString},         {"name", layerInfo.name},       {"opacity", layerInfo.opacity},
         {"locked", layerInfo.locked}, {"visible", layerInfo.visible}, {"depth", layerInfo.depth},
     };
-    std::string layerDump = layerJson.dump();
+    std::string layerDump = layerJson.dump(4);
 
     std::string file = std::format("{}/layer.json", path);
     SDL_IOStream *file_io = SDL_IOFromFile(file.c_str(), "w");
@@ -899,6 +909,7 @@ void Canvas::StartBrushStroke(StrokePoint point) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create under stroke tile");
             }
         }
+        allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));
     }
 
     // stroke_points.push_back(point);
@@ -973,6 +984,7 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
                         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create under stroke tile");
                     }
                 }
+                allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));
             }
         }
     }
@@ -998,6 +1010,41 @@ void Canvas::EndBrushStroke(StrokePoint point) {
     stroke_layer = 0;
     stroke_points.clear();
 
+    HistoryTile history_tile;
+    history_tile.layer = selected_layer;
+    history_tile.pos.reserve(allTileStrokeAffected.size());
+    history_tile.textures.reserve(allTileStrokeAffected.size());
+    const SDL_GPUTextureCreateInfo texture_create_info = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = app->renderer.texture_format,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE,
+        .width = (Uint32)TILE_SIZE,
+        .height = (Uint32)TILE_SIZE,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .sample_count = SDL_GPU_SAMPLECOUNT_1,
+    };
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
+    SDL_assert(cmd != nullptr);
+    SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
+    for (const auto &tile : allTileStrokeAffected) {
+        history_tile.pos.push_back(tile_infos.at(tile).position);
+
+        SDL_GPUTexture *texture = SDL_CreateGPUTexture(app->renderer.device, &texture_create_info);
+        SDL_GPUTextureLocation sourceLoc = {
+            .texture = app->renderer.tile_textures.at(tile), .mip_level = 0, .layer = 0, .x = 0, .y = 0, .z = 0};
+        SDL_GPUTextureLocation destLoc = {.texture = texture, .mip_level = 0, .layer = 0, .x = 0, .y = 0, .z = 0};
+        SDL_CopyGPUTextureToTexture(copyPass, &sourceLoc, &destLoc, TILE_SIZE, TILE_SIZE, 1, false);
+        history_tile.textures.push_back(texture);
+    }
+    SDL_EndGPUCopyPass(copyPass);
+    auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
+    SDL_ReleaseGPUFence(app->renderer.device, fence);
+    allTileStrokeAffected.clear();
+
+    AddToHistory(history_tile);
+
     // Save all the modified tiles once merged
     // for (const auto &tile : allTileStrokeAffected) {
     //    layerTilesModified[selected_layer].insert(tile);
@@ -1007,7 +1054,11 @@ void Canvas::EndBrushStroke(StrokePoint point) {
 }
 
 void Canvas::SaveBrush() {
+#ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
     const std::string brushPath = std::format("{}brushes", path);
     SDL_CreateDirectory(brushPath.c_str());
 
@@ -1052,7 +1103,7 @@ void Canvas::SaveBrush() {
         {"spacing", brush_options.spacing},
     };
 
-    const std::string brushJsonDump = brushJson.dump();
+    const std::string brushJsonDump = brushJson.dump(4);
 
     const std::string file = std::format("{}brushes/brush.json", path);
     SDL_IOStream *file_io = SDL_IOFromFile(file.c_str(), "w");
@@ -1063,7 +1114,11 @@ void Canvas::SaveBrush() {
 }
 
 void Canvas::OpenBrush() {
+#ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
     const std::string file = std::format("{}brushes/brush.json", path);
 
     size_t size;
@@ -1104,7 +1159,11 @@ void Canvas::OpenBrush() {
 }
 
 void Canvas::SaveEraser() {
+#ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
     const std::string eraserPath = std::format("{}brushes", path);
     SDL_CreateDirectory(eraserPath.c_str());
 
@@ -1143,7 +1202,7 @@ void Canvas::SaveEraser() {
         {"spacing", eraser_options.spacing},
     };
 
-    const std::string eraserJsonDump = eraserJson.dump();
+    const std::string eraserJsonDump = eraserJson.dump(4);
 
     const std::string file = std::format("{}brushes/eraser.json", path);
     SDL_IOStream *file_io = SDL_IOFromFile(file.c_str(), "w");
@@ -1154,7 +1213,11 @@ void Canvas::SaveEraser() {
 }
 
 void Canvas::OpenEraser() {
+#ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
     const std::string file = std::format("{}brushes/eraser.json", path);
 
     size_t size;
@@ -1235,6 +1298,7 @@ void Canvas::StartEraserStroke(StrokePoint point) {
         } else {
             stroke_tile_affected.insert(tile);
             layerTilesModified[selected_layer].insert(tile);
+            allTileStrokeAffected.insert(tile);
         }
     }
 
@@ -1303,6 +1367,7 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
                 } else {
                     stroke_tile_affected.insert(strokeLayertile);
                     layerTilesModified[selected_layer].insert(strokeLayertile);
+                    allTileStrokeAffected.insert(strokeLayertile);
                 }
             }
         }
@@ -1320,6 +1385,148 @@ void Canvas::EndEraserStroke(StrokePoint point) {
 
     stroke_points.clear();
 
+    HistoryTile history_tile;
+    history_tile.layer = selected_layer;
+    history_tile.pos.reserve(allTileStrokeAffected.size());
+    history_tile.textures.reserve(allTileStrokeAffected.size());
+    const SDL_GPUTextureCreateInfo texture_create_info = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = app->renderer.texture_format,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE,
+        .width = (Uint32)TILE_SIZE,
+        .height = (Uint32)TILE_SIZE,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .sample_count = SDL_GPU_SAMPLECOUNT_1,
+    };
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
+    SDL_assert(cmd != nullptr);
+    SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
+    for (const auto &tile : allTileStrokeAffected) {
+        history_tile.pos.push_back(tile_infos.at(tile).position);
+
+        SDL_GPUTexture *texture = SDL_CreateGPUTexture(app->renderer.device, &texture_create_info);
+        SDL_GPUTextureLocation sourceLoc = {
+            .texture = app->renderer.tile_textures.at(tile), .mip_level = 0, .layer = 0, .x = 0, .y = 0, .z = 0};
+        SDL_GPUTextureLocation destLoc = {.texture = texture, .mip_level = 0, .layer = 0, .x = 0, .y = 0, .z = 0};
+        SDL_CopyGPUTextureToTexture(copyPass, &sourceLoc, &destLoc, TILE_SIZE, TILE_SIZE, 1, false);
+        history_tile.textures.push_back(texture);
+    }
+    SDL_EndGPUCopyPass(copyPass);
+    auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
+    SDL_ReleaseGPUFence(app->renderer.device, fence);
+    allTileStrokeAffected.clear();
+
+    AddToHistory(history_tile);
+
     stroke_started = false;
 }
+
+void Canvas::AddToHistory(Canvas::HistoryTile history) {
+    if (history_pos < history_size) {
+        // Erase every modification that happened before
+        for (size_t i = history_pos; i <= history_size; i++) {
+            auto &elem = history_stack[i];
+            SDL_assert(elem.pos.size() == elem.textures.size());
+            elem.pos.clear();
+            for (auto &texture : elem.textures) {
+                // SDL_ReleaseGPUTexture(app->renderer.device, texture);
+            }
+            elem.textures.clear();
+        }
+        history_size = history_pos;
+    }
+
+    size_t idx = (history_start + history_size + 1) % history_capacity;
+    if (idx == history_start) {
+        auto &elem = history_stack[idx];
+        SDL_assert(elem.pos.size() == elem.textures.size());
+        elem.pos.clear();
+        for (auto &texture : elem.textures) {
+            // SDL_ReleaseGPUTexture(app->renderer.device, texture);
+        }
+        elem.textures.clear();
+    }
+
+    history_stack[idx] = std::move(history);
+
+    if (idx != history_start) {
+        history_size++;
+        history_pos++;
+    } else {
+        history_start++;
+        history_start %= history_capacity;
+    }
+}
+
+void Canvas::Undo() {
+    if (history_pos == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Nothing to undo");
+        return;
+    }
+
+    // SDL_WaitForGPUIdle(app->renderer.device);  // TODO: get the fence from the renderer instead
+    history_pos--;
+
+    auto &elem = history_stack[history_pos];
+    if (!layer_infos.contains(elem.layer)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Layer not for undo");
+        return;
+    }
+
+    SDL_assert(elem.pos.size() == elem.textures.size());
+    for (size_t i = 0; i < elem.pos.size(); i++) {
+        Tile tile = TILE_INVALID;
+        if (!layer_tile_pos.at(elem.layer).contains(elem.pos[i])) {
+            tile = CreateTile(elem.layer, elem.pos[i]).value();
+            UnloadTile(elem.layer, tile);
+        } else {
+            tile = layer_tile_pos.at(elem.layer).at(elem.pos[i]);
+        }
+        SDL_assert(tile != TILE_INVALID);
+
+        auto *tile_texture = app->renderer.tile_textures.at(tile);
+        app->renderer.tile_texture_uninitialized.erase(tile);
+        // SDL_ReleaseGPUTexture(app->renderer.device, tile_texture);
+        app->renderer.tile_textures[tile] = elem.textures[i];
+
+        layerTilesModified.at(elem.layer).insert(tile);
+    }
+}
+
+void Canvas::Redo() {
+    if (history_pos == history_size) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Nothing to redo");
+        return;
+    }
+
+    // SDL_WaitForGPUIdle(app->renderer.device);  // TODO: get the fence from the renderer instead
+    history_pos++;
+
+    auto &elem = history_stack[history_pos];
+    if (!layer_infos.contains(elem.layer)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Layer not for redo");
+        return;
+    }
+
+    for (size_t i = 0; i < elem.pos.size(); i++) {
+        Tile tile = TILE_INVALID;
+        if (!layer_tile_pos.at(elem.layer).contains(elem.pos[i])) {
+            tile = CreateTile(elem.layer, elem.pos[i]).value();
+            UnloadTile(elem.layer, tile);
+        } else {
+            tile = layer_tile_pos.at(elem.layer).at(elem.pos[i]);
+        }
+        SDL_assert(tile != TILE_INVALID);
+
+        auto *tile_texture = app->renderer.tile_textures.at(tile);
+        app->renderer.tile_texture_uninitialized.erase(tile);
+        // SDL_ReleaseGPUTexture(app->renderer.device, tile_texture);
+        app->renderer.tile_textures[tile] = elem.textures[i];
+
+        layerTilesModified.at(elem.layer).insert(tile);
+    }
+}
+
 }  // namespace Midori

@@ -12,8 +12,12 @@
 #include <cstdint>
 #include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
-#include <tracy/Tracy.hpp>
 #include <vector>
+
+#if defined(NDEBUG) && defined(TRACY_ENABLE)
+#undef TRACY_ENABLE
+#endif
+#include <tracy/Tracy.hpp>
 
 #include "midori/app.h"
 #include "midori/canvas.h"
@@ -532,7 +536,11 @@ bool Renderer::InitPaint() {
         return false;
     }
 
+#ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
     const std::string brushPath = std::format("{}brushes/sphere.qoi", path);
 
     size_t dataSize;
@@ -1117,10 +1125,13 @@ bool Renderer::Render() {
 
         {
             ZoneScopedN("Submiting GPU command buffer");
-            if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+            auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(command_buffer);
+            if (fence == nullptr) {
                 SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
                 return false;
             }
+            SDL_WaitForGPUFences(device, true, &fence, 1);
+            SDL_ReleaseGPUFence(device, fence);
         }
     }
 
