@@ -414,7 +414,6 @@ void Canvas::DeleteLayer(const Layer layer) {
         selected_layer = 0;
     }
 
-    SDL_Log("Canvas::DeleteLayer: %d", layer);
     std::vector<Tile> tiles = LayerTiles(layer);
     if (layer_infos.at(layer).temporary) {
         for (const auto tile : tiles) {

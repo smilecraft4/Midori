@@ -97,7 +97,9 @@ add_library(midori_lib
   "src/app.cpp"
   "src/canvas.cpp"
   "src/renderer.cpp"
-  "src/sqlite/sqlite3.c"
+  "src/memory.cpp"
+
+  # "src/sqlite/sqlite3.c"
 )
 target_include_directories(midori_lib PUBLIC "include/")
 target_compile_features(midori_lib PUBLIC cxx_std_23)
@@ -133,7 +135,8 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 add_executable(midori_test
-  "test/midori_test.cpp"
+  "test/midori_ring_array_test.cpp"
+  "test/midori_history_test.cpp"
 )
 target_link_libraries(midori_test PRIVATE midori_lib GTest::gtest_main)
 include(GoogleTest)
