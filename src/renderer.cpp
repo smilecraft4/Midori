@@ -21,6 +21,7 @@
 
 #include "midori/app.h"
 #include "midori/canvas.h"
+#include "midori/renderer.h"
 #include "midori/types.h"
 
 namespace Midori {
@@ -851,6 +852,7 @@ bool Renderer::Render() {
             .size = static_cast<Uint32>(app->canvas.stroke_points.size() * sizeof(Canvas::StrokePoint)),
             // .size = MAX_PAINT_STROKE_POINTS * sizeof(Canvas::StrokePoint),
         };
+
         SDL_UploadToGPUBuffer(stroke_copy_pass, &source, &destination, true);
         SDL_EndGPUCopyPass(stroke_copy_pass);
 
@@ -1428,4 +1430,26 @@ bool Renderer::CopyTileTextureDownloaded(const Tile tile, std::vector<uint8_t> &
     return true;
 }
 
+SDL_GPUTexture *Renderer::DuplicateTileTexture(SDL_GPUCopyPass *copyPass, SDL_GPUTexture *tileTexture) const {
+    ZoneScoped;
+
+    const SDL_GPUTextureCreateInfo texture_create_info = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = app->renderer.texture_format,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE,
+        .width = (Uint32)TILE_SIZE,
+        .height = (Uint32)TILE_SIZE,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .sample_count = SDL_GPU_SAMPLECOUNT_1,
+    };
+
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(app->renderer.device, &texture_create_info);
+    const SDL_GPUTextureLocation sourceLoc = {
+        .texture = tileTexture, .mip_level = 0, .layer = 0, .x = 0, .y = 0, .z = 0};
+    const SDL_GPUTextureLocation destLoc = {.texture = texture, .mip_level = 0, .layer = 0, .x = 0, .y = 0, .z = 0};
+    SDL_CopyGPUTextureToTexture(copyPass, &sourceLoc, &destLoc, TILE_SIZE, TILE_SIZE, 1, false);
+
+    return texture;
+}
 }  // namespace Midori

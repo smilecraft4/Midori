@@ -437,18 +437,16 @@ bool App::Update() {
             ImGui::End();
 
             if (ImGui::Begin("History")) {
-                if (canvas.history_size > 0) {
-                    for (size_t i = 0; i < canvas.history_size; i++) {
-                        size_t idx = (i + canvas.history_start) % Canvas::history_capacity;
-                        if (i < canvas.history_pos) {
-                            ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: layer: %d, tiles: %llu", idx,
-                                               canvas.history_stack[idx].layer, canvas.history_stack[idx].pos.size());
-                        } else if (i == canvas.history_pos) {
-                            ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: layer: %d, tiles: %llu", idx,
-                                               canvas.history_stack[idx].layer, canvas.history_stack[idx].pos.size());
-                        } else if (i > canvas.history_pos) {
-                            ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: layer: %d, tiles: %llu", idx,
-                                               canvas.history_stack[idx].layer, canvas.history_stack[idx].pos.size());
+                if (canvas.canvasHistory.size() > 0) {
+                    for (size_t pos = 0; pos < canvas.canvasHistory.size(); pos++) {
+                        const Command *command = canvas.canvasHistory.get(pos);
+                        const auto name = command->name();
+                        if (pos < canvas.canvasHistory.position()) {
+                            ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
+                        } else if (pos == canvas.canvasHistory.position()) {
+                            ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
+                        } else if (pos > canvas.canvasHistory.position()) {
+                            ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: %s", pos, name.c_str());
                         }
                     }
                 } else {
@@ -487,16 +485,7 @@ bool App::Resize(const int width, const int height) {
 void App::ShouldQuit() {
     should_quit = true;
 
-    size_t pos = canvas.history_start;
-    for (const auto &tile_history : canvas.history_stack) {
-        if (pos != canvas.history_pos) {
-            for (const auto &texture : tile_history.textures) {
-                SDL_ReleaseGPUTexture(renderer.device, texture);
-            }
-        }
-        pos++;
-        pos %= Midori::Canvas::history_capacity;
-    }
+    canvas.canvasHistory.clear();
 
     const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
     if (canvas.brush_options_modified) {
@@ -661,9 +650,9 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
 
         if (key == SDLK_Z && ctrl_pressed) {
             if (shift_pressed) {
-                canvas.Redo();
+                canvas.canvasHistory.redo();
             } else {
-                canvas.Undo();
+                canvas.canvasHistory.undo();
             }
         }
     }

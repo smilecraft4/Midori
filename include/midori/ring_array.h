@@ -39,7 +39,7 @@ class ring_array {
 
         iterator& operator=(const iterator&) = default;
         bool operator==(const iterator& other) const { return arr_ == other.arr_ && index_ == other.index_; }
-        bool operator!=(const iter ator& other) const { return arr_ != other.arr_ || index_ != other.index_; }
+        bool operator!=(const iterator& other) const { return arr_ != other.arr_ || index_ != other.index_; }
         // bool operator<(const iterator&) const;   // optional
         // bool operator>(const iterator&) const;   // optional
         // bool operator<=(const iterator&) const;  // optional

@@ -4,9 +4,9 @@
 
 static size_t command_count = 0;
 
-class PaintStroke : public Midori::HistoryCommand {
+class PaintStroke : public Midori::Command {
    public:
-    PaintStroke() {
+    PaintStroke() : Command(Command::Type::Unknown) {
         // GTEST_LOG_(INFO) << "PaintStroke()";
         command_count++;
     };
@@ -19,6 +19,8 @@ class PaintStroke : public Midori::HistoryCommand {
     }
     PaintStroke& operator=(const PaintStroke& other) = default;
 
+    virtual std::string name() const { return "PaintStroke"; };
+
     virtual void execute() {
         // GTEST_LOG_(INFO) << "PaintStroke::execute()";
     }
@@ -27,9 +29,9 @@ class PaintStroke : public Midori::HistoryCommand {
     }
 };
 
-class EraseStroke : public Midori::HistoryCommand {
+class EraseStroke : public Midori::Command {
    public:
-    EraseStroke() {
+    EraseStroke() : Command(Command::Type::Unknown) {
         // GTEST_LOG_(INFO) << "EraseStroke()";
         command_count++;
     };
@@ -42,6 +44,8 @@ class EraseStroke : public Midori::HistoryCommand {
     }
     EraseStroke& operator=(const EraseStroke& other) = default;
 
+    virtual std::string name() const { return "EraseStroke"; };
+
     virtual void execute() {
         // GTEST_LOG_(INFO) << "EraseStroke::execute()";
     }
@@ -50,9 +54,9 @@ class EraseStroke : public Midori::HistoryCommand {
     }
 };
 
-class EditLayer : public Midori::HistoryCommand {
+class EditLayer : public Midori::Command {
    public:
-    EditLayer() {
+    EditLayer() : Command(Command::Type::Unknown) {
         // GTEST_LOG_(INFO) << "EditLayer()";
         command_count++;
     };
@@ -65,6 +69,8 @@ class EditLayer : public Midori::HistoryCommand {
     }
     EditLayer& operator=(const EditLayer& other) = default;
 
+    virtual std::string name() const { return "EditLayer"; };
+
     virtual void execute() {
         // GTEST_LOG_(INFO) << "EditLayer::execute()";
     }
@@ -73,9 +79,9 @@ class EditLayer : public Midori::HistoryCommand {
     }
 };
 
-class DeleteLayer : public Midori::HistoryCommand {
+class DeleteLayer : public Midori::Command {
    public:
-    DeleteLayer() {
+    DeleteLayer() : Command(Command::Type::Unknown) {
         // GTEST_LOG_(INFO) << "DeleteLayer()";
         command_count++;
     };
@@ -88,6 +94,8 @@ class DeleteLayer : public Midori::HistoryCommand {
     }
     DeleteLayer& operator=(const DeleteLayer& other) = default;
 
+    virtual std::string name() const { return "DeleteLayer"; };
+
     virtual void execute() {
         // GTEST_LOG_(INFO) << "DeleteLayer::execute()";
     }
@@ -96,9 +104,9 @@ class DeleteLayer : public Midori::HistoryCommand {
     }
 };
 
-class CreateLayer : public Midori::HistoryCommand {
+class CreateLayer : public Midori::Command {
    public:
-    CreateLayer() {
+    CreateLayer() : Command(Command::Type::Unknown) {
         //  GTEST_LOG_(INFO) << "CreateLayer()";
         command_count++;
     };
@@ -110,6 +118,8 @@ class CreateLayer : public Midori::HistoryCommand {
         // GTEST_LOG_(INFO) << "CreateLayer(const CreateLayer& other) : CreateLayer()";
     }
     CreateLayer& operator=(const CreateLayer& other) = default;
+
+    virtual std::string name() const { return "CreateLayer"; };
 
     virtual void execute() {  // GTEST_LOG_(INFO) << "CreateLayer::execute()";
     }

@@ -16,12 +16,50 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 
+#include "midori/history.h"
 #include "midori/types.h"
 #include "uuid.h"
 
 namespace Midori {
 
 class App;
+
+class PaintStrokeCommand : public Command {
+   private:
+    App &app_;
+    Layer layer_;
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> previousTileTextures_{};
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> newTileTextures_{};
+
+   public:
+    explicit PaintStrokeCommand(App &app, Layer layer);
+    virtual ~PaintStrokeCommand();
+
+    void AddPreviousTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture);
+    void AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *newTexture);
+
+    virtual std::string name() const;
+    virtual void execute();
+    virtual void revert();
+};
+
+class EraseStrokeCommand : public Command {
+   private:
+    App &app_;
+    Layer layer_;
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> previousTileTextures_;
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> newTileTextures_;
+
+   public:
+    explicit EraseStrokeCommand(App &app, Layer layer);
+    virtual ~EraseStrokeCommand();
+
+    void AddModifiedTile(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture, SDL_GPUTexture *newTexture);
+
+    virtual std::string name() const;
+    virtual void execute();
+    virtual void revert();
+};
 
 class Canvas {
    public:
@@ -78,20 +116,23 @@ class Canvas {
     [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
     [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
 
-    struct HistoryTile {
-        Layer layer;
-        std::vector<glm::ivec2> pos;
-        std::vector<SDL_GPUTexture *> textures;
-    };
-    static constexpr size_t history_capacity = 8;
-    std::array<HistoryTile, history_capacity> history_stack = {};
-    size_t history_pos = 0;
-    size_t history_size = 0;
-    size_t history_start = 0;
+    // struct HistoryTile {
+    //     Layer layer;
+    //     std::vector<glm::ivec2> pos;
+    //     std::vector<SDL_GPUTexture *> textures;
+    // };
+    // static constexpr size_t history_capacity = 8;
+    // std::array<HistoryTile, history_capacity> history_stack = {};
+    // size_t history_pos = 0;
+    // size_t history_size = 0;
+    // size_t history_start = 0;
 
-    void AddToHistory(HistoryTile history);
-    void Undo();
-    void Redo();
+    static constexpr size_t HISTORY_MAX_SIZE = 128;
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> eraseStrokeDuplicatedTextures;
+    HistoryTree canvasHistory;
+    // void AddToHistory(HistoryTile history);
+    // void Undo();
+    // void Redo();
 
     // TODO: Change for a better name, this name implies that a new tile is
     // created and maybe saved, but This should not be saved

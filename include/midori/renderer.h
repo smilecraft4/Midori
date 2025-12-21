@@ -130,6 +130,7 @@ class Renderer {
     bool DownloadTileTexture(Tile tile);
     bool IsTileTextureDownloaded(Tile tile) const;
     bool CopyTileTextureDownloaded(Tile tile, std::vector<uint8_t> &tile_texture);
+    SDL_GPUTexture *DuplicateTileTexture(SDL_GPUCopyPass *copyPass, SDL_GPUTexture *tileTexture) const;
 
     static constexpr size_t TILE_MAX_DOWNLOAD_TRANSFER = 32;
     SDL_GPUTransferBuffer *tile_download_buffer = nullptr;

@@ -11,6 +11,7 @@
 - properly check srgb -> linear -> srgb
 - add opacity on eraser for soft erasing
 - add wintab for higher pen resolution
+- start stroke on click
 
 ### In Progress
 
