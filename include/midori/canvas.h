@@ -54,7 +54,8 @@ class EraseStrokeCommand : public Command {
     explicit EraseStrokeCommand(App &app, Layer layer);
     virtual ~EraseStrokeCommand();
 
-    void AddModifiedTile(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture, SDL_GPUTexture *newTexture);
+    void AddPreviousTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture);
+    void AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *newTexture);
 
     virtual std::string name() const;
     virtual void execute();
@@ -112,7 +113,7 @@ class Canvas {
     Layer CreateLayer(const std::string &name, std::uint8_t depth);
     void DeleteLayer(Layer layer);
     bool SaveLayer(Layer layer);
-    // Layer DuplicateLayer(Layer layer);
+    Layer DuplicateLayer(Layer layer, bool temporary = false);
     void MergeLayer(Layer over_layer, Layer below_layer);
     bool SetLayerDepth(Layer layer, std::uint8_t depth);
     void CompactLayerHeight();
@@ -262,6 +263,7 @@ class Canvas {
     std::vector<StrokePoint> stroke_points;
     std::unordered_set<Tile> stroke_tile_affected;
     std::unordered_set<Tile> allTileStrokeAffected;
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> eraseStrokePreviousTextures;
     StrokePoint previous_point = {};
 
     bool brush_mode = true;

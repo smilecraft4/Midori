@@ -159,19 +159,23 @@ EraseStrokeCommand::~EraseStrokeCommand() {
     }
 }
 
-void EraseStrokeCommand::AddModifiedTile(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture,
-                                         SDL_GPUTexture *newTexture) {
+void EraseStrokeCommand::AddPreviousTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture) {
+    assert(previousTexture);
     assert(!previousTileTextures_.contains(tile_pos) && "Tile previous pTexture already saved, may be a bug");
-    assert(!newTileTextures_.contains(tile_pos) && "Tile new pTexture already saved, may be a bug");
-
     previousTileTextures_[tile_pos] = previousTexture;
+}
+void EraseStrokeCommand::AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *newTexture) {
+    assert(newTexture);
+    assert(!newTileTextures_.contains(tile_pos) && "Tile new pTexture already saved, may be a bug");
     newTileTextures_[tile_pos] = newTexture;
 }
 
 std::string EraseStrokeCommand::name() const { return "Erase Stroke"; }
 
 void EraseStrokeCommand::execute() {
+    assert(newTileTextures_.size() == previousTileTextures_.size() && "Mismatch in texture states");
     auto &canvas = app_.canvas;
+
     if (!canvas.layer_infos.contains(layer_)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Layer not for undo");
         return;
@@ -207,15 +211,55 @@ void EraseStrokeCommand::execute() {
 
         auto *tile_texture = app_.renderer.tile_textures.at(tile);
         SDL_ReleaseGPUTexture(app_.renderer.device, tile_texture);
-        app_.renderer.tile_textures[tile] = texture;
+        app_.renderer.tile_textures[tile] = copiedNewTexture[pos];
 
         canvas.layerTilesModified.at(layer_).insert(tile);
     }
 }
 
 void EraseStrokeCommand::revert() {
-    // TODO: Right now we will solely rely on the previous instruction to save the state
-    // !!!! This is not the way to do it IT IS A BUG
+    assert(newTileTextures_.size() == previousTileTextures_.size() && "Mismatch in texture states");
+
+    auto &canvas = app_.canvas;
+    if (!canvas.layer_infos.contains(layer_)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Layer not for undo");
+        return;
+    }
+
+    std::unordered_map<glm::ivec2, SDL_GPUTexture *> copiedNewTexture;
+    {  // save the modified tile before merge to the history
+        ZoneScopedN("Save modified tile for history");
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app_.renderer.device);
+        SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
+
+        for (const auto &[pos, texture] : previousTileTextures_) {
+            copiedNewTexture[pos] = app_.renderer.DuplicateTileTexture(copyPass, texture);
+        }
+
+        SDL_EndGPUCopyPass(copyPass);
+        auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        SDL_WaitForGPUFences(app_.renderer.device, true, &fence, 1);
+        SDL_ReleaseGPUFence(app_.renderer.device, fence);
+    }
+
+    for (const auto &[pos, texture] : copiedNewTexture) {
+        assert(texture && "Texture is null");
+        Tile tile = TILE_INVALID;
+        if (!canvas.layer_tile_pos.at(layer_).contains(pos)) {
+            tile = canvas.CreateTile(layer_, pos).value();
+            app_.renderer.tile_texture_uninitialized.erase(tile);
+            canvas.UnloadTile(layer_, tile);  // This tile will be unloaded once all operations on it are finished
+        } else {
+            tile = canvas.layer_tile_pos.at(layer_).at(pos);
+        }
+        SDL_assert(tile != TILE_INVALID);
+
+        auto *tile_texture = app_.renderer.tile_textures.at(tile);
+        SDL_ReleaseGPUTexture(app_.renderer.device, tile_texture);
+        app_.renderer.tile_textures[tile] = texture;
+
+        canvas.layerTilesModified.at(layer_).insert(tile);
+    }
 }
 
 // Canvas
@@ -550,32 +594,27 @@ bool Canvas::SaveLayer(Layer layer) {
     return true;
 }
 
-// Layer Canvas::DuplicateLayer(Layer layer) {
-//     assert(layer_infos.contains(layer));
+Layer Canvas::DuplicateLayer(Layer layer, bool temporary) {
+    assert(layer_infos.contains(layer));
 
-//     Layer newLayer = CreateLayer(layer_infos.at(layer).name, layer_infos.at(layer).depth++);
-//     SaveLayer(newLayer);
+    Layer newLayer = CreateLayer(layer_infos.at(layer).name, layer_infos.at(layer).depth++);
+    layer_infos.at(layer).temporary = temporary;
 
-//     SDL_assert(layer_infos.contains(layer));
-//     const auto &layerInfo = layer_infos.at(layer);
-//     const auto uuidString = uuids::to_string(layerInfo.id);
-//     std::string path = std::format("{}/{}", filename, uuidString);
+    if (!temporary) {
+        // Duplicate save folder for layers
+        const auto uuidString = uuids::to_string(layer_infos.at(layer).id);
+        std::string layerPath = std::format("{}/{}", filename, uuidString);
 
-//     SDL_CreateDirectory(path.c_str());
+        const auto newUuidString = uuids::to_string(layer_infos.at(newLayer).id);
+        std::string newLayerPath = std::format("{}/{}", filename, newUuidString);
+        std::filesystem::copy(layerPath, newLayerPath);
 
-//     nlohmann::json layerJson = {
-//         {"uuid", uuidString},         {"name", layerInfo.name},       {"opacity", layerInfo.opacity},
-//         {"locked", layerInfo.locked}, {"visible", layerInfo.visible}, {"depth", layerInfo.depth},
-//     };
-//     std::string layerDump = layerJson.dump(4);
+        // Overwrite copied settings
+        SaveLayer(newLayer);
+    }
 
-//     std::string file = std::format("{}/layer.json", path);
-//     SDL_IOStream *file_io = SDL_IOFromFile(file.c_str(), "w");
-//     SDL_assert(file_io != nullptr);
-//     SDL_WriteIO(file_io, layerDump.data(), layerDump.size());
-//     SDL_CloseIO(file_io);
-//     layersModified.erase(layer);
-// };
+    return newLayer;
+}
 
 bool Canvas::SetLayerDepth(const Layer layer, std::uint8_t depth) {
     SDL_assert(layer_infos.contains(layer) && "Layer not found");
@@ -1509,6 +1548,7 @@ Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float p
 // This assumes every painted tiles are not going to be culled
 void Canvas::StartEraserStroke(StrokePoint point) {
     ZoneScoped;
+    assert(selected_layer);
     SDL_assert(!stroke_started);
     stroke_started = true;
 
@@ -1517,21 +1557,28 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     }
 
     const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
+
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
+    SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
+
     for (const auto &tile_pos : tiles_pos) {
         Tile tile = GetTileAt(selected_layer, tile_pos);
-        if (tile == 0) {
-            if (const auto result = CreateTile(selected_layer, tile_pos); result.has_value()) {
-                tile = result.value();
-                stroke_tile_affected.insert(tile);
-            } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create stroke tile");
-            }
-        } else {
+        if (tile) {
             stroke_tile_affected.insert(tile);
             layerTilesModified[selected_layer].insert(tile);
-            allTileStrokeAffected.insert(tile);
+            allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));
+
+            if (!eraseStrokePreviousTextures.contains(tile_pos)) {
+                eraseStrokePreviousTextures[tile_pos] =
+                    app->renderer.DuplicateTileTexture(copyPass, app->renderer.tile_textures.at(tile));
+            }
         }
     }
+
+    SDL_EndGPUCopyPass(copyPass);
+    auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
+    SDL_ReleaseGPUFence(app->renderer.device, fence);
 
     // stroke_points.push_back(point);
     stroke_points.clear();
@@ -1584,24 +1631,29 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
         i++;
 
         {
-            ZoneScoped;
             const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
+
+            SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
+            SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
+
             for (const auto &tile_pos : tiles_pos) {
-                Tile strokeLayertile = GetTileAt(selected_layer, tile_pos);
-                if (strokeLayertile == 0) {
-                    if (const auto result = CreateTile(selected_layer, tile_pos); result.has_value()) {
-                        strokeLayertile = result.value();
-                        stroke_tile_affected.insert(strokeLayertile);
-                    } else {
-                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create stroke tile");
+                Tile tile = GetTileAt(selected_layer, tile_pos);
+                if (tile) {
+                    stroke_tile_affected.insert(tile);
+                    layerTilesModified[selected_layer].insert(tile);
+                    allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));
+
+                    if (!eraseStrokePreviousTextures.contains(tile_pos)) {
+                        eraseStrokePreviousTextures[tile_pos] =
+                            app->renderer.DuplicateTileTexture(copyPass, app->renderer.tile_textures.at(tile));
                     }
-                } else {
-                    // need to duplicate the texture if it is the first the texture is affected (otherwise don't)
-                    stroke_tile_affected.insert(strokeLayertile);
-                    layerTilesModified[selected_layer].insert(strokeLayertile);
-                    allTileStrokeAffected.insert(strokeLayertile);
                 }
             }
+
+            SDL_EndGPUCopyPass(copyPass);
+            auto *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+            SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
+            SDL_ReleaseGPUFence(app->renderer.device, fence);
         }
     }
 }
@@ -1615,18 +1667,21 @@ void Canvas::EndEraserStroke(StrokePoint point) {
         point = ApplyEraserPressure(point, app->pen_pressure);
     }
 
-    stroke_points.clear();
-
     auto eraseCommand = std::make_unique<EraseStrokeCommand>(*app, selected_layer);
 
-    {  // save the modified tile before merge to the history
-        ZoneScopedN("Save modified tile for history");
+    for (const auto &[pos, texture] : eraseStrokePreviousTextures) {
+        eraseCommand->AddPreviousTileTexture(pos, texture);
+    }
+    eraseStrokePreviousTextures.clear();
+
+    {  // save the affected tiles by the stroke after the merge
+        ZoneScopedN("Save modified tile after merge for history");
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
         SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
 
         for (const auto &tile : allTileStrokeAffected) {
             SDL_GPUTexture *texture = app->renderer.DuplicateTileTexture(copyPass, app->renderer.tile_textures[tile]);
-            eraseCommand->AddModifiedTile(tile_infos.at(tile).position, nullptr, texture);
+            eraseCommand->AddNewTileTexture(tile_infos.at(tile).position, texture);
         }
 
         SDL_EndGPUCopyPass(copyPass);
@@ -1637,6 +1692,7 @@ void Canvas::EndEraserStroke(StrokePoint point) {
 
     canvasHistory.store(std::move(eraseCommand));
 
+    stroke_points.clear();
     allTileStrokeAffected.clear();
     eraseStrokeDuplicatedTextures.clear();
 

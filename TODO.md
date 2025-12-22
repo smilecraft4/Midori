@@ -17,11 +17,10 @@
 
 ### In Progress
 
-- flip canvas
-
 ### Done
 
 - canvas undo/redo
+- flip canvas
 - fullscreen
 - save brushes
 - hard eraser
