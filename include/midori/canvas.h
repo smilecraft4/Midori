@@ -65,10 +65,12 @@ class Canvas {
    public:
     struct View {
         glm::vec2 pan = glm::vec2(0.0f, 0.0f);
-        float zoom_amount = 1.0f;
+        glm::vec2 zoom_amount = glm::vec2(1.0f, 1.0f);
         glm::vec2 zoom_origin = glm::vec2(0.0f, 0.0f);
         float rotation = 0.0f;
         glm::vec2 rotate_start = glm::vec2(1.0f, 0.0f);
+        bool flippedH = false;
+        bool flippedV = false;
     };
 
     Canvas(const Canvas &) = delete;
@@ -97,8 +99,9 @@ class Canvas {
     void ViewRotate(float amount);
     void ViewRotateStop();
     void ViewZoomStart(glm::vec2 origin);
-    void ViewZoom(float amount);
+    void ViewZoom(glm::vec2 amount);
     void ViewZoomStop();
+    void ViewFlipH();
     static std::vector<glm::ivec2> GetViewVisibleTiles(const View &view, glm::vec2 size);
 
     [[nodiscard]] bool HasLayer(Layer layer) const;
@@ -109,6 +112,7 @@ class Canvas {
     Layer CreateLayer(const std::string &name, std::uint8_t depth);
     void DeleteLayer(Layer layer);
     bool SaveLayer(Layer layer);
+    // Layer DuplicateLayer(Layer layer);
     void MergeLayer(Layer over_layer, Layer below_layer);
     bool SetLayerDepth(Layer layer, std::uint8_t depth);
     void CompactLayerHeight();
@@ -116,33 +120,9 @@ class Canvas {
     [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
     [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
 
-    // struct HistoryTile {
-    //     Layer layer;
-    //     std::vector<glm::ivec2> pos;
-    //     std::vector<SDL_GPUTexture *> textures;
-    // };
-    // static constexpr size_t history_capacity = 8;
-    // std::array<HistoryTile, history_capacity> history_stack = {};
-    // size_t history_pos = 0;
-    // size_t history_size = 0;
-    // size_t history_start = 0;
-
     static constexpr size_t HISTORY_MAX_SIZE = 128;
     std::unordered_map<glm::ivec2, SDL_GPUTexture *> eraseStrokeDuplicatedTextures;
     HistoryTree canvasHistory;
-    // void AddToHistory(HistoryTile history);
-    // void Undo();
-    // void Redo();
-
-    // TODO: Change for a better name, this name implies that a new tile is
-    // created and maybe saved, but This should not be saved
-    // TODO: Use TilePos instead of Tile has a handle, and always operate using
-    // the layer for Tile
-
-    /**
-     * @brief A list of errors of different severity returned by Tile functions
-     *
-     */
 
     /**
      * @brief Create a new blank tile. Only use if a tile is needed but LoadTile failed
@@ -197,73 +177,6 @@ class Canvas {
      * @param below_tile
      */
     void MergeTiles(Tile over_tile, Tile below_tile);
-
-    /*
-    void NewLayer(std::string name, uint8_t height);
-    void DeleteLayer(uint8_t height);
-
-    void SaveLayer(uint8_t height);
-
-    void HideLayer(uint8_t height, bool hide);
-    void LockLayer(uint8_t height, bool lock);
-    void MoveLayer(uint8_t height, uint8_t new_height);
-    void MergeLayerDown(uint8_t height);
-
-    void NewTile(uint8_t height, glm::ivec2 pos);
-    void DeleteTile(uint8_t height, glm::ivec2 pos);
-
-    void OpenTile(uint8_t height, glm::ivec2 pos);
-    void SaveTile(uint8_t height, glm::ivec2 pos);
-
-    void LoadTile(uint8_t height, glm::ivec2 pos);
-    void UnloadTile(uint8_t height, glm::ivec2 pos);
-
-    void MergeTileDown(uint8_t height, glm::ivec2 pos);
-
-    struct Tiles {
-        size_t capacity;
-        size_t count;
-
-        std::vector<glm::ivec2> positions;
-        std::vector<bool> modified;
-        std::vector<bool> used;
-        std::vector<bool> loaded;
-        std::vector<bool> deleting;
-        std::vector<bool> empty;
-
-        Tiles(size_t capacity = 32);
-        ~Tiles();
-
-        void Resize(size_t capacity);
-        size_t Alloc();
-        size_t Free(size_t idx);
-    };
-
-    struct Layers {
-        size_t capacity;
-        size_t count;
-
-        struct Info {
-            std::string name;
-            uint8_t opacity;
-            uint8_t height;
-        };
-        std::vector<Info> infos;
-        std::vector<bool> modified;
-        std::vector<bool> deleted;
-        std::vector<bool> used;
-        std::vector<Tiles> tiles;
-
-        Layers(size_t capacity = 32);
-        ~Layers();
-
-        void Resize(size_t capacity);
-
-        size_t Alloc();
-        size_t Free(size_t idx);
-    };
-    */
-    // Member variables
 
     App *app;
 

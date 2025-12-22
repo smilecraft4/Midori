@@ -140,7 +140,7 @@ void PaintStrokeCommand::revert() {
         SDL_assert(tile != TILE_INVALID);
 
         auto *tile_texture = app_.renderer.tile_textures.at(tile);
-        // SDL_ReleaseGPUTexture(app_.renderer.device, tile_texture);
+        SDL_ReleaseGPUTexture(app_.renderer.device, tile_texture);
         app_.renderer.tile_textures[tile] = texture;
 
         canvas.layerTilesModified.at(layer_).insert(tile);
@@ -206,7 +206,7 @@ void EraseStrokeCommand::execute() {
         SDL_assert(tile != TILE_INVALID);
 
         auto *tile_texture = app_.renderer.tile_textures.at(tile);
-        // SDL_ReleaseGPUTexture(app_.renderer.device, tile_texture);
+        SDL_ReleaseGPUTexture(app_.renderer.device, tile_texture);
         app_.renderer.tile_textures[tile] = texture;
 
         canvas.layerTilesModified.at(layer_).insert(tile);
@@ -550,6 +550,33 @@ bool Canvas::SaveLayer(Layer layer) {
     return true;
 }
 
+// Layer Canvas::DuplicateLayer(Layer layer) {
+//     assert(layer_infos.contains(layer));
+
+//     Layer newLayer = CreateLayer(layer_infos.at(layer).name, layer_infos.at(layer).depth++);
+//     SaveLayer(newLayer);
+
+//     SDL_assert(layer_infos.contains(layer));
+//     const auto &layerInfo = layer_infos.at(layer);
+//     const auto uuidString = uuids::to_string(layerInfo.id);
+//     std::string path = std::format("{}/{}", filename, uuidString);
+
+//     SDL_CreateDirectory(path.c_str());
+
+//     nlohmann::json layerJson = {
+//         {"uuid", uuidString},         {"name", layerInfo.name},       {"opacity", layerInfo.opacity},
+//         {"locked", layerInfo.locked}, {"visible", layerInfo.visible}, {"depth", layerInfo.depth},
+//     };
+//     std::string layerDump = layerJson.dump(4);
+
+//     std::string file = std::format("{}/layer.json", path);
+//     SDL_IOStream *file_io = SDL_IOFromFile(file.c_str(), "w");
+//     SDL_assert(file_io != nullptr);
+//     SDL_WriteIO(file_io, layerDump.data(), layerDump.size());
+//     SDL_CloseIO(file_io);
+//     layersModified.erase(layer);
+// };
+
 bool Canvas::SetLayerDepth(const Layer layer, std::uint8_t depth) {
     SDL_assert(layer_infos.contains(layer) && "Layer not found");
 
@@ -810,6 +837,11 @@ void Canvas::ViewPanStart() {
 }
 void Canvas::ViewPan(glm::vec2 amount) {
     SDL_assert(view_panning);
+
+    // if (view.flippedH) {
+    //     amount.x = -amount.x;
+    // }
+
     view.pan = amount;
     app->renderer.view_changed = true;
 }
@@ -846,8 +878,12 @@ void Canvas::ViewZoomStart(glm::vec2 origin) {
     view.zoom_origin = origin;
     view_zooming = true;
 }
-void Canvas::ViewZoom(float amount) {
+void Canvas::ViewZoom(glm::vec2 amount) {
     SDL_assert(view_zooming);
+
+    if (view.flippedH) {
+        amount.x = -amount.x;
+    }
 
     view.zoom_amount = amount;
     app->renderer.view_changed = true;
@@ -858,6 +894,13 @@ void Canvas::ViewZoomStop() {
     view_zooming = false;
 }
 
+void Canvas::ViewFlipH() {
+    view.flippedH = !view.flippedH;
+    view.pan.x *= -1.0f;
+    view.zoom_amount.x *= -1.0f;
+
+    app->renderer.view_changed = true;
+}
 void Canvas::UpdateTileLoading() {
     ZoneScoped;
 

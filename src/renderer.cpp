@@ -308,7 +308,7 @@ bool Renderer::InitTiles() {
         .rasterizer_state =
             {
                 .fill_mode = SDL_GPU_FILLMODE_FILL,
-                .cull_mode = SDL_GPU_CULLMODE_BACK,
+                .cull_mode = SDL_GPU_CULLMODE_NONE,
                 .front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
                 .depth_bias_constant_factor = 0.0f,
                 .depth_bias_clamp = 0.0f,
@@ -939,8 +939,9 @@ bool Renderer::Render() {
 
             auto view = glm::mat4(1.0f);
             view = glm::translate(view, glm::vec3(app->canvas.view.pan, 0.0f));
-            view = glm::rotate(view, app->canvas.view.rotation, glm::vec3(0.0f, 0.0f, 1.0f));
-            view = glm::scale(view, glm::vec3(app->canvas.view.zoom_amount, app->canvas.view.zoom_amount, 1.0f));
+            // view = glm::rotate(view, app->canvas.view.rotation, glm::vec3(0.0f, 0.0f, 1.0f));
+            view = glm::scale(view, glm::vec3(app->canvas.view.zoom_amount, 1.0f));
+
             viewport_render_data.view = view;
         }
 

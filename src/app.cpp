@@ -539,7 +539,8 @@ void App::CursorMove(glm::vec2 new_pos) {
         canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
 
         if (canvas.stroke_started) {
-            const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
+            glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
+            pos.x *= canvas.view.flippedH ? -1.0f : 1.0f;
 
             if (canvas.brush_mode) {
                 canvas.UpdateBrushStroke(Canvas::StrokePoint{
@@ -569,7 +570,8 @@ void App::CursorPress(Uint8 button) {
 
         if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating && (canvas.selected_layer != 0) &&
             !canvas.stroke_started) {
-            const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
+            glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
+            pos.x *= canvas.view.flippedH ? -1.0f : 1.0f;
 
             if (canvas.brush_mode) {
                 canvas.StartBrushStroke(Canvas::StrokePoint{
@@ -596,7 +598,8 @@ void App::CursorRelease(Uint8 button) {
         cursor_left_pressed = false;
         if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating && (canvas.selected_layer != 0) &&
             canvas.stroke_started) {
-            const glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
+            glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
+            pos.x *= canvas.view.flippedH ? -1.0f : 1.0f;
 
             if (canvas.brush_mode) {
                 canvas.EndBrushStroke(Canvas::StrokePoint{
@@ -636,6 +639,9 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
 
     if (key == SDLK_F11) {
         Fullscreen(!fullscreen);
+    }
+    if (key == SDLK_F && ctrl_pressed) {
+        canvas.ViewFlipH();
     }
 
     if (!canvas.stroke_started) {
