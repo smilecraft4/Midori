@@ -1181,8 +1181,8 @@ void Canvas::StartBrushStroke(StrokePoint point) {
         allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));
     }
 
-    // stroke_points.push_back(point);
-    stroke_points.clear();
+    stroke_points.push_back(point);
+    // stroke_points.clear();
 
     previous_point = point;
 }
@@ -1314,11 +1314,6 @@ void Canvas::EndBrushStroke(StrokePoint point) {
     canvasHistory.store(std::move(paintCommand));
 
     allTileStrokeAffected.clear();
-
-    // Save all the modified tiles once merged
-    // for (const auto &tile : allTileStrokeAffected) {
-    //    layerTilesModified[selected_layer].insert(tile);
-    //}
 
     stroke_started = false;
 }

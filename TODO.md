@@ -10,15 +10,15 @@
 - fix stroke layer opacity missmatch
 - properly check srgb -> linear -> srgb
 - add opacity on eraser for soft erasing
-- delete tile if it is empty
 - add wintab for higher pen resolution
-- start stroke on click
 - move to a more Data oriented architecture (structs of arrays)
+- delete empty tile
 
 ### In Progress
 
 ### Done
 
+- start stroke on click
 - canvas undo/redo
 - flip canvas
 - fullscreen
