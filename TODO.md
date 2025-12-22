@@ -6,18 +6,19 @@
 
 - viewport rotations
 - viewport undo/redo
-- shortcuts for brush setting
 - fix stroke layer opacity missmatch
 - properly check srgb -> linear -> srgb
 - add opacity on eraser for soft erasing
 - add wintab for higher pen resolution
 - move to a more Data oriented architecture (structs of arrays)
-- delete empty tile
 
 ### In Progress
 
+- shortcuts for brush setting
+
 ### Done
 
+- delete empty tile
 - start stroke on click
 - canvas undo/redo
 - flip canvas

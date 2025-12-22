@@ -106,9 +106,13 @@ bool App::Update() {
                 ImGui::Checkbox("Show loaded tiles", &ui_debug_culling);
             }
             ImGui::End();
-            if (ui_debug_culling && canvas.stroke_layer > 0) {
+            auto layer = canvas.selected_layer;
+            if (canvas.stroke_layer > 0) {
+                layer = canvas.stroke_layer;
+            }
+            if (ui_debug_culling && layer > 0) {
                 ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-                for (const auto &[pos, tile] : canvas.layer_tile_pos.at(canvas.stroke_layer)) {
+                for (const auto &[pos, tile] : canvas.layer_tile_pos.at(layer)) {
                     const ImVec2 pmin = {
                         ((float)window_size.x / 2.0f) + canvas.view.pan.x + ((float)pos.x * (float)TILE_SIZE),
                         ((float)window_size.y / 2.0f) + canvas.view.pan.y + ((float)pos.y * (float)TILE_SIZE),

@@ -24,8 +24,9 @@
 #include "midori/app.h"
 #include "midori/renderer.h"
 #include "midori/types.h"
-#define QOI_IMPLEMENTATION
 #include "nlohmann/json.hpp"
+#define QOI_IMPLEMENTATION
+#define QOI_NO_STDIO
 #include "qoi/qoi.h"
 #define UUID_SYSTEM_GENERATOR
 #include "uuid.h"
@@ -716,9 +717,11 @@ std::expected<Tile, TileError> Canvas::CreateTile(const Layer layer, const glm::
             return std::unexpected(TileError::OutOfHandle);
         }
         last_assigned_tile++;
+        SDL_assert(!layer_tiles.at(layer).contains(last_assigned_tile));
         tile = last_assigned_tile;
     } else {
         tile = unassigned_tiles.back();
+        SDL_assert(!layer_tiles.at(layer).contains(tile));
         if (tile == TILE_INVALID) {
             return std::unexpected(TileError::Invalid);
         }
@@ -1026,7 +1029,19 @@ void Canvas::UpdateTileUnloading() {
         if (tile_write.state == TileWriteState::Downloading) {
             if (app->renderer.IsTileTextureDownloaded(tile)) {
                 if (app->renderer.CopyTileTextureDownloaded(tile, tile_write.raw_texture)) {
-                    tile_write.state = TileWriteState::Downloaded;
+                    bool empty = true;
+                    for (const auto &v : tile_write.raw_texture) {
+                        if (v != 0) {
+                            empty = false;
+                            break;
+                        }
+                    }
+                    if (empty) {
+                        DeleteTile(tile_info.layer, tile);
+                        tiles_unqueued.push_back(tile);
+                    } else {
+                        tile_write.state = TileWriteState::Downloaded;
+                    }
                 }
             }
         }
@@ -1079,14 +1094,16 @@ void Canvas::UpdateTileUnloading() {
         ZoneScopedN("Unqueing unload queue");
         for (const auto &tile : tiles_unqueued) {
             const auto &tile_info = tile_infos.at(tile);
-            app->renderer.ReleaseTileTexture(tile);
-            layer_tiles.at(tile_info.layer).erase(tile);
-            layer_tile_pos.at(tile_info.layer).erase(tile_infos.at(tile).position);
-            tile_infos.erase(tile);
-            tile_to_unload.erase(tile);
+            if (!tile_to_delete.contains(tile)) {
+                app->renderer.ReleaseTileTexture(tile);
+                layer_tiles.at(tile_info.layer).erase(tile);
+                layer_tile_pos.at(tile_info.layer).erase(tile_infos.at(tile).position);
+                tile_infos.erase(tile);
+                unassigned_tiles.push_back(tile);
+            }
 
+            tile_to_unload.erase(tile);
             tile_write_queue.erase(tile);
-            unassigned_tiles.push_back(tile);
         }
     }
 }
