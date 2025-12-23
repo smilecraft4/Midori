@@ -1536,6 +1536,18 @@ void Canvas::OpenEraser() {
     eraser_options.spacing = layerJson.at("spacing");
 }
 
+void Canvas::ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode) {
+    if (slowMode) {
+        cursorDelta *= 0.25f;
+    }
+
+    if (brush_mode) {
+        brush_options.radius += cursorDelta.x;
+    } else if (eraser_mode) {
+        eraser_options.radius += cursorDelta.x;
+    }
+}
+
 Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float pressure) const {
     // TODO: Add min max value
 

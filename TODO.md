@@ -11,13 +11,13 @@
 - add opacity on eraser for soft erasing
 - add wintab for higher pen resolution
 - move to a more Data oriented architecture (structs of arrays)
+- brush and eraser dynamic cursor
 
 ### In Progress
 
-- shortcuts for brush setting
-
 ### Done
 
+- brush radius context actions
 - delete empty tile
 - start stroke on click
 - canvas undo/redo

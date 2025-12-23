@@ -53,7 +53,19 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
     ImGuiIO &io = ImGui::GetIO();
 
-    if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
+    if (io.WantCaptureMouse) {
+        if (!SDL_ShowCursor()) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to show cursor: %s", SDL_GetError());
+        }
+    } else if (!io.WantCaptureMouse) {
+        if (!SDL_HideCursor()) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to hide cursor: %s", SDL_GetError());
+        }
+    }
+
+    app->ui_focus = io.WantCaptureMouse;  // || io.WantCaptureKeyboard;
+
+    if (!app->ui_focus) {
         // Keyboard
         if (event->type == SDL_EVENT_KEY_DOWN) {
             app->KeyPress(event->key.key, event->key.mod);

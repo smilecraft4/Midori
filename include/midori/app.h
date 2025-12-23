@@ -45,6 +45,8 @@ class App {
     bool should_quit = false;
     bool hidden = false;
     bool fullscreen = false;
+    bool ui_focus = false;
+    bool changeCursorSize = false;
 
     Canvas canvas;
     Renderer renderer;

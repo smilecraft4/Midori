@@ -322,6 +322,8 @@ class Canvas {
     void EndEraserStroke(StrokePoint point);
     void SaveEraser();
     void OpenEraser();
+
+    void ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode);
 };
 }  // namespace Midori
 

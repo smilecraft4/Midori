@@ -100,7 +100,7 @@ bool App::Update() {
             static bool ui_debug_culling = false;
             if (ImGui::Begin("View")) {
                 ImGui::LabelText("Position", "x:%.2f y:%.2f", canvas.view.pan.x, canvas.view.pan.y);
-                ImGui::LabelText("Zoom", "%.2f", canvas.view.zoom_amount);
+                ImGui::LabelText("Zoom", "x:%.2f, y:%.2f", canvas.view.zoom_amount.x, canvas.view.zoom_amount.y);
                 ImGui::LabelText("Rotation", "%.2f", canvas.view.rotation / std::numbers::pi_v<float> * 360.0f);
                 ImGui::Separator();
                 ImGui::Checkbox("Show loaded tiles", &ui_debug_culling);
@@ -110,8 +110,8 @@ bool App::Update() {
             if (canvas.stroke_layer > 0) {
                 layer = canvas.stroke_layer;
             }
+            ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
             if (ui_debug_culling && layer > 0) {
-                ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
                 for (const auto &[pos, tile] : canvas.layer_tile_pos.at(layer)) {
                     const ImVec2 pmin = {
                         ((float)window_size.x / 2.0f) + canvas.view.pan.x + ((float)pos.x * (float)TILE_SIZE),
@@ -129,6 +129,33 @@ bool App::Update() {
                     draw_list->AddRect(pmin, pmax, IM_COL32(0, 0, 0, 64));
                     std::string text = std::format("[{}, {}]", pos.x, pos.y);
                     draw_list->AddText(pcenter, IM_COL32(0, 0, 0, 64), text.c_str());
+                }
+            }
+
+            if (!ui_focus) {
+                ImVec2 pos = {};
+                float radius = 0.0f;
+                // if (!canvas.stroke_points.empty()) {
+                //     Canvas::StrokePoint p = canvas.previous_point;
+                //     if (canvas.brush_mode) {
+                //         p = canvas.ApplyBrushPressure(p, 0.5f);
+                //     } else {
+                //         p = canvas.ApplyEraserPressure(p, pen_pressure);
+                //     }
+
+                //     pos.x = ((float)window_size.x / 2.0f) + p.position.x + ((float)p.position.x * (float)TILE_SIZE);
+                //     pos.y = ((float)window_size.y / 2.0f) + p.position.y + ((float)p.position.y * (float)TILE_SIZE);
+                //     radius = p.radius;
+                // }
+                if (!canvas.stroke_started) {
+                    pos.x = cursor_current_pos.x;
+                    pos.y = cursor_current_pos.y;
+                    if (canvas.brush_mode) {
+                        radius = canvas.brush_options.radius;
+                    } else {
+                        radius = canvas.eraser_options.radius;
+                    }
+                    draw_list->AddCircle(pos, radius, ImColor(0, 0, 0, 255));
                 }
             }
 
@@ -535,9 +562,20 @@ void App::Quit() {
 }
 
 void App::CursorMove(glm::vec2 new_pos) {
+    static glm::vec2 last_pos = cursor_last_pos;
+
+    if (changeCursorSize) {
+        glm::vec2 delta_pos = new_pos - last_pos;
+        last_pos = new_pos;
+
+        canvas.ChangeRadiusSize(delta_pos, shift_pressed);
+        return;
+    }
+
     cursor_last_pos = cursor_current_pos;
     cursor_current_pos = new_pos;
     cursor_delta_pos = cursor_current_pos - cursor_last_pos;
+    last_pos = cursor_last_pos;
 
     if (cursor_left_pressed) {
         canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
@@ -641,6 +679,10 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         shift_pressed = true;
     }
 
+    if (changeCursorSize) {
+        return;
+    }
+
     if (key == SDLK_F11) {
         Fullscreen(!fullscreen);
     }
@@ -649,6 +691,10 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     }
 
     if (!canvas.stroke_started) {
+        if (key == SDLK_F) {
+            changeCursorSize = true;
+        }
+
         if (key == SDLK_B && canvas.eraser_mode) {
             canvas.eraser_mode = false;
             canvas.brush_mode = true;
@@ -679,6 +725,11 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     }
     if (key == SDLK_LSHIFT || key == SDLK_RSHIFT) {
         shift_pressed = false;
+    }
+
+    if (changeCursorSize && key == SDLK_F) {
+        changeCursorSize = false;
+        return;
     }
 
     canvas.ViewUpdateState(space_pressed, false, false);
