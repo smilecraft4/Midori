@@ -4,6 +4,7 @@
 #include <imgui_impl_sdl3.h>
 
 #include "midori/app.h"
+#include "midori/layers.h"
 #include "midori/memory.h"
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {

@@ -55,6 +55,7 @@ class App {
     glm::ivec2 window_pos = {SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED};
     glm::ivec2 window_size = {1280, 720};
 
+    /* should this be in canvas space ?? */
     glm::vec2 cursor_last_pos = glm::vec2(0.0f);
     glm::vec2 cursor_current_pos = glm::vec2(0.0f);
     glm::vec2 cursor_delta_pos = glm::vec2(0.0f);

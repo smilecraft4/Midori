@@ -98,39 +98,43 @@ bool App::Update() {
             ImGui::NewFrame();
 
             static bool ui_debug_culling = false;
-            if (ImGui::Begin("View")) {
-                ImGui::LabelText("Position", "x:%.2f y:%.2f", canvas.view.pan.x, canvas.view.pan.y);
-                ImGui::LabelText("Zoom", "x:%.2f, y:%.2f", canvas.view.zoom_amount.x, canvas.view.zoom_amount.y);
-                ImGui::LabelText("Rotation", "%.2f", canvas.view.rotation / std::numbers::pi_v<float> * 360.0f);
-                ImGui::Separator();
-                ImGui::Checkbox("Show loaded tiles", &ui_debug_culling);
-            }
-            ImGui::End();
             auto layer = canvas.selected_layer;
             if (canvas.stroke_layer > 0) {
                 layer = canvas.stroke_layer;
             }
             ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-            if (ui_debug_culling && layer > 0) {
-                for (const auto &[pos, tile] : canvas.layer_tile_pos.at(layer)) {
-                    const ImVec2 pmin = {
-                        ((float)window_size.x / 2.0f) + canvas.view.pan.x + ((float)pos.x * (float)TILE_SIZE),
-                        ((float)window_size.y / 2.0f) + canvas.view.pan.y + ((float)pos.y * (float)TILE_SIZE),
-                    };
-                    const ImVec2 pmax = {
-                        pmin.x + (float)TILE_SIZE,
-                        pmin.y + (float)TILE_SIZE,
-                    };
-                    const ImVec2 pcenter = {
-                        pmin.x + ((float)TILE_SIZE / 2.0f),
-                        pmin.y + ((float)TILE_SIZE / 2.0f),
-                    };
+            // if (ui_debug_culling && layer > 0) {
+            for (const auto pos : canvas.viewport.VisibleTiles(window_size)) {
+                ImVec2 points[5]{};
+                ImVec2 center;
+                glm::vec2 offsets[5] = {
+                    {1.0f, 1.0f},
+                    {static_cast<float>(TILE_SIZE), 0.0f},
+                    {static_cast<float>(TILE_SIZE), static_cast<float>(TILE_SIZE)},
+                    {1.0f, static_cast<float>(TILE_SIZE)},
+                    {1.0f, 1.0f},
+                };
+                for (size_t i = 0; i < 5; i++) {
+                    glm::vec4 p =
+                        canvas.viewport.ViewMatrix() *
+                        glm::vec4(static_cast<glm::vec2>(pos) * static_cast<float>(TILE_SIZE) + offsets[i], 0.0f, 1.0f);
 
-                    draw_list->AddRect(pmin, pmax, IM_COL32(0, 0, 0, 64));
-                    std::string text = std::format("[{}, {}]", pos.x, pos.y);
-                    draw_list->AddText(pcenter, IM_COL32(0, 0, 0, 64), text.c_str());
+                    points[i] = ImVec2{
+                        static_cast<float>(window_size.x) / 2.0f + p.x,
+                        static_cast<float>(window_size.y) / 2.0f + p.y,
+                    };
+                    center.x += points[i].x / 5.0f;
+                    center.y += points[i].y / 5.0f;
                 }
+
+                // draw_list->AddRect(pmin, pmax, IM_COL32(0, 0, 0, 64),);
+                draw_list->AddPolyline(points, 5, IM_COL32(0, 0, 0, 64), 0, 1.0f);
+                std::string text = std::format("[{}, {}]", pos.x, pos.y);
+                draw_list->AddText(center, IM_COL32(0, 0, 0, 64), text.c_str());
             }
+            // }
+
+            canvas.viewport.UI();
 
             if (!ui_focus) {
                 ImVec2 pos = {};
@@ -562,6 +566,8 @@ void App::Quit() {
 }
 
 void App::CursorMove(glm::vec2 new_pos) {
+    // new_pos = canvas.viewport.ScreenToCanvas(new_pos, window_size);
+
     static glm::vec2 last_pos = cursor_last_pos;
 
     if (changeCursorSize) {
@@ -577,17 +583,18 @@ void App::CursorMove(glm::vec2 new_pos) {
     cursor_delta_pos = cursor_current_pos - cursor_last_pos;
     last_pos = cursor_last_pos;
 
+    if (!cursor_left_pressed) {
+        canvas.viewCursorStart = new_pos;
+    }
+
     if (cursor_left_pressed) {
-        canvas.ViewUpdateCursor(cursor_current_pos, cursor_delta_pos);
+        canvas.ViewUpdateCursor(cursor_current_pos);
 
         if (canvas.stroke_started) {
-            glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
-            pos.x *= canvas.view.flippedH ? -1.0f : 1.0f;
-
             if (canvas.brush_mode) {
                 canvas.UpdateBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brush_options.color,
-                    .position = pos,
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
                     .radius = canvas.brush_options.radius,
                     .flow = canvas.brush_options.flow,
                     .hardness = canvas.brush_options.hardness,
@@ -595,7 +602,7 @@ void App::CursorMove(glm::vec2 new_pos) {
             } else if (canvas.eraser_mode) {
                 canvas.UpdateEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraser_options.opacity},
-                    .position = pos,
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
                     .radius = canvas.eraser_options.radius,
                     .flow = canvas.eraser_options.flow,
                     .hardness = canvas.eraser_options.hardness,
@@ -604,21 +611,20 @@ void App::CursorMove(glm::vec2 new_pos) {
         }
     }
 
+    canvas.viewCursorPrevious = new_pos;
+
     cursor_delta_pos = glm::vec2(0.0f);
 }
 void App::CursorPress(Uint8 button) {
     if (button == SDL_BUTTON_LEFT) {
         cursor_left_pressed = true;
 
-        if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating && (canvas.selected_layer != 0) &&
+        if (!canvas.viewPanning && !canvas.viewZooming && !canvas.viewRotating && (canvas.selected_layer != 0) &&
             !canvas.stroke_started) {
-            glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
-            pos.x *= canvas.view.flippedH ? -1.0f : 1.0f;
-
             if (canvas.brush_mode) {
                 canvas.StartBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brush_options.color,
-                    .position = pos,
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
                     .radius = canvas.brush_options.radius,
                     .flow = canvas.brush_options.flow,
                     .hardness = canvas.brush_options.hardness,
@@ -626,7 +632,7 @@ void App::CursorPress(Uint8 button) {
             } else if (canvas.eraser_mode) {
                 canvas.StartEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraser_options.opacity},
-                    .position = pos,
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
                     .radius = canvas.eraser_options.radius,
                     .flow = canvas.eraser_options.flow,
                     .hardness = canvas.eraser_options.hardness,
@@ -638,15 +644,12 @@ void App::CursorPress(Uint8 button) {
 void App::CursorRelease(Uint8 button) {
     if (button == SDL_BUTTON_LEFT) {
         cursor_left_pressed = false;
-        if (!canvas.view_panning && !canvas.view_zooming && !canvas.view_rotating && (canvas.selected_layer != 0) &&
+        if (!canvas.viewPanning && !canvas.viewZooming && !canvas.viewRotating && (canvas.selected_layer != 0) &&
             canvas.stroke_started) {
-            glm::ivec2 pos = (cursor_current_pos - canvas.view.pan - (glm::vec2(window_size) / 2.0f));
-            pos.x *= canvas.view.flippedH ? -1.0f : 1.0f;
-
             if (canvas.brush_mode) {
                 canvas.EndBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brush_options.color,
-                    .position = pos,
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
                     .radius = canvas.brush_options.radius,
                     .flow = canvas.brush_options.flow,
                     .hardness = canvas.brush_options.hardness,
@@ -654,7 +657,7 @@ void App::CursorRelease(Uint8 button) {
             } else if (canvas.eraser_mode) {
                 canvas.EndEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraser_options.opacity},
-                    .position = pos,
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
                     .radius = canvas.eraser_options.radius,
                     .flow = canvas.eraser_options.flow,
                     .hardness = canvas.eraser_options.hardness,
@@ -687,7 +690,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         Fullscreen(!fullscreen);
     }
     if (key == SDLK_F && ctrl_pressed) {
-        canvas.ViewFlipH();
+        canvas.viewport.FlipHorizontal();
     }
 
     if (!canvas.stroke_started) {
@@ -713,7 +716,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         }
     }
 
-    canvas.ViewUpdateState(space_pressed, false, false);
+    canvas.ViewUpdateState(cursor_current_pos);
 }
 
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
@@ -732,7 +735,7 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
         return;
     }
 
-    canvas.ViewUpdateState(space_pressed, false, false);
+    canvas.ViewUpdateState(cursor_current_pos);
 }
 
 void App::Fullscreen(bool enable) {

@@ -1,0 +1,64 @@
+#pragma once
+
+#include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
+#include <unordered_set>
+
+#include "command.h"
+
+namespace Midori {
+class App;
+
+class Viewport {
+   private:
+    App* app_;
+
+    glm::vec2 translation_ = glm::vec2(0.0f);
+    glm::vec2 zoom_ = glm::vec2(1.0f);
+    glm::vec2 zoom_origin_ = glm::vec2(0.0f);
+    float rotation_ = 0.0f;
+    bool flippedH_;
+
+    glm::mat4 view_mat_ = glm::mat4(1.0f);
+    glm::mat4 view_mat_inv_ = glm::mat4(1.0f);
+    bool view_mat_computed_ = false;
+
+   public:
+    Viewport(App* app);
+
+    void Translate(glm::vec2 amount);
+    void SetTranslation(glm::vec2 translation);
+    void Zoom(glm::vec2 origin, glm::vec2 amount);
+    void SetZoom(glm::vec2 origin, glm::vec2 amount);
+    void Rotate(float amount);
+    void SetRotation(float rotation);
+    void FlipHorizontal();
+
+    glm::mat4 ViewMatrix();
+    glm::mat4 InverseViewMatrix();
+    glm::vec2 ScreenToCanvas(glm::vec2 screenPos, glm::ivec2 screenSize);
+    std::vector<glm::ivec2> VisibleTiles(glm::ivec2 screenSize);
+
+    void UI();
+
+   private:
+    void ComputeViewMatrix();
+};
+
+class ViewportCommand : public Command {
+   private:
+    App& app_;
+    Viewport new_viewport_;
+    Viewport previous_viewport_;
+
+   public:
+    ViewportCommand(App& app, Viewport previous_viewport, Viewport new_viewport)
+        : Command(Type::Unknown), app_(app), previous_viewport_(previous_viewport), new_viewport_(new_viewport) {};
+    virtual ~ViewportCommand() = default;
+
+    virtual std::string name() const { return "View change"; }
+    virtual void execute();
+    virtual void revert();
+};
+
+}  // namespace Midori

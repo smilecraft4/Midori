@@ -934,16 +934,7 @@ bool Renderer::Render() {
     }
 
     if (app->window_size.x > 0 && app->window_size.y > 0 && !app->hidden) {
-        {  // Compute view matrix
-            ZoneScopedN("Compute view matrix");
-
-            auto view = glm::mat4(1.0f);
-            view = glm::translate(view, glm::vec3(app->canvas.view.pan, 0.0f));
-            // view = glm::rotate(view, app->canvas.view.rotation, glm::vec3(0.0f, 0.0f, 1.0f));
-            view = glm::scale(view, glm::vec3(app->canvas.view.zoom_amount, 1.0f));
-
-            viewport_render_data.view = view;
-        }
+        viewport_render_data.view = app->canvas.viewport.ViewMatrix();
 
         {  // Acquire GPU command buffer
             ZoneScopedN("Acquire GPU command buffer");

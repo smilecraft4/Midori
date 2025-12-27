@@ -265,7 +265,8 @@ void EraseStrokeCommand::revert() {
 
 // Canvas
 
-Canvas::Canvas(App *app) : app(app), canvasHistory(HISTORY_MAX_SIZE) {}
+Canvas::Canvas(App *app)
+    : app(app), canvasHistory(HISTORY_MAX_SIZE), viewHistory(VIEW_HISTORY_MAX_SIZE), viewport(app) {}
 
 SDL_EnumerationResult findLayersCallback(void *userdata, const char *dirname, const char *fname) {
     if (dirname != nullptr) {
@@ -370,7 +371,7 @@ void Canvas::Update() {
     ZoneScoped;
     {  // Loading/Unloading culled tiles
         ZoneScopedN("Tile culling");
-        std::vector<glm::ivec2> view_visible_tiles = GetViewVisibleTiles(view, app->window_size);
+        std::vector<glm::ivec2> view_visible_tiles = viewport.VisibleTiles(app->window_size);
 
         for (const auto &layer : Layers()) {
             if (!layer_infos.at(layer).visible) {
@@ -819,130 +820,57 @@ void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
     layerTilesModified[tile_infos.at(below_tile).layer].insert(below_tile);
 }
 
-std::vector<glm::ivec2> Canvas::GetViewVisibleTiles(const View &view, const glm::vec2 size) {
-    ZoneScoped;
-    constexpr auto tile_size = glm::vec2(TILE_SIZE);
-    const glm::ivec2 t_min = glm::floor((-view.pan - (size / 2.0f)) / tile_size);
-    const glm::ivec2 t_max = glm::ceil((-view.pan + (size / 2.0f)) / tile_size);
-    const glm::ivec2 t_num = t_max - t_min;
+void Canvas::ViewUpdateState(glm::vec2 cursor_pos) {
+    const auto pan = app->space_pressed;
+    const auto zoom = app->ctrl_pressed;
+    const auto rotate = app->shift_pressed;
 
-    std::vector<glm::ivec2> positions;
-    positions.reserve(std::size_t(t_num.x) * std::size_t(t_num.y));
-
-    for (auto y = t_min.y; y < t_max.y; y++) {
-        for (auto x = t_min.x; x < t_max.x; x++) {
-            positions.emplace_back(x, y);
-        }
+    if (viewPanning && (!pan || (pan && zoom) || (pan && rotate))) {
+        viewPanning = false;
+    }
+    if (viewZooming && (!pan || !zoom || (pan && rotate))) {
+        viewZooming = false;
+    }
+    if (viewRotating && (!pan || !rotate || (pan && zoom))) {
+        viewRotating = false;
     }
 
-    return positions;
-}
-
-void Canvas::ViewUpdateState(bool pan, bool zoom, bool rotate) {
-    if (view_panning && (!pan || (pan && zoom) || (pan && rotate))) {
-        ViewPanStop();
+    if (!viewPanning && (pan && !zoom && !rotate)) {
+        // viewCursorStart = cursor_pos;
+        viewPanning = true;
     }
-    if (view_zooming && (!pan || !zoom || (pan && rotate))) {
-        ViewZoomStop();
+    if (!viewZooming && (pan && zoom && !rotate)) {
+        // viewCursorStart = cursor_pos;
+        viewZooming = true;
     }
-    if (view_rotating && (!pan || !rotate || (pan && zoom))) {
-        ViewRotateStop();
-    }
-
-    if (!view_panning && (pan && !zoom && !rotate)) {
-        ViewPanStart();
-    }
-    if (!view_zooming && (pan && zoom && !rotate)) {
-        ViewZoomStart(app->cursor_current_pos);
-    }
-    if (!view_rotating && (pan && rotate && !zoom)) {
-        ViewRotateStart(app->cursor_current_pos);
-    }
-}
-
-void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos, glm::vec2 cursor_delta) {
-    if (view_panning) {
-        ViewPan(view.pan + cursor_delta);
-    } else if (view_rotating) {
-        ViewRotate(view.rotation + (cursor_delta.x / 360.0f * std::numbers::pi_v<float>));
-    } else if (view_zooming) {
-        ViewZoom(view.zoom_amount + (cursor_delta.x / 1000.0f));
-    }
-}
-
-void Canvas::ViewPanStart() {
-    SDL_assert(!view_panning);
-    SDL_assert(!view_rotating);
-    SDL_assert(!view_zooming);
-
-    view_panning = true;
-}
-void Canvas::ViewPan(glm::vec2 amount) {
-    SDL_assert(view_panning);
-
-    // if (view.flippedH) {
-    //     amount.x = -amount.x;
-    // }
-
-    view.pan = amount;
-    app->renderer.view_changed = true;
-}
-void Canvas::ViewPanStop() {
-    SDL_assert(view_panning);
-
-    view_panning = false;
-}
-
-void Canvas::ViewRotateStart(glm::vec2 start) {
-    SDL_assert(!view_panning);
-    SDL_assert(!view_rotating);
-    SDL_assert(!view_zooming);
-
-    view.rotate_start = start;
-    view_rotating = true;
-}
-void Canvas::ViewRotate(float amount) {
-    SDL_assert(view_rotating);
-    view.rotation = amount;
-    app->renderer.view_changed = true;
-}
-void Canvas::ViewRotateStop() {
-    SDL_assert(view_rotating);
-
-    view_rotating = false;
-}
-
-void Canvas::ViewZoomStart(glm::vec2 origin) {
-    SDL_assert(!view_panning);
-    SDL_assert(!view_rotating);
-    SDL_assert(!view_zooming);
-
-    view.zoom_origin = origin;
-    view_zooming = true;
-}
-void Canvas::ViewZoom(glm::vec2 amount) {
-    SDL_assert(view_zooming);
-
-    if (view.flippedH) {
-        amount.x = -amount.x;
+    if (!viewRotating && (pan && rotate && !zoom)) {
+        // viewCursorStart = cursor_pos;
+        viewRotating = true;
     }
 
-    view.zoom_amount = amount;
-    app->renderer.view_changed = true;
-}
-void Canvas::ViewZoomStop() {
-    SDL_assert(view_zooming);
-
-    view_zooming = false;
+    viewCursorPrevious = cursor_pos;
 }
 
-void Canvas::ViewFlipH() {
-    view.flippedH = !view.flippedH;
-    view.pan.x *= -1.0f;
-    view.zoom_amount.x *= -1.0f;
-
-    app->renderer.view_changed = true;
+void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos) {
+    if (viewPanning) {
+        const auto viewCursorDelta = cursor_pos - viewCursorPrevious;
+        SDL_Log("%.2f, %.2f", viewCursorDelta.x, viewCursorDelta.y);
+        viewport.Translate(viewCursorDelta);
+    } else if (viewRotating) {
+        const auto startAngle = std::atan2(viewCursorStart.x - static_cast<float>(app->window_size.x) / 2.0f,
+                                           viewCursorStart.y - static_cast<float>(app->window_size.y) / 2.0f);
+        const auto previousAngle = std::atan2(viewCursorPrevious.x - static_cast<float>(app->window_size.x) / 2.0f,
+                                              viewCursorPrevious.y - static_cast<float>(app->window_size.y) / 2.0f);
+        const auto currentAngle = std::atan2(cursor_pos.x - static_cast<float>(app->window_size.x) / 2.0f,
+                                             cursor_pos.y - static_cast<float>(app->window_size.y) / 2.0f);
+        const auto angleDelta = (previousAngle - startAngle) - (currentAngle - startAngle);
+        viewport.Rotate(angleDelta);
+    } else if (viewZooming) {
+        const auto viewCursorDelta = cursor_pos - viewCursorPrevious;
+        viewport.Zoom(viewCursorStart, glm::vec2(viewCursorDelta.x / 1000.0f));
+    }
 }
+
 void Canvas::UpdateTileLoading() {
     ZoneScoped;
 

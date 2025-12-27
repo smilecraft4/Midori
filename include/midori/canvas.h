@@ -18,6 +18,7 @@
 
 #include "midori/history.h"
 #include "midori/types.h"
+#include "midori/viewport.h"
 #include "uuid.h"
 
 namespace Midori {
@@ -89,21 +90,14 @@ class Canvas {
     bool CanQuit();
     bool Open();
 
-    // TODO: Move to it's own class
     // Viewport Stuff
-    void ViewUpdateState(bool pan, bool zoom, bool rotate);
-    void ViewUpdateCursor(glm::vec2 cursor_pos, glm::vec2 cursor_delta);
-    void ViewPanStart();
-    void ViewPan(glm::vec2 amount);
-    void ViewPanStop();
-    void ViewRotateStart(glm::vec2 start);
-    void ViewRotate(float amount);
-    void ViewRotateStop();
-    void ViewZoomStart(glm::vec2 origin);
-    void ViewZoom(glm::vec2 amount);
-    void ViewZoomStop();
-    void ViewFlipH();
-    static std::vector<glm::ivec2> GetViewVisibleTiles(const View &view, glm::vec2 size);
+    void ViewUpdateState(glm::vec2 cursor_pos);
+    void ViewUpdateCursor(glm::vec2 cursor_pos);
+    bool viewZooming = false;
+    bool viewPanning = false;
+    bool viewRotating = false;
+    glm::vec2 viewCursorStart = glm::vec2(0.0f);
+    glm::vec2 viewCursorPrevious = glm::vec2(0.0f);
 
     [[nodiscard]] bool HasLayer(Layer layer) const;
     [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
@@ -120,6 +114,10 @@ class Canvas {
 
     [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
     [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
+
+    Viewport viewport;
+    static constexpr size_t VIEW_HISTORY_MAX_SIZE = 2048;
+    HistoryTree viewHistory;
 
     static constexpr size_t HISTORY_MAX_SIZE = 128;
     std::unordered_map<glm::ivec2, SDL_GPUTexture *> eraseStrokeDuplicatedTextures;
@@ -202,13 +200,6 @@ class Canvas {
     std::unordered_map<Layer, std::unordered_set<glm::ivec2>> layerTilesSaved;
     std::unordered_map<Layer, std::unordered_set<Tile>> layerTilesModified;
     std::unordered_map<Layer, std::unordered_set<Tile>> allTileModified;
-
-    View view;
-    glm::mat4 view_mat = glm::mat4(1.0f);
-    std::vector<View> view_history;
-    bool view_zooming = false;
-    bool view_panning = false;
-    bool view_rotating = false;
 
     std::string filename;
 

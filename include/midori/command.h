@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace Midori {
 class Command {
    public:
@@ -12,7 +14,7 @@ class Command {
     };
 
    private:
-    Type type_;
+    Type type_ = Type::Unknown;
 
    public:
     // Command(const Command &) = delete;
@@ -22,10 +24,9 @@ class Command {
 
     explicit Command(Type type) : type_(type) {};
     virtual ~Command() = default;
-
-    virtual std::string name() const = 0;
     Type type() const { return type_; }
 
+    virtual std::string name() const = 0;
     virtual void execute() = 0;
     virtual void revert() = 0;
 

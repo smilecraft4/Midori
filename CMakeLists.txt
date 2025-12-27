@@ -98,6 +98,8 @@ add_library(midori_lib
   "src/canvas.cpp"
   "src/renderer.cpp"
   "src/memory.cpp"
+  "src/midori/history.cpp"
+  "src/midori/viewport.cpp"
 
   # "src/sqlite/sqlite3.c"
 )

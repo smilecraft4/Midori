@@ -4,7 +4,6 @@
 
 ### Todo
 
-- viewport rotations
 - viewport undo/redo
 - fix stroke layer opacity missmatch
 - properly check srgb -> linear -> srgb
@@ -14,6 +13,9 @@
 - brush and eraser dynamic cursor
 
 ### In Progress
+
+- viewport zoom
+- viewport rotations
 
 ### Done
 
