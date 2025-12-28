@@ -11,6 +11,9 @@ namespace Midori {
 Viewport::Viewport(App* app) : app_(app) {}
 
 void Viewport::Translate(glm::vec2 amount) {
+    if (flippedH_) {
+        amount.x = -amount.x;
+    }
     // The amount is in view space not canvas space, so we undo every visual modification
     glm::vec2 correctedAmount{};
     correctedAmount.x = amount.x * std::cos(-rotation_) - amount.y * std::sin(-rotation_);
@@ -23,6 +26,10 @@ void Viewport::Translate(glm::vec2 amount) {
 }
 
 void Viewport::SetTranslation(glm::vec2 translation) {
+    // if (flippedH_) {
+    //     translation_.x = -translation_.x;
+    // }
+
     glm::vec2 correctedTranslation{};
     correctedTranslation.x = translation.x * std::cos(-rotation_) - translation.y * std::sin(-rotation_);
     correctedTranslation.y = translation.x * std::sin(-rotation_) + translation.y * std::cos(-rotation_);
@@ -38,6 +45,8 @@ void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
 
     zoom_origin_ = origin;
     zoom_ += amount;
+    zoom_.x = std::max(0.25f, std::min(2.5f, zoom_.x));
+    zoom_.y = std::max(0.25f, std::min(2.5f, zoom_.y));
     view_mat_computed_ = false;
 }
 
@@ -46,10 +55,15 @@ void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
 
     zoom_origin_ = origin;
     zoom_ = amount;
+    zoom_.x = std::max(0.01f, std::min(100.0f, zoom_.x));
+    zoom_.y = std::max(0.01f, std::min(100.0f, zoom_.y));
     view_mat_computed_ = false;
 }
 
 void Viewport::Rotate(float amount) {
+    if (flippedH_) {
+        amount = -amount;
+    }
     // The input is in radians
     rotation_ += amount;
 
@@ -76,6 +90,9 @@ void Viewport::ComputeViewMatrix() {
     ZoneScoped;
     view_mat_ = glm::mat4(1.0f);
 
+    if (flippedH_) {
+        view_mat_ = glm::scale(view_mat_, glm::vec3(-1.0f, 1.0f, 1.0f));
+    }
     view_mat_ = glm::scale(view_mat_, glm::vec3(zoom_, 1.0f));
 
     view_mat_ = glm::rotate(view_mat_, rotation_, glm::vec3(0.0f, 0.0f, 1.0f));
@@ -117,20 +134,27 @@ std::vector<glm::ivec2> Viewport::VisibleTiles(glm::ivec2 screenSize) {
     // const glm::ivec2 t_max = glm::ceil((-translation_ + (static_cast<glm::vec2>(screenSize) / 2.0f)) / tile_size);
     // const glm::ivec2 t_num = t_max - t_min;
 
-    glm::vec2 tMinScreen = glm::floor(-static_cast<glm::vec2>(screenSize) / 2.0f);
-    glm::vec2 tMaxScreen = glm::ceil(static_cast<glm::vec2>(screenSize) / 2.0f);
+    glm::vec2 a = static_cast<glm::vec2>(screenSize * glm::ivec2(-1, -1)) / 2.0f;
+    glm::vec2 b = static_cast<glm::vec2>(screenSize * glm::ivec2(1, -1)) / 2.0f;
+    glm::vec2 c = static_cast<glm::vec2>(screenSize * glm::ivec2(-1, 1)) / 2.0f;
+    glm::vec2 d = static_cast<glm::vec2>(screenSize * glm::ivec2(1, 1)) / 2.0f;
 
-    glm::vec2 tMinCanvas = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(tMinScreen, 0.0f, 1.0f)) / tile_size;
-    glm::vec2 tMaxCanvas = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(tMaxScreen, 0.0f, 1.0f)) / tile_size;
+    a = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(a, 0.0f, 1.0f)) / tile_size;
+    b = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(b, 0.0f, 1.0f)) / tile_size;
+    c = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(c, 0.0f, 1.0f)) / tile_size;
+    d = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(d, 0.0f, 1.0f)) / tile_size;
 
-    glm::vec2 xCanvas = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)) / tile_size;
-    glm::vec2 yCanvas = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(0.0f, 1.0f, 0.0f, 1.0f)) / tile_size;
+    glm::vec2 min, max;
+    min.x = std::floor(std::min(a.x, std::min(b.x, std::min(c.x, d.x))));
+    min.y = std::floor(std::min(a.y, std::min(b.y, std::min(c.y, d.y))));
+    max.x = std::ceil(std::max(a.x, std::max(b.x, std::max(c.x, d.x))));
+    max.y = std::ceil(std::max(a.y, std::max(b.y, std::max(c.y, d.y))));
 
     std::vector<glm::ivec2> positions;
-    // positions.reserve(std::size_t(t_num.x) * std::size_t(t_num.y));
+    for (int y = min.y; y < max.y; y++) {
+        for (int x = min.x; x < max.x; x++) {
+            // TODO: make sure the position is inside the rectangle
 
-    for (auto y = std::floor(tMinCanvas.y); y < std::ceil(tMaxCanvas.y); y++) {
-        for (auto x = std::floor(tMinCanvas.x); x < std::ceil(tMaxCanvas.x); x++) {
             positions.emplace_back(x, y);
         }
     }

@@ -103,36 +103,46 @@ bool App::Update() {
                 layer = canvas.stroke_layer;
             }
             ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-            // if (ui_debug_culling && layer > 0) {
-            for (const auto pos : canvas.viewport.VisibleTiles(window_size)) {
-                ImVec2 points[5]{};
-                ImVec2 center;
-                glm::vec2 offsets[5] = {
-                    {1.0f, 1.0f},
-                    {static_cast<float>(TILE_SIZE), 0.0f},
-                    {static_cast<float>(TILE_SIZE), static_cast<float>(TILE_SIZE)},
-                    {1.0f, static_cast<float>(TILE_SIZE)},
-                    {1.0f, 1.0f},
-                };
-                for (size_t i = 0; i < 5; i++) {
-                    glm::vec4 p =
-                        canvas.viewport.ViewMatrix() *
-                        glm::vec4(static_cast<glm::vec2>(pos) * static_cast<float>(TILE_SIZE) + offsets[i], 0.0f, 1.0f);
-
-                    points[i] = ImVec2{
-                        static_cast<float>(window_size.x) / 2.0f + p.x,
-                        static_cast<float>(window_size.y) / 2.0f + p.y,
+            if (ui_debug_culling && layer > 0) {
+                draw_list->AddRect(
+                    ImVec2{
+                        static_cast<float>(window_size.x - window_size.x / 2) / 2.0f,
+                        static_cast<float>(window_size.y - window_size.y / 2) / 2.0f,
+                    },
+                    ImVec2{
+                        static_cast<float>(window_size.x + window_size.x / 2) / 2.0f,
+                        static_cast<float>(window_size.y + window_size.y / 2) / 2.0f,
+                    },
+                    IM_COL32(0, 255, 0, 64));
+                for (const auto pos : canvas.viewport.VisibleTiles(window_size / 2)) {
+                    ImVec2 points[5]{};
+                    ImVec2 center;
+                    glm::vec2 offsets[5] = {
+                        {1.0f, 1.0f},
+                        {static_cast<float>(TILE_SIZE), 0.0f},
+                        {static_cast<float>(TILE_SIZE), static_cast<float>(TILE_SIZE)},
+                        {1.0f, static_cast<float>(TILE_SIZE)},
+                        {1.0f, 1.0f},
                     };
-                    center.x += points[i].x / 5.0f;
-                    center.y += points[i].y / 5.0f;
-                }
+                    for (size_t i = 0; i < 5; i++) {
+                        glm::vec4 p =
+                            canvas.viewport.ViewMatrix() *
+                            glm::vec4(static_cast<glm::vec2>(pos) * static_cast<float>(TILE_SIZE) + offsets[i], 0.0f,
+                                      1.0f);
 
-                // draw_list->AddRect(pmin, pmax, IM_COL32(0, 0, 0, 64),);
-                draw_list->AddPolyline(points, 5, IM_COL32(0, 0, 0, 64), 0, 1.0f);
-                std::string text = std::format("[{}, {}]", pos.x, pos.y);
-                draw_list->AddText(center, IM_COL32(0, 0, 0, 64), text.c_str());
+                        points[i] = ImVec2{
+                            static_cast<float>(window_size.x) / 2.0f + p.x,
+                            static_cast<float>(window_size.y) / 2.0f + p.y,
+                        };
+                        center.x += points[i].x / 5.0f;
+                        center.y += points[i].y / 5.0f;
+                    }
+
+                    draw_list->AddPolyline(points, 5, IM_COL32(0, 0, 0, 64), 0, 1.0f);
+                    std::string text = std::format("[{}, {}]", pos.x, pos.y);
+                    draw_list->AddText(center, IM_COL32(0, 0, 0, 64), text.c_str());
+                }
             }
-            // }
 
             canvas.viewport.UI();
 
@@ -681,6 +691,9 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     if (key == SDLK_LSHIFT || key == SDLK_RSHIFT) {
         shift_pressed = true;
     }
+    if (key == SDLK_LALT || key == SDLK_RALT) {
+        alt_pressed = true;
+    }
 
     if (changeCursorSize) {
         return;
@@ -692,9 +705,13 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     if (key == SDLK_F && ctrl_pressed) {
         canvas.viewport.FlipHorizontal();
     }
+    if (key == SDLK_G && alt_pressed) {
+        canvas.viewport.SetRotation(0.0f);
+        canvas.viewport.SetZoom(glm::vec2(0.0f), glm::vec2(1.0f));
+    }
 
     if (!canvas.stroke_started) {
-        if (key == SDLK_F) {
+        if (key == SDLK_F && !ctrl_pressed) {
             changeCursorSize = true;
         }
 
@@ -728,6 +745,9 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     }
     if (key == SDLK_LSHIFT || key == SDLK_RSHIFT) {
         shift_pressed = false;
+    }
+    if (key == SDLK_LALT || key == SDLK_RALT) {
+        alt_pressed = false;
     }
 
     if (changeCursorSize && key == SDLK_F) {

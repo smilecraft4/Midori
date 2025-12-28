@@ -17,7 +17,7 @@ class Viewport {
     glm::vec2 zoom_ = glm::vec2(1.0f);
     glm::vec2 zoom_origin_ = glm::vec2(0.0f);
     float rotation_ = 0.0f;
-    bool flippedH_;
+    bool flippedH_ = false;
 
     glm::mat4 view_mat_ = glm::mat4(1.0f);
     glm::mat4 view_mat_inv_ = glm::mat4(1.0f);
