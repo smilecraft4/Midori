@@ -1,5 +1,4 @@
-﻿#ifndef MIDORI_CANVAS_H
-#define MIDORI_CANVAS_H
+﻿#pragma once
 
 #include <SDL3/SDL_gpu.h>
 
@@ -122,59 +121,13 @@ class Canvas {
     static constexpr size_t HISTORY_MAX_SIZE = 128;
     std::unordered_map<glm::ivec2, SDL_GPUTexture *> eraseStrokeDuplicatedTextures;
     HistoryTree canvasHistory;
+    std::unique_ptr<ViewportChangeCommand> currentViewportChangeCommand;
 
-    /**
-     * @brief Create a new blank tile. Only use if a tile is needed but LoadTile failed
-     *
-     * @param layer a handle to the layer of the tile
-     * @param position Tile grid positino
-     * @return std::expected<Tile, TileError>
-     */
-    std::expected<Tile, TileError> CreateTile(Layer layer, glm::ivec2 position);
-
-    /**
-     * @brief Load a tile at specified positon on specified layer.
-     * This function may fail. It also can take some time before the
-     * tile is fully loaded as it needs to read the file, decode, and
-     * upload the tile texture to the gpu
-     *
-     * @param layer Layer of the tile
-     * @param position canvas tile position where to load the tile
-     * @return std::expected<Tile, TileError>
-     */
     std::expected<Tile, TileError> LoadTile(Layer layer, glm::ivec2 position);
-
-    /**
-     * @brief Save a tile to disk, It will overwrite previous tile.
-     * This operation can take some time 1~2 frame because it will
-     * download the texture from the gpu
-     *
-     * @param tile Tile handle to save
-     * @return std::optional<TileError> If a value is found this function failed
-     */
-    std::optional<TileError> SaveTile(Layer layer, Tile tile);
-
-    /**
-     * @brief Unload a specific tile
-     *
-     * @param tile
-     */
     std::optional<TileError> UnloadTile(Layer layer, Tile tile);
-
-    /**
-     * @brief Will delete a tile from disk.
-     *
-     * @param tile Tile to delete
-     */
+    std::expected<Tile, TileError> CreateTile(Layer layer, glm::ivec2 position);
+    std::optional<TileError> SaveTile(Layer layer, Tile tile);
     std::optional<TileError> DeleteTile(Layer layer, Tile tile);
-
-    /**
-     * @brief Merge a tile into another tile
-     * The tile need to be on different layers
-     *
-     * @param over_tile
-     * @param below_tile
-     */
     void MergeTiles(Tile over_tile, Tile below_tile);
 
     App *app;
@@ -359,5 +312,3 @@ struct File {
     Slot *slots;
 };
 */
-
-#endif

@@ -266,7 +266,10 @@ void EraseStrokeCommand::revert() {
 // Canvas
 
 Canvas::Canvas(App *app)
-    : app(app), canvasHistory(HISTORY_MAX_SIZE), viewHistory(VIEW_HISTORY_MAX_SIZE), viewport(app) {}
+    : app(app),
+      canvasHistory(HISTORY_MAX_SIZE),
+      viewHistory(VIEW_HISTORY_MAX_SIZE),
+      currentViewportChangeCommand(nullptr) {}
 
 SDL_EnumerationResult findLayersCallback(void *userdata, const char *dirname, const char *fname) {
     if (dirname != nullptr) {
@@ -335,6 +338,14 @@ bool Canvas::Open() {
     filename = std::format("{}file", path);
     const bool exists = SDL_CreateDirectory(filename.c_str());
     SDL_Log("%s", filename.c_str());
+
+    // nlohmann::json waypointsJson;
+    // std::string waypointsDump = waypointsJson.dump(4);
+    // std::string file = std::format("{}/waypoints.json", filename);
+    // SDL_IOStream *file_io = SDL_IOFromFile(file.c_str(), "w");
+    // SDL_assert(file_io != nullptr);
+    // SDL_WriteIO(file_io, waypointsDump.data(), waypointsDump.size());
+    // SDL_CloseIO(file_io);
 
     if (exists) {
         SDL_EnumerateDirectory(filename.c_str(), findLayersCallback, this);

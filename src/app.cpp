@@ -481,7 +481,7 @@ bool App::Update() {
             }
             ImGui::End();
 
-            if (ImGui::Begin("History")) {
+            if (ImGui::Begin("Canvas History")) {
                 if (canvas.canvasHistory.size() > 0) {
                     for (size_t pos = 0; pos < canvas.canvasHistory.size(); pos++) {
                         const Command *command = canvas.canvasHistory.get(pos);
@@ -491,6 +491,24 @@ bool App::Update() {
                         } else if (pos == canvas.canvasHistory.position()) {
                             ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
                         } else if (pos > canvas.canvasHistory.position()) {
+                            ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: %s", pos, name.c_str());
+                        }
+                    }
+                } else {
+                    ImGui::TextColored(ImColor(0, 0, 128), "Nothing");
+                }
+            }
+            ImGui::End();
+            if (ImGui::Begin("View History")) {
+                if (canvas.viewHistory.size() > 0) {
+                    for (size_t pos = 0; pos < canvas.viewHistory.size(); pos++) {
+                        const Command *command = canvas.viewHistory.get(pos);
+                        const auto name = command->name();
+                        if (pos < canvas.viewHistory.position()) {
+                            ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
+                        } else if (pos == canvas.viewHistory.position()) {
+                            ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
+                        } else if (pos > canvas.viewHistory.position()) {
                             ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: %s", pos, name.c_str());
                         }
                     }
@@ -598,6 +616,13 @@ void App::CursorMove(glm::vec2 new_pos) {
     }
 
     if (cursor_left_pressed) {
+        if ((canvas.viewPanning || canvas.viewRotating || canvas.viewZooming) && (glm::length(cursor_delta_pos) > 0) &&
+            canvas.currentViewportChangeCommand == nullptr) {
+            canvas.currentViewportChangeCommand = std::make_unique<ViewportChangeCommand>(*this);
+            canvas.currentViewportChangeCommand->SetPreviousViewport(canvas.viewport);
+            SDL_Log("dqsbjdbjqsbdjqbsjlmd");
+        }
+
         canvas.ViewUpdateCursor(cursor_current_pos);
 
         if (canvas.stroke_started) {
@@ -731,6 +756,13 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
                 canvas.canvasHistory.undo();
             }
         }
+
+        if (key == SDLK_LEFT && alt_pressed) {
+            canvas.viewHistory.undo();
+        }
+        if (key == SDLK_RIGHT && alt_pressed) {
+            canvas.viewHistory.redo();
+        }
     }
 
     canvas.ViewUpdateState(cursor_current_pos);
@@ -739,6 +771,11 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     if (key == SDLK_SPACE) {
         space_pressed = false;
+        if (canvas.currentViewportChangeCommand != nullptr) {
+            canvas.currentViewportChangeCommand->SetNewViewport(canvas.viewport);
+            canvas.viewHistory.store(std::move(canvas.currentViewportChangeCommand));
+            canvas.currentViewportChangeCommand = nullptr;
+        }
     }
     if (key == SDLK_LCTRL || key == SDLK_RCTRL) {
         ctrl_pressed = false;

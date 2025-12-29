@@ -4,7 +4,6 @@
 
 ### Todo
 
-- viewport undo/redo
 - fix stroke layer opacity missmatch
 - properly check srgb -> linear -> srgb
 - add opacity on eraser for soft erasing
@@ -14,11 +13,13 @@
 
 ### In Progress
 
-- viewport zoom
-- viewport rotations
+- color picker
 
 ### Done
 
+- viewport undo/redo
+- viewport zoom
+- viewport rotations
 - brush radius context actions
 - delete empty tile
 - start stroke on click

@@ -8,8 +8,6 @@
 #include "midori/app.h"
 
 namespace Midori {
-Viewport::Viewport(App* app) : app_(app) {}
-
 void Viewport::Translate(glm::vec2 amount) {
     if (flippedH_) {
         amount.x = -amount.x;
@@ -130,9 +128,6 @@ glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos, glm::ivec2 screenSize) {
 std::vector<glm::ivec2> Viewport::VisibleTiles(glm::ivec2 screenSize) {
     ZoneScoped;
     constexpr auto tile_size = glm::vec2(TILE_SIZE);
-    // const glm::ivec2 t_min = glm::floor((-translation_ - (static_cast<glm::vec2>(screenSize) / 2.0f)) / tile_size);
-    // const glm::ivec2 t_max = glm::ceil((-translation_ + (static_cast<glm::vec2>(screenSize) / 2.0f)) / tile_size);
-    // const glm::ivec2 t_num = t_max - t_min;
 
     glm::vec2 a = static_cast<glm::vec2>(screenSize * glm::ivec2(-1, -1)) / 2.0f;
     glm::vec2 b = static_cast<glm::vec2>(screenSize * glm::ivec2(1, -1)) / 2.0f;
@@ -172,7 +167,11 @@ void Viewport::UI() {
     }
     ImGui::End();
 }
-}  // namespace Midori
-void Midori::ViewportCommand::execute() { app_.canvas.viewport = new_viewport_; }
+void ViewportChangeCommand::execute() { app_.canvas.viewport = new_viewport_; }
 
-void Midori::ViewportCommand::revert() { app_.canvas.viewport = previous_viewport_; }
+void ViewportChangeCommand::revert() { app_.canvas.viewport = previous_viewport_; }
+
+void ViewportChangeCommand::SetNewViewport(Viewport viewport) { new_viewport_ = viewport; }
+void ViewportChangeCommand::SetPreviousViewport(Viewport viewport) { previous_viewport_ = viewport; }
+
+}  // namespace Midori

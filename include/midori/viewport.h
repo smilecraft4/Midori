@@ -11,8 +11,6 @@ class App;
 
 class Viewport {
    private:
-    App* app_;
-
     glm::vec2 translation_ = glm::vec2(0.0f);
     glm::vec2 zoom_ = glm::vec2(1.0f);
     glm::vec2 zoom_origin_ = glm::vec2(0.0f);
@@ -24,8 +22,6 @@ class Viewport {
     bool view_mat_computed_ = false;
 
    public:
-    Viewport(App* app);
-
     void Translate(glm::vec2 amount);
     void SetTranslation(glm::vec2 translation);
     void Zoom(glm::vec2 origin, glm::vec2 amount);
@@ -45,20 +41,22 @@ class Viewport {
     void ComputeViewMatrix();
 };
 
-class ViewportCommand : public Command {
+class ViewportChangeCommand : public Command {
    private:
     App& app_;
     Viewport new_viewport_;
     Viewport previous_viewport_;
 
    public:
-    ViewportCommand(App& app, Viewport previous_viewport, Viewport new_viewport)
-        : Command(Type::Unknown), app_(app), previous_viewport_(previous_viewport), new_viewport_(new_viewport) {};
-    virtual ~ViewportCommand() = default;
+    ViewportChangeCommand(App& app) : Command(Type::Unknown), app_(app) {};
+    virtual ~ViewportChangeCommand() = default;
 
     virtual std::string name() const { return "View change"; }
     virtual void execute();
     virtual void revert();
+
+    void SetNewViewport(Viewport viewport);
+    void SetPreviousViewport(Viewport viewport);
 };
 
 }  // namespace Midori
