@@ -58,7 +58,7 @@ void main() {
             }
 
             vec4 srcColor = stroke_points[i].color;
-            srcColor.rgb = sRGBToLinear(srcColor.rgb);
+            // srcColor.rgb = sRGBToLinear(srcColor.rgb);
 
             float alpha = stroke_points[i].flow;
             alpha *= mask;

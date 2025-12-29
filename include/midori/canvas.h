@@ -15,6 +15,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 
+#include "midori/color.h"
 #include "midori/history.h"
 #include "midori/types.h"
 #include "midori/viewport.h"
@@ -268,6 +269,18 @@ class Canvas {
     void OpenEraser();
 
     void ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode);
+
+    /// @brief Will download the canvas texture (RGBA8 linear srgb premultiplied) immediatly (may freeze)
+    std::vector<Color> DownloadCanvasTexture(glm::ivec2 &size);
+
+    /// @brief sample the RGBA8 at texture coordinates with nearest neighbour blending is activated (the color is linear
+    /// srgb premultiplied), THERE MUST BE a valid canvasTexture downloaded beforehand or this function will fail, to
+    /// download the canvasTexture call `DownloadCanvasTexture()`
+    /// @param pos [-1, 1]
+    bool SampleTexture(const std::vector<Color> &texture, glm::ivec2 textureSize, glm::vec2 pos, Color &color);
+
+    std::vector<Color> canvasTexture_;
+    glm::ivec2 canvasTextureSize_;
 };
 }  // namespace Midori
 

@@ -615,12 +615,23 @@ void App::CursorMove(glm::vec2 new_pos) {
         canvas.viewCursorStart = new_pos;
     }
 
-    if (cursor_left_pressed) {
+    if (colorPicker) {
+        glm::vec2 delta_pos = new_pos - last_pos;
+        last_pos = new_pos;
+
+        Color color;
+        auto samplePos = new_pos;
+        samplePos.y = window_size.y - new_pos.y;
+        canvas.SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
+        canvas.brush_options.color.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
+        canvas.brush_options.color.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
+        canvas.brush_options.color.b = static_cast<float>(color.b) / static_cast<float>(UINT8_MAX);
+        canvas.brush_options.color.a = static_cast<float>(color.a) / static_cast<float>(UINT8_MAX);
+    } else if (cursor_left_pressed) {
         if ((canvas.viewPanning || canvas.viewRotating || canvas.viewZooming) && (glm::length(cursor_delta_pos) > 0) &&
             canvas.currentViewportChangeCommand == nullptr) {
             canvas.currentViewportChangeCommand = std::make_unique<ViewportChangeCommand>(*this);
             canvas.currentViewportChangeCommand->SetPreviousViewport(canvas.viewport);
-            SDL_Log("dqsbjdbjqsbdjqbsjlmd");
         }
 
         canvas.ViewUpdateCursor(cursor_current_pos);
@@ -727,7 +738,11 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     if (key == SDLK_F11) {
         Fullscreen(!fullscreen);
     }
-    if (key == SDLK_F && ctrl_pressed) {
+    if (key == SDLK_F && space_pressed) {
+        if (canvas.currentViewportChangeCommand == nullptr) {
+            canvas.currentViewportChangeCommand = std::make_unique<ViewportChangeCommand>(*this);
+            canvas.currentViewportChangeCommand->SetPreviousViewport(canvas.viewport);
+        }
         canvas.viewport.FlipHorizontal();
     }
     if (key == SDLK_G && alt_pressed) {
@@ -738,6 +753,21 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
     if (!canvas.stroke_started) {
         if (key == SDLK_F && !ctrl_pressed) {
             changeCursorSize = true;
+        }
+        if (key == SDLK_C && !ctrl_pressed && !shift_pressed && !alt_pressed) {
+            // TODO: Open color wheel at mouse location
+        }
+        if (alt_pressed && canvas.brush_mode) {
+            colorPicker = true;
+            canvas.canvasTexture_ = canvas.DownloadCanvasTexture(canvas.canvasTextureSize_);
+            Color color;
+            auto samplePos = cursor_current_pos;
+            samplePos.y = window_size.y - cursor_current_pos.y;
+            canvas.SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
+            canvas.brush_options.color.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
+            canvas.brush_options.color.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
+            canvas.brush_options.color.b = static_cast<float>(color.b) / static_cast<float>(UINT8_MAX);
+            canvas.brush_options.color.a = static_cast<float>(color.a) / static_cast<float>(UINT8_MAX);
         }
 
         if (key == SDLK_B && canvas.eraser_mode) {
@@ -785,6 +815,12 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     }
     if (key == SDLK_LALT || key == SDLK_RALT) {
         alt_pressed = false;
+    }
+
+    if (colorPicker && !alt_pressed) {
+        SDL_assert(canvas.brush_mode);
+        colorPicker = false;
+        canvas.canvasTexture_.clear();
     }
 
     if (changeCursorSize && key == SDLK_F) {

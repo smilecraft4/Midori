@@ -1487,6 +1487,96 @@ void Canvas::ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode) {
     }
 }
 
+std::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2 &size) {
+    ZoneScoped;
+
+    SDL_assert(app->window_size.x > 0);
+    SDL_assert(app->window_size.y > 0);
+    SDL_assert(app->renderer.canvas_texture);
+
+    size.x = app->window_size.x;
+    size.y = app->window_size.y;
+
+    std::vector<Color> canvasTexture(static_cast<std::size_t>(app->window_size.x) *
+                                     static_cast<std::size_t>(app->window_size.y));
+
+    const SDL_GPUTransferBufferCreateInfo transferBufferCreateInfo = {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+        .size = static_cast<Uint32>(canvasTexture.size() * sizeof(Color)),
+    };
+    SDL_GPUTransferBuffer *transferBuffer =
+        SDL_CreateGPUTransferBuffer(app->renderer.device, &transferBufferCreateInfo);
+    SDL_assert(transferBuffer);
+
+    SDL_GPUCommandBuffer *cmdBuf = SDL_AcquireGPUCommandBuffer(app->renderer.device);
+    SDL_assert(cmdBuf);
+
+    SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmdBuf);
+    SDL_GPUTextureRegion region = {
+        .texture = app->renderer.canvas_texture,
+        .mip_level = 0,
+        .layer = 0,
+        .x = 0,
+        .y = 0,
+        .z = 0,
+        .w = static_cast<Uint32>(app->window_size.x),
+        .h = static_cast<Uint32>(app->window_size.y),
+        .d = 1,
+    };
+    const SDL_GPUTextureTransferInfo transferInfo = {
+        .transfer_buffer = transferBuffer,
+        .pixels_per_row = static_cast<Uint32>(app->window_size.x),
+        .rows_per_layer = static_cast<Uint32>(app->window_size.y),
+    };
+    SDL_DownloadFromGPUTexture(copyPass, &region, &transferInfo);
+
+    SDL_EndGPUCopyPass(copyPass);
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdBuf);
+    SDL_assert(fence);
+    SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
+    SDL_ReleaseGPUFence(app->renderer.device, fence);
+
+    Color *colors = static_cast<Color *>(SDL_MapGPUTransferBuffer(app->renderer.device, transferBuffer, false));
+
+    std::memcpy(canvasTexture.data(), colors, canvasTexture.size() * sizeof(Color));
+
+    SDL_UnmapGPUTransferBuffer(app->renderer.device, transferBuffer);
+    SDL_ReleaseGPUTransferBuffer(app->renderer.device, transferBuffer);
+
+    return canvasTexture;
+}
+
+bool Canvas::SampleTexture(const std::vector<Color> &texture, glm::ivec2 textureSize, glm::vec2 pos, Color &color) {
+    SDL_assert(textureSize.x > 0);
+    SDL_assert(textureSize.y > 0);
+    SDL_assert(texture.size() == textureSize.x * textureSize.y);
+
+    if (std::floor(pos.x) < 0.0f || std::ceil(pos.x) >= textureSize.x) {
+        return false;
+    }
+    if (std::floor(pos.y) < 0.0f || std::ceil(pos.y) >= textureSize.y) {
+        return false;
+    }
+
+    SDL_assert(static_cast<std::size_t>(std::floor(pos.x)) >= 0);
+    SDL_assert(static_cast<std::size_t>(std::floor(pos.y)) >= 0);
+    SDL_assert(static_cast<std::size_t>(std::ceil(pos.x)) <= textureSize.x);
+    SDL_assert(static_cast<std::size_t>(std::ceil(pos.y)) <= textureSize.y);
+
+    std::size_t index =
+        static_cast<std::size_t>(std::round(pos.x)) + static_cast<std::size_t>(std::round(pos.y)) * textureSize.x;
+    SDL_assert(index < texture.size());
+
+    color = texture[index];
+
+    // if (color.a > 0) {
+    //     color.r /= color.a;
+    //     color.g /= color.a;
+    //     color.b /= color.a;
+    // }
+    return true;
+}
+
 Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float pressure) const {
     // TODO: Add min max value
 

@@ -20,7 +20,7 @@ vec3 LinearToSRGB(vec3 rgb) {
 void main() {
     vec4 layer_color = texture(layer_sampler, in_uv);
     layer_color.rgb *= layer_color.a;
-    layer_color.rgb = LinearToSRGB(layer_color.rgb);
+    // layer_color.rgb = LinearToSRGB(layer_color.rgb);
     
     out_color = layer_color;
 }

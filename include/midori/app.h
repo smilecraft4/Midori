@@ -47,6 +47,7 @@ class App {
     bool fullscreen = false;
     bool ui_focus = false;
     bool changeCursorSize = false;
+    bool colorPicker = false;
 
     Canvas canvas;
     Renderer renderer;
