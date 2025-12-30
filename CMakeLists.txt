@@ -101,6 +101,7 @@ add_library(midori_lib
   "src/midori/history.cpp"
   "src/midori/viewport.cpp"
   "src/midori/waypoint.cpp"
+  "src/midori/layers.cpp"
 
   # "src/sqlite/sqlite3.c"
 )

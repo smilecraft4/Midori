@@ -945,15 +945,6 @@ bool Renderer::Render() {
             }
         }
 
-        {  // Wait and acquire GPU swapchain texture
-            ZoneScopedN("Wait and acquire GPU swapchain texture");
-            SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, app->window, &swapchain_texture, nullptr, nullptr);
-            if (swapchain_texture == nullptr) {
-                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire swapchain texture: %s", SDL_GetError());
-                return false;
-            }
-        }
-
         // Get all layers that needs redrawing
         std::vector<LayerInfo> layer_rendering;
         {
@@ -1080,6 +1071,14 @@ bool Renderer::Render() {
             SDL_EndGPUComputePass(merge_compute_pass);
         }
 
+        {  // Wait and acquire GPU swapchain texture
+            ZoneScopedN("Wait and acquire GPU swapchain texture");
+            SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, app->window, &swapchain_texture, nullptr, nullptr);
+            if (swapchain_texture == nullptr) {
+                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire swapchain texture: %s", SDL_GetError());
+                return false;
+            }
+        }
         {
             ZoneScopedN("Render canvas texture");
             const SDL_GPUColorTargetInfo target_info = {

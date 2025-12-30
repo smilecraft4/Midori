@@ -13,9 +13,11 @@
 
 ### In Progress
 
-- color picker
+- undo/redo for layer creation/modification/deletion
 
 ### Done
+
+- color picker
 
 - viewport undo/redo
 - viewport zoom

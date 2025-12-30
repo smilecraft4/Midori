@@ -6,8 +6,14 @@
 #include <optional>
 #include <string>
 
+#include "midori/app.h"
+#include "midori/command.h"
+#include "midori/tiles.h"
+#include "midori/types.h"
+
 namespace Midori {
-class Tiles {};
+// class Tiles {};
+/*
 class Layers {
    public:
     enum class Error {
@@ -46,5 +52,47 @@ class Layers {
     std::optional<Error> SetLocked(ID layer, bool locked);
 
    private:
+};
+*/
+
+class LayerCreateCommand : public Command {
+   private:
+    App &app_;
+    LayerInfo info_;
+
+   public:
+    explicit LayerCreateCommand(App &app, LayerInfo info);
+
+    virtual std::string name() const { return "Layer Create"; }
+    virtual void execute();
+    virtual void revert();
+};
+
+class LayerDeleteCommand : public Command {
+   private:
+    App &app_;
+    Layer layer_;
+
+   public:
+    explicit LayerDeleteCommand(App &app, Layer layer);
+
+    virtual std::string name() const { return "Layer Delete"; }
+    virtual void execute();
+    virtual void revert();
+};
+
+class LayerDepthCommand : public Command {
+   private:
+    App &app_;
+    Layer layer_;
+    int previousDepth_;
+    int newDepth_;
+
+   public:
+    explicit LayerDepthCommand(App &app, Layer layer, int previousDepth, int newDepth);
+
+    virtual std::string name() const { return "Layer Depth"; }
+    virtual void execute();
+    virtual void revert();
 };
 }  // namespace Midori
