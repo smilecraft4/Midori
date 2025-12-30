@@ -209,16 +209,16 @@ bool App::Update() {
                     if (real_data.depth < (canvas.current_max_layer_height - 1)) {
                         ImGui::SameLine();
                         if (ImGui::Button("-")) {
-                            canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
-                                *this, real_data.layer, real_data.depth, real_data.depth + 1));
+                            // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
+                            // *this, real_data.layer, real_data.depth, real_data.depth + 1));
                             canvas.SetLayerDepth(real_data.layer, real_data.depth + 1);
                         }
                     }
                     if (real_data.depth > 0) {
                         ImGui::SameLine();
                         if (ImGui::Button("+")) {
-                            canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
-                                *this, real_data.layer, real_data.depth, real_data.depth - 1));
+                            // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
+                            // *this, real_data.layer, real_data.depth, real_data.depth - 1));
                             canvas.SetLayerDepth(real_data.layer, real_data.depth - 1);
                         }
                     }
@@ -231,7 +231,7 @@ bool App::Update() {
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("x")) {
-                        canvas.canvasHistory.store(std::make_unique<LayerDeleteCommand>(*this, real_data.layer));
+                        // canvas.canvasHistory.store(std::make_unique<LayerDeleteCommand>(*this, real_data.layer));
                         canvas.DeleteLayer(real_data.layer);
                     }
 
@@ -239,7 +239,8 @@ bool App::Update() {
                 }
                 if (ImGui::Button("+")) {
                     const auto layer = canvas.CreateLayer("New Layer", 0);
-                    canvas.canvasHistory.store(std::make_unique<LayerCreateCommand>(*this, canvas.layer_infos[layer]));
+                    // canvas.canvasHistory.store(std::make_unique<LayerCreateCommand>(*this,
+                    // canvas.layer_infos[layer]));
                     canvas.SaveLayer(layer);
                 }
                 ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color));
