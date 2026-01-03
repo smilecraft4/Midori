@@ -1,6 +1,6 @@
-#include "midori/history.h"
+#include "history.h"
 
-#include <assert.h>
+#include <cassert>
 
 namespace Midori {
 

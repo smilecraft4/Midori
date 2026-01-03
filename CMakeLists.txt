@@ -6,56 +6,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# set the output directory for built objects.
-# This makes sure that the dynamic library goes into the build directory automatically.
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# Dependencies
-Set(FETCHCONTENT_QUIET FALSE)
-
-# Fetch SDL3
-include(FetchContent)
-FetchContent_Declare(
-  SDL3
-  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-  GIT_TAG release-3.2.26
-  GIT_PROGRESS TRUE
-)
-FetchContent_MakeAvailable(SDL3)
-
-# Fetch glm
-include(FetchContent)
-FetchContent_Declare(
-  glm
-  GIT_REPOSITORY https://github.com/g-truc/glm.git
-  GIT_TAG 1.0.2
-  GIT_PROGRESS TRUE
-)
-FetchContent_MakeAvailable(glm)
-
-# Fetch Dear ImGui (docking branch for docking/multi-viewport support)
-FetchContent_Declare(
-  imgui
-  GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG v1.92.4-docking
-  GIT_PROGRESS TRUE
-)
-
-FetchContent_MakeAvailable(imgui)
-
-# Fetch Tracy
-include(FetchContent)
-FetchContent_Declare(
-  tracy
-  GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-  GIT_TAG v0.12.2
-  GIT_PROGRESS TRUE
-)
-FetchContent_MakeAvailable(tracy)
-
-# # Compiling shaders
+# Data
 find_program(GLSLANG_VALIDATOR glslangValidator)
 
 if(NOT GLSLANG_VALIDATOR)
@@ -64,9 +19,7 @@ endif()
 
 set(VULKAN_SHADER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/shaders/vulkan)
 set(VULKAN_SHADER_BINARY_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data/shaders/vulkan)
-
 file(MAKE_DIRECTORY ${VULKAN_SHADER_BINARY_DIR})
-
 set(VULKAN_SHADERS
   ${VULKAN_SHADER_SOURCE_DIR}/layer.vert.glsl
   ${VULKAN_SHADER_SOURCE_DIR}/layer.frag.glsl
@@ -92,52 +45,47 @@ endforeach()
 
 add_custom_target(midori_shaders ALL DEPENDS ${SHADERS})
 
-# # Library
+# Core
+add_subdirectory(deps/SDL)
+add_subdirectory(deps/glm)
+add_subdirectory(deps/tracy)
 add_library(midori_lib
   "src/app.cpp"
   "src/canvas.cpp"
   "src/renderer.cpp"
   "src/memory.cpp"
-  "src/midori/history.cpp"
-  "src/midori/viewport.cpp"
-  "src/midori/waypoint.cpp"
-  "src/midori/layers.cpp"
-
-  # "src/sqlite/sqlite3.c"
+  "src/history.cpp"
+  "src/viewport.cpp"
+  "src/waypoint.cpp"
+  "src/layers.cpp"
 )
-target_include_directories(midori_lib PUBLIC "include/")
-target_compile_features(midori_lib PUBLIC cxx_std_23)
-target_compile_definitions(midori_lib PUBLIC
-  $<$<CONFIG:Debug>:TRACY_ENABLE>
-)
+target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
-target_include_directories(midori_lib PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_include_directories(midori_lib PUBLIC "deps/imgui/")
+target_include_directories(midori_lib PUBLIC "deps/nlohmann/")
+target_include_directories(midori_lib PUBLIC "deps/qoi/")
+target_include_directories(midori_lib PUBLIC "deps/uuid/")
 target_sources(midori_lib PRIVATE
-  ${imgui_SOURCE_DIR}/imgui.cpp
-  ${imgui_SOURCE_DIR}/imgui_draw.cpp
-  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-  ${imgui_SOURCE_DIR}/imgui_tables.cpp
-  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
-  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp
+  "deps/imgui/imgui.cpp"
+  "deps/imgui/imgui_draw.cpp"
+  "deps/imgui/imgui_widgets.cpp"
+  "deps/imgui/imgui_tables.cpp"
+  "deps/imgui/backends/imgui_impl_sdl3.cpp"
+  "deps/imgui/backends/imgui_impl_sdlgpu3.cpp"
 )
 
-# # Application
-add_executable(midori src/main.cpp)
+# Executable
+add_executable(midori "src/main.cpp")
 target_link_libraries(midori PRIVATE midori_lib)
 add_dependencies(midori midori_shaders)
 
-# # Tests
-enable_testing()
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG v1.17.0
-  GIT_PROGRESS TRUE
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+# Installer
+# TODO
 
+# Tests
+enable_testing()
+add_subdirectory(deps/googletest)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 add_executable(midori_test
   "test/midori_ring_array_test.cpp"
   "test/midori_history_test.cpp"
@@ -146,21 +94,8 @@ target_link_libraries(midori_test PRIVATE midori_lib GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(midori_test)
 
-# # Benchmarks
-
-# Fetch Google Benchmark
-include(FetchContent)
-FetchContent_Declare(
-  googlebenchmark
-  GIT_REPOSITORY https://github.com/google/benchmark.git
-  GIT_TAG v1.9.4
-  GIT_PROGRESS TRUE
-)
-set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googlebenchmark)
-
-# Add benchmark executable
+# Benchmark
+add_subdirectory(deps/benchmark)
 add_executable(midori_benchmark
   "benchmark/midori_benchmark.cpp"
 )

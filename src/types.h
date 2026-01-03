@@ -2,11 +2,11 @@
 #define MIDORI_TYPES_H
 
 #include <cstdint>
-#include <glm/vec2.hpp>
 #include <string>
 
 #define UUID_SYSTEM_GENERATOR
-#include "uuid.h"
+#include <uuid.h>
+#include <glm/vec2.hpp>
 
 namespace Midori {
 

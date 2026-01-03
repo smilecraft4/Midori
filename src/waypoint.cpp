@@ -1,4 +1,4 @@
-#include "midori/waypoint.h"
+#include "waypoint.h"
 
 namespace Midori {
 

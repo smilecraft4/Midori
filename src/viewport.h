@@ -1,8 +1,9 @@
 #pragma once
 
+#include <unordered_set>
+
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
-#include <unordered_set>
 
 #include "command.h"
 

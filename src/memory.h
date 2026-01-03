@@ -1,10 +1,9 @@
 #pragma once
 
-#include <SDL3/SDL.h>
-
 #include <cstdlib>
 #include <cstring>
 
+#include <SDL3/SDL.h>
 #if defined(NDEBUG) && defined(TRACY_ENABLE)
 #undef TRACY_ENABLE
 #endif

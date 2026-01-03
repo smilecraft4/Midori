@@ -1,9 +1,10 @@
 #pragma once
+
 #include <chrono>
 #include <string>
 
-#include "midori/command.h"
-#include "midori/viewport.h"
+#include "command.h"
+#include "viewport.h"
 
 namespace Midori {
 struct Waypoint {

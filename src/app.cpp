@@ -1,21 +1,20 @@
-﻿#include "midori/app.h"
-
-#include <imgui.h>
-#include <imgui_impl_sdl3.h>
-#include <imgui_impl_sdlgpu3.h>
+﻿#include "app.h"
 
 #include <format>
-#include <glm/gtc/type_ptr.hpp>
 #include <numbers>
 #include <random>
 
+#include <SDL3/SDL_log.h>
+#include <backends/imgui_impl_sdl3.h>
+#include <backends/imgui_impl_sdlgpu3.h>
+#include <imgui.h>
+#include <glm/gtc/type_ptr.hpp>
 #if defined(NDEBUG) && defined(TRACY_ENABLE)
 #undef TRACY_ENABLE
 #endif
 #include <tracy/Tracy.hpp>
 
-#include "SDL3/SDL_log.h"
-#include "midori/layers.h"
+#include "layers.h"
 
 namespace Midori {
 

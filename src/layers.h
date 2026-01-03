@@ -6,10 +6,10 @@
 #include <optional>
 #include <string>
 
-#include "midori/app.h"
-#include "midori/command.h"
-#include "midori/tiles.h"
-#include "midori/types.h"
+#include "app.h"
+#include "command.h"
+#include "tiles.h"
+#include "types.h"
 
 namespace Midori {
 // class Tiles {};

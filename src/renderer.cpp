@@ -1,28 +1,27 @@
-﻿#include "midori/renderer.h"
-
-#include <SDL3/SDL_assert.h>
-#include <SDL3/SDL_gpu.h>
-#include <SDL3/SDL_log.h>
-#include <imgui.h>
-#include <imgui_impl_sdlgpu3.h>
-#include <qoi/qoi.h>
+﻿#include "renderer.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 
+#include <SDL3/SDL_assert.h>
+#include <SDL3/SDL_gpu.h>
+#include <SDL3/SDL_log.h>
+#include <backends/imgui_impl_sdlgpu3.h>
+#include <imgui.h>
+#include <qoi.h>
+#include <glm/gtc/matrix_transform.hpp>
 #if defined(NDEBUG) && defined(TRACY_ENABLE)
 #undef TRACY_ENABLE
 #endif
 #include <tracy/Tracy.hpp>
 
-#include "midori/app.h"
-#include "midori/canvas.h"
-#include "midori/renderer.h"
-#include "midori/types.h"
+#include "app.h"
+#include "canvas.h"
+#include "renderer.h"
+#include "types.h"
 
 namespace Midori {
 

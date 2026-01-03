@@ -1,16 +1,15 @@
-﻿#ifndef MIDORI_APP_H
-#define MIDORI_APP_H
+﻿#pragma once
 
-#include <SDL3/SDL.h>
-
-#include <glm/vec2.hpp>
-#include <glm/vec4.hpp>
 #include <random>
 #include <string>
 #include <vector>
 
-#include "midori/canvas.h"
-#include "midori/renderer.h"
+#include <SDL3/SDL.h>
+#include <glm/vec2.hpp>
+#include <glm/vec4.hpp>
+
+#include "canvas.h"
+#include "renderer.h"
 
 namespace Midori {
 
@@ -71,5 +70,3 @@ class App {
     float pen_pressure = 1.0f;
 };
 }  // namespace Midori
-
-#endif

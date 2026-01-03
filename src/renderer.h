@@ -1,20 +1,16 @@
-﻿#ifndef MIDORI_RENDERER_H
-#define MIDORI_RENDERER_H
-
-#include <SDL3/SDL_gpu.h>
+﻿#pragma once
 
 #include <cstdint>
-#include <glm/mat4x4.hpp>
-#include <glm/vec2.hpp>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-#include "SDL3/SDL_stdinc.h"
-#include "glm/ext/matrix_float4x4.hpp"
-#include "glm/ext/vector_float2.hpp"
-#include "midori/types.h"
+#include <SDL3/SDL_gpu.h>
+#include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
+
+#include "types.h"
 
 namespace Midori {
 
@@ -171,5 +167,3 @@ class Renderer {
     std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
 };
 }  // namespace Midori
-
-#endif

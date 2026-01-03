@@ -1,11 +1,11 @@
-#include "midori/viewport.h"
-
-#include <imgui.h>
+#include "viewport.h"
 
 #include <numbers>
+
+#include <imgui.h>
 #include <tracy/Tracy.hpp>
 
-#include "midori/app.h"
+#include "app.h"
 
 namespace Midori {
 void Viewport::Translate(glm::vec2 amount) {

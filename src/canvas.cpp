@@ -1,7 +1,4 @@
-﻿#include "midori/canvas.h"
-
-#include <SDL3/SDL_assert.h>
-#include <imgui.h>
+﻿#include "canvas.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,23 +10,22 @@
 #include <utility>
 #include <vector>
 
+#include <SDL3/SDL_assert.h>
+#include <imgui.h>
 #if defined(NDEBUG) && defined(TRACY_ENABLE)
 #undef TRACY_ENABLE
 #endif
 #include <tracy/Tracy.hpp>
-
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
-
-#include "midori/app.h"
-#include "midori/renderer.h"
-#include "midori/types.h"
-#include "nlohmann/json.hpp"
+#include <json.hpp>
 #define QOI_IMPLEMENTATION
 #define QOI_NO_STDIO
-#include "qoi/qoi.h"
-#define UUID_SYSTEM_GENERATOR
-#include "uuid.h"
+#include <qoi.h>
+
+#include "app.h"
+#include "renderer.h"
+#include "types.h"
 
 namespace Midori {
 

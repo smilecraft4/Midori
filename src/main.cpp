@@ -1,11 +1,11 @@
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <imgui_impl_sdl3.h>
+#include <backends/imgui_impl_sdl3.h>
 
-#include "midori/app.h"
-#include "midori/layers.h"
-#include "midori/memory.h"
+#include "app.h"
+#include "layers.h"
+#include "memory.h"
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     SDL_SetMemoryFunctions(Midori::Malloc, Midori::Calloc, Midori::Realloc, Midori::Free);

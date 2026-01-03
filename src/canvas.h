@@ -1,25 +1,25 @@
 ﻿#pragma once
 
-#include <SDL3/SDL_gpu.h>
-
 #include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <glm/mat4x4.hpp>
-#include <glm/vec2.hpp>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <SDL3/SDL_gpu.h>
+#define UUID_SYSTEM_GENERATOR
+#include <uuid.h>
+#include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 
-#include "midori/color.h"
-#include "midori/history.h"
-#include "midori/types.h"
-#include "midori/viewport.h"
-#include "uuid.h"
+#include "color.h"
+#include "history.h"
+#include "types.h"
+#include "viewport.h"
 
 namespace Midori {
 
