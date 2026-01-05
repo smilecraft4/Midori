@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "midori/history.h"
+#include "../src/history.h"
 
 static size_t command_count = 0;
 

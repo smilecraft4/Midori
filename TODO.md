@@ -10,15 +10,16 @@
 - add wintab for higher pen resolution
 - move to a more Data oriented architecture (structs of arrays)
 - brush and eraser dynamic cursor
+- undo/redo for layer creation/modification/deletion
+- color picker preview and confirmation
 
 ### In Progress
 
-- undo/redo for layer creation/modification/deletion
+- adding wintab to SDL
 
 ### Done
 
 - color picker
-
 - viewport undo/redo
 - viewport zoom
 - viewport rotations

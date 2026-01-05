@@ -4,7 +4,7 @@
 #include <memory_resource>
 #include <print>
 
-#include "midori/ring_array.h"
+#include "../src/ring_array.h"
 
 class InstanceCounter {
    public:
