@@ -16,9 +16,9 @@ void Viewport::Translate(glm::vec2 amount) {
     glm::vec2 correctedAmount{};
     correctedAmount.x = amount.x * std::cos(-rotation_) - amount.y * std::sin(-rotation_);
     correctedAmount.y = amount.x * std::sin(-rotation_) + amount.y * std::cos(-rotation_);
-
+    
     correctedAmount /= zoom_;
-
+    
     translation_ += correctedAmount;
     view_mat_computed_ = false;
 }
@@ -94,7 +94,7 @@ void Viewport::ComputeViewMatrix() {
     view_mat_ = glm::scale(view_mat_, glm::vec3(zoom_, 1.0f));
 
     view_mat_ = glm::rotate(view_mat_, rotation_, glm::vec3(0.0f, 0.0f, 1.0f));
-    view_mat_ = glm::translate(view_mat_, glm::vec3(translation_, 0.0f));
+    view_mat_ = glm::translate(view_mat_, glm::vec3(glm::floor(translation_), 0.0f));
 
     // TODO: take into account zoom offset;
 

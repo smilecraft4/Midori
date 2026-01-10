@@ -45,8 +45,11 @@ class App {
     bool hidden = false;
     bool fullscreen = false;
     bool ui_focus = false;
+    bool hide_ui = false;
     bool changeCursorSize = false;
+
     bool colorPicker = false;
+    glm::vec4 sampledColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
     Canvas canvas;
     Renderer renderer;

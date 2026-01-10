@@ -349,18 +349,18 @@ bool Renderer::InitTiles() {
     }
 
     const SDL_GPUSamplerCreateInfo sampler_create_info = {
-        .min_filter = SDL_GPU_FILTER_NEAREST,
-        .mag_filter = SDL_GPU_FILTER_NEAREST,
-        .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+        .min_filter = SDL_GPU_FILTER_LINEAR,
+        .mag_filter = SDL_GPU_FILTER_LINEAR,
+        .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
         .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
         .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
         .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .mip_lod_bias = 0.0f,
-        .max_anisotropy = 0.0f,
+        .mip_lod_bias = 1.0f,
+        .max_anisotropy = 8.0f,
         .compare_op = SDL_GPU_COMPAREOP_INVALID,
         .min_lod = 0.0f,
-        .max_lod = 0.0f,
-        .enable_anisotropy = false,
+        .max_lod = 4.0f,
+        .enable_anisotropy = true,
         .enable_compare = false,
     };
     tile_sampler = SDL_CreateGPUSampler(device, &sampler_create_info);

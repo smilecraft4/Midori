@@ -861,7 +861,7 @@ void Canvas::ViewUpdateState(glm::vec2 cursor_pos) {
 void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos) {
     if (viewPanning) {
         const auto viewCursorDelta = cursor_pos - viewCursorPrevious;
-        SDL_Log("%.2f, %.2f", viewCursorDelta.x, viewCursorDelta.y);
+        // SDL_Log("%.2f, %.2f", viewCursorDelta.x, viewCursorDelta.y);
         viewport.Translate(viewCursorDelta);
     } else if (viewRotating) {
         const auto startAngle = std::atan2(viewCursorStart.x - static_cast<float>(app->window_size.x) / 2.0f,

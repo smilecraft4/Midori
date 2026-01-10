@@ -35,16 +35,17 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *app = static_cast<Midori::App *>(appstate);
 
-    if (event->type == SDL_EVENT_QUIT) {
+    if(app->should_quit) {
+        // prevents any new event from ocuring once the app is closing
+        return SDL_APP_CONTINUE;
+    }
+
+    if ((event->type == SDL_EVENT_QUIT) || (event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event->window.windowID == SDL_GetWindowID(app->window))) {
         SDL_HideWindow(app->window);
         app->hidden = true;
         app->ShouldQuit();
     }
-    if (event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event->window.windowID == SDL_GetWindowID(app->window)) {
-        SDL_HideWindow(app->window);
-        app->hidden = true;
-        app->ShouldQuit();
-    }
+
 
     if (event->type == SDL_EVENT_WINDOW_RESIZED) {
         app->Resize(event->window.data1, event->window.data2);
