@@ -75,8 +75,8 @@ bool Renderer::Init() {
     swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, app->window);
 
     viewport_render_data.projection =
-        glm::ortho(-((float)app->window_size.x / 2.0f), ((float)app->window_size.x / 2.0f),
-                   -((float)app->window_size.y / 2.0f), ((float)app->window_size.y / 2.0f));
+        glm::ortho(-std::floor((float)app->window_size.x / 2.0f), std::ceil((float)app->window_size.x / 2.0f),
+                   -std::floor((float)app->window_size.y / 2.0f), std::ceil((float)app->window_size.y / 2.0f));
 
     if (!InitMerge()) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize merge compute pipeline");
@@ -1164,8 +1164,8 @@ bool Renderer::Render() {
 bool Renderer::Resize() {
     ZoneScoped;
     viewport_render_data.projection =
-        glm::ortho(-((float)app->window_size.x / 2.0f), ((float)app->window_size.x / 2.0f),
-                   -((float)app->window_size.y / 2.0f), ((float)app->window_size.y / 2.0f), 0.0f, 1.0f);
+        glm::ortho(-std::floor((float)app->window_size.x / 2.0f), std::ceil((float)app->window_size.x / 2.0f),
+                   -std::floor((float)app->window_size.y / 2.0f), std::ceil((float)app->window_size.y / 2.0f));
 
     std::vector<Layer> layers;
     layers.reserve(layer_textures.size());
