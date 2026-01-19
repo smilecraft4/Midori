@@ -901,7 +901,7 @@ void Canvas::UpdateTileLoading() {
             SDL_assert(buf_size > 0);
             SDL_assert(buf);
 
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found tile encoded texture");
+            // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found tile encoded texture");
             SDL_assert(buf_size > 0);
             SDL_assert(buf != nullptr);
             tile_load.encoded_texture.resize(buf_size);
@@ -1009,7 +1009,7 @@ void Canvas::UpdateTileUnloading() {
             SDL_assert(file_io != nullptr);
             SDL_WriteIO(file_io, tile_write.encoded_texture.data(), tile_write.encoded_texture.size());
             SDL_CloseIO(file_io);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Wrote tile encoded texture");
+            // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Wrote tile encoded texture");
 
             tile_write.state = TileWriteState::Written;
         }

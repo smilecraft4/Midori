@@ -165,5 +165,14 @@ class Renderer {
     SDL_GPUTexture *brush_texture = nullptr;
     SDL_GPUSampler *brush_sampler = nullptr;
     std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
+
+    SDL_GPUShaderFormat shaderFormat;
+    std::string layerVertFilename;
+    std::string layerFragFilename;
+    std::string tileVertFilename;
+    std::string tileFragFilename;
+    std::string eraseCompFilename;
+    std::string paintCompFilename;
+    std::string mergeCompFilename;
 };
 }  // namespace Midori

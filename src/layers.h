@@ -5,6 +5,7 @@
 #include <expected>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "app.h"
 #include "command.h"
@@ -14,44 +15,69 @@
 namespace Midori {
 // class Tiles {};
 /*
+enum class BlendMode : std::uint8_t {
+    Alpha,
+    Add,
+    Multiply,
+    Screen,
+    Overlay,
+};
+
 class Layers {
    public:
-    enum class Error {
+    enum class Result {
+        None,
         Unknown,
     };
 
-    template <typename T>
-    using Result = std::expected<T, Error>;
-
-    using ID = std::uint32_t;
+    using ID = std::uint16_t;
     using Depth = std::uint16_t;
     using Opacity = std::uint8_t;
 
-    struct CreateInfo {
-        Depth depth;
-        Opacity opacity;
-        std::string name;
-        bool internal;  // true if the layer is created by the app not the user
-        bool hidden;
-        bool locked;
+    enum class Type : std::uint8_t {
+        RasterLayer,
+        RasterMask,
+        Folder,
     };
 
-    std::expected<ID, Error> New(CreateInfo& createInfo);
-    std::expected<ID, Error> Duplicate(ID srcLayer);
-    std::expected<ID, Error> Merge(ID overLayer, ID underLayer);
+    struct CreateInfo {
+        Depth depth;
+        std::string_view name;
+        Type type;
+        Opacity opacity;
+        BlendMode blendMode;
+        bool hidden;
+        bool locked;
+        bool internal;
+    };
 
-    std::expected<ID, Error> Delete(ID layer);
+    std::expected<ID, Result> New(CreateInfo& createInfo);
+    std::expected<ID, Result> Duplicate(ID srcLayer);
+    std::expected<ID, Result> Merge(ID over, ID under);
+    std::expected<ID, Result> Delete(ID layer);
 
-    std::expected<ID, Error> GetLayer(const std::string& name) const;
-    std::expected<ID, Error> GetLayer(Depth depth) const;
+    std::expected<ID, Result> GetLayer(const std::string& name) const;
+    std::expected<ID, Result> GetLayer(Depth depth) const;
 
-    std::optional<Error> SetDepth(ID layer, Depth depth);
-    std::optional<Error> SetOpacity(ID layer, Opacity opacity);
-    std::optional<Error> SetName(ID layer, const std::string& name);
-    std::optional<Error> SetHidden(ID layer, bool hidden);
-    std::optional<Error> SetLocked(ID layer, bool locked);
+    Result SetDepth(ID layer, Depth depth);
+    Result SetOpacity(ID layer, Opacity opacity);
+    Result SetName(ID layer, const std::string& name);
+    Result SetHidden(ID layer, bool hidden);
+    Result SetLocked(ID layer, bool locked);
 
    private:
+    ID lastID = 0;
+    std::vector<ID> freeIDs;
+
+    std::vector<bool> saved;
+    std::vector<bool> modified;
+    std::vector<bool> hidden;
+    std::vector<bool> locked;
+    std::vector<bool> internal;
+    std::vector<Type> types;
+    std::vector<Depth> dephts;
+    std::vector<Opacity> opacities;
+    std::vector<std::string> names;
 };
 */
 

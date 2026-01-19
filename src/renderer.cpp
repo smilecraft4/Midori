@@ -29,10 +29,40 @@ Renderer::Renderer(App *app) : app(app) {}
 
 bool Renderer::Init() {
     ZoneScoped;
-    device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, "vulkan");
+
+#ifdef NDEBUG
+    constexpr bool debugMode = false;
+#else
+    constexpr bool debugMode = true;
+#endif NDEBUG
+
+    device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, debugMode, nullptr);
     if (device == nullptr) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create gpu device: %s", SDL_GetError());
         return false;
+    }
+
+    const char* deviceDriver = SDL_GetGPUDeviceDriver(device);
+    if (strcmp(deviceDriver, "direct3d12") == 0) {
+        SDL_Log("Backend: %s", deviceDriver);
+        shaderFormat = SDL_GPU_SHADERFORMAT_DXIL;
+        layerVertFilename = "./data/shaders/dxil/layer.vs.cso";
+        layerFragFilename = "./data/shaders/dxil/layer.ps.cso";
+        tileVertFilename = "./data/shaders/dxil/tile.vs.cso";
+        tileFragFilename = "./data/shaders/dxil/tile.ps.cso";
+        eraseCompFilename = "./data/shaders/dxil/erase.cs.cso";
+        paintCompFilename = "./data/shaders/dxil/paint.cs.cso";
+        mergeCompFilename = "./data/shaders/dxil/merge.cs.cso";
+    } else if (strcmp(deviceDriver, "vulkan") == 0) {
+        SDL_Log("Backend: %s", deviceDriver);
+        shaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
+        layerVertFilename = "./data/shaders/spirv/layer.vert.spv";
+        layerFragFilename = "./data/shaders/spirv/layer.frag.spv";
+        tileVertFilename = "./data/shaders/spirv/tile.vert.spv";
+        tileFragFilename = "./data/shaders/spirv/tile.frag.spv";
+        eraseCompFilename = "./data/shaders/spirv/erase.comp.spv";
+        paintCompFilename = "./data/shaders/spirv/paint.comp.spv";
+        mergeCompFilename = "./data/shaders/spirv/merge.comp.spv";
     }
 
     if (!SDL_ClaimWindowForGPUDevice(device, app->window)) {
@@ -40,6 +70,7 @@ bool Renderer::Init() {
         return false;
     }
     SDL_SetGPUSwapchainParameters(device, app->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC);
+    SDL_SetGPUAllowedFramesInFlight(device, 1);
 
     swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, app->window);
 
@@ -72,17 +103,17 @@ bool Renderer::Init() {
 bool Renderer::InitLayers() {
     ZoneScoped;
     size_t vertex_code_size = 0;
-    auto *vertex_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/layer.vert.spv", &vertex_code_size);
+    auto *vertex_code = (Uint8 *)SDL_LoadFile(layerVertFilename.c_str(), &vertex_code_size);
     if (vertex_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/layer.vert.spv", SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", layerVertFilename.c_str(),
+                     SDL_GetError());
         return false;
     }
     const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
         .code_size = vertex_code_size,
         .code = vertex_code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_VERTEX,
         .num_samplers = 0,
         .num_storage_textures = 0,
@@ -95,17 +126,17 @@ bool Renderer::InitLayers() {
     }
 
     size_t fragment_code_size = 0;
-    auto *fragment_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/layer.frag.spv", &fragment_code_size);
+    auto *fragment_code = (Uint8 *)SDL_LoadFile(layerFragFilename.c_str(), &fragment_code_size);
     if (fragment_code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/layer.frag.spv", SDL_GetError());
+                     layerFragFilename.c_str(), SDL_GetError());
         return false;
     }
     const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
         .code_size = fragment_code_size,
         .code = fragment_code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
         .num_samplers = 1,
         .num_storage_textures = 0,
@@ -232,17 +263,17 @@ bool Renderer::InitLayers() {
 bool Renderer::InitTiles() {
     ZoneScoped;
     size_t vertex_code_size = 0;
-    auto *vertex_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/tile.vert.spv", &vertex_code_size);
+    auto *vertex_code = (Uint8 *)SDL_LoadFile(tileVertFilename.c_str(), &vertex_code_size);
     if (vertex_code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/tile.vert.spv", SDL_GetError());
+                     tileVertFilename.c_str(), SDL_GetError());
         return false;
     }
     const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
         .code_size = vertex_code_size,
         .code = vertex_code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_VERTEX,
         .num_samplers = 0,
         .num_storage_textures = 0,
@@ -254,17 +285,17 @@ bool Renderer::InitTiles() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tile vertex shader: %s", SDL_GetError());
     }
     size_t fragment_code_size = 0;
-    auto *fragment_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/tile.frag.spv", &fragment_code_size);
+    auto *fragment_code = (Uint8 *)SDL_LoadFile(tileFragFilename.c_str(), &fragment_code_size);
     if (fragment_code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/tile.frag.spv", SDL_GetError());
+                     tileFragFilename.c_str(), SDL_GetError());
         return false;
     }
     const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
         .code_size = fragment_code_size,
         .code = fragment_code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
         .num_samplers = 1,
         .num_storage_textures = 0,
@@ -427,17 +458,17 @@ bool Renderer::InitTiles() {
 
 bool Renderer::InitMerge() {
     size_t code_size = 0;
-    auto *code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/merge.comp.spv", &code_size);
+    auto *code = (Uint8 *)SDL_LoadFile(mergeCompFilename.c_str(), &code_size);
     if (code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/merge.comp.spv", SDL_GetError());
+                     mergeCompFilename.c_str(), SDL_GetError());
         return false;
     }
     const SDL_GPUComputePipelineCreateInfo create_info = {
         .code_size = code_size,
         .code = code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .num_samplers = 1,
         .num_readonly_storage_textures = 0,  // src texture
         .num_readonly_storage_buffers = 0,
@@ -459,17 +490,17 @@ bool Renderer::InitMerge() {
 
 bool Renderer::InitPaint() {
     size_t paint_code_size = 0;
-    auto *paint_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/paint.comp.spv", &paint_code_size);
+    auto *paint_code = (Uint8 *)SDL_LoadFile(paintCompFilename.c_str(), &paint_code_size);
     if (paint_code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/paint.comp.spv", SDL_GetError());
+                     paintCompFilename.c_str(), SDL_GetError());
         return false;
     }
     const SDL_GPUComputePipelineCreateInfo paint_create_info = {
         .code_size = paint_code_size,
         .code = paint_code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .num_samplers = 1,  // alpha brush
         .num_readonly_storage_textures = 0,
         .num_readonly_storage_buffers = 1,    // stroke buffer
@@ -488,17 +519,17 @@ bool Renderer::InitPaint() {
     SDL_free(paint_code);
 
     size_t erase_code_size = 0;
-    auto *erase_code = (Uint8 *)SDL_LoadFile("./data/shaders/vulkan/erase.comp.spv", &erase_code_size);
+    auto *erase_code = (Uint8 *)SDL_LoadFile(eraseCompFilename.c_str(), &erase_code_size);
     if (erase_code_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s",
-                     "./data/shaders/vulkan/erase.comp.spv", SDL_GetError());
+                     eraseCompFilename.c_str(), SDL_GetError());
         return false;
     }
     const SDL_GPUComputePipelineCreateInfo erase_create_info = {
         .code_size = erase_code_size,
         .code = erase_code,
         .entrypoint = "main",
-        .format = SDL_GPU_SHADERFORMAT_SPIRV,
+        .format = shaderFormat,
         .num_samplers = 1,  // alpha brush
         .num_readonly_storage_textures = 0,
         .num_readonly_storage_buffers = 1,    // stroke buffer
@@ -1212,6 +1243,7 @@ void Renderer::Quit() {
 }
 
 bool Renderer::CreateLayerTexture(const Layer layer) {
+    ZoneScoped;
     SDL_assert(!layer_textures.contains(layer));
     SDL_assert(app->window_size.x > 0);
     SDL_assert(app->window_size.y > 0);

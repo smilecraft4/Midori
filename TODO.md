@@ -12,13 +12,23 @@
 - brush and eraser dynamic cursor
 - undo/redo for layer creation/modification/deletion
 - color picker preview and confirmation
+- Tweening
+- UI library
 
 ### In Progress
 
-- adding wintab to SDL
+#### UI Library 🔨
+
+- [State of Text Rendering 2024](https://behdad.org/text2024/)
+- [Text Rendering](https://learnopengl.com/In-Practice/Text-Rendering)
+- [Rendering Crispy Text On The GPU](https://osor.io/text)
+- [16xAA font rendering using coverage masks, part I](https://superluminal.eu/16xaa-font-rendering-using-coverage-masks-part-i/)
+- [16xAA font rendering using coverage masks, part II](https://superluminal.eu/16x-aa-font-rendering-using-coverage-masks-part-ii/)
+- [16xAA font rendering using coverage masks, part III](https://superluminal.eu/16x-aa-font-rendering-using-coverage-masks-part-iii/)
 
 ### Done
 
+- adding wintab to SDL
 - color picker
 - viewport undo/redo
 - viewport zoom
