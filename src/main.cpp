@@ -9,6 +9,7 @@
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     SDL_SetMemoryFunctions(Midori::Malloc, Midori::Calloc, Midori::Realloc, Midori::Free);
+    SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent");
 
     auto *app = new Midori::App(argc, argv);
     *appstate = app;
@@ -42,6 +43,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
     if ((event->type == SDL_EVENT_QUIT) || (event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event->window.windowID == SDL_GetWindowID(app->window))) {
         SDL_HideWindow(app->window);
+        SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "15"); // Keep checking every 15Hz to see if everything is finished
         app->hidden = true;
         app->ShouldQuit();
     }
