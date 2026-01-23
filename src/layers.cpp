@@ -17,7 +17,7 @@ void LayerDeleteCommand::execute() { app_.canvas.DeleteLayer(layer_); }
 
 void LayerDeleteCommand::revert() {}
 
-LayerDepthCommand::LayerDepthCommand(App& app, Layer layer, int previousDepth, int newDepth)
+LayerDepthCommand::LayerDepthCommand(App& app, Layer layer, uint8_t previousDepth, uint8_t newDepth)
     : Command(Type::Unknown), app_(app), layer_(layer), previousDepth_(previousDepth), newDepth_(newDepth) {}
 
 void LayerDepthCommand::execute() { app_.canvas.SetLayerDepth(layer_, newDepth_); }

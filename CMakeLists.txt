@@ -27,6 +27,7 @@ add_library(midori_lib
   "src/layers.cpp"
   "src/ui.cpp"
 )
+target_compile_options(midori_lib PRIVATE /W4 /WX)
 target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
 target_include_directories(midori_lib PUBLIC "deps/imgui/")
@@ -45,6 +46,7 @@ target_sources(midori_lib PRIVATE
 # Executable
 add_executable(midori WIN32 "src/main.cpp")
 target_link_libraries(midori PRIVATE midori_lib)
+target_compile_options(midori PRIVATE /W4 /WX)
 
 add_subdirectory(data/shaders/dxil)
 add_subdirectory(data/shaders/spirv)

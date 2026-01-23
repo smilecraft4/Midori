@@ -296,21 +296,21 @@ SDL_EnumerationResult findLayersCallback(void *userdata, const char *dirname, co
             size_t len = strlen(tilesFile[i]);
             int stage = 0;
             glm::ivec2 pos{};
-            std::string buf;
+            std::string tmp;
             for (size_t c = 0; c < len; c++) {
                 if (tilesFile[i][c] == '.') {
                     SDL_assert(stage == 1);
                     if (stage == 1) {
-                        pos.y = std::atoi(buf.c_str());
+                        pos.y = std::atoi(tmp.c_str());
                         stage++;
                     }
                     break;
                 } else if (tilesFile[i][c] == '_') {
-                    pos.x = std::atoi(buf.c_str());
-                    buf.clear();
+                    pos.x = std::atoi(tmp.c_str());
+                    tmp.clear();
                     stage++;
                 } else {
-                    buf += tilesFile[i][c];
+                    tmp += tilesFile[i][c];
                 }
             }
 
@@ -367,7 +367,7 @@ void Canvas::CompactLayerHeight() {
         sortedDepthLayers[layer_info.depth] = layer;
     }
 
-    int previousDepth = 0;
+    uint8_t previousDepth = 0;
     for (auto &[depth, layer] : sortedDepthLayers) {
         SetLayerDepth(layer, previousDepth);
         previousDepth++;
@@ -388,9 +388,9 @@ void Canvas::Update() {
             std::unordered_set<glm::ivec2> tile_positions(view_visible_tiles.begin(), view_visible_tiles.end());
 
             // Iterate over every tile in layer
-            const std::vector<Tile> layer_tiles = LayerTiles(layer);
-            std::unordered_set<Tile> remove_tiles(layer_tiles.begin(), layer_tiles.end());
-            for (const auto &tile : layer_tiles) {
+            const auto& tiles = layer_tiles.at(layer);
+            std::unordered_set<Tile> remove_tiles(tiles.begin(), tiles.end());
+            for (const auto &tile : tiles) {
                 if (tile_positions.contains(tile_infos.at(tile).position)) {
                     tile_positions.erase(tile_infos.at(tile).position);
                     remove_tiles.erase(tile);
@@ -740,7 +740,6 @@ std::expected<Tile, TileError> Canvas::CreateTile(const Layer layer, const glm::
     layer_tile_pos.at(layer)[position] = tile;
 
     app->renderer.CreateTileTexture(tile);
-    const auto &layer_info = layer_infos.at(layer);
     tile_infos[tile] = TileInfo{
         .layer = layer,
         .position = position,
@@ -914,7 +913,7 @@ void Canvas::UpdateTileLoading() {
             ZoneScopedN("Decoding Tile");
             qoi_desc desc;
             auto *buf = (uint8_t *)qoi_decode(tile_load.encoded_texture.data(),
-                                              (size_t)tile_load.encoded_texture.size(), &desc, 4);
+                                              static_cast<int>(tile_load.encoded_texture.size()), &desc, 4);
             SDL_assert(buf != nullptr);
             SDL_assert(desc.channels = 4);
             SDL_assert(desc.width = TILE_SIZE);
@@ -1016,10 +1015,8 @@ void Canvas::UpdateTileUnloading() {
         if (tile_write.state == TileWriteState::Written) {
             ZoneScopedN("Write Tile file");
             SDL_assert(tile_infos.contains(tile));
-            const auto tile_info = tile_infos.at(tile);
-
-            SDL_assert(layer_infos.contains(tile_info.layer));
-            layerTilesSaved[tile_info.layer].insert(tile_info.position);
+            SDL_assert(layer_infos.contains(tile_infos.at(tile).layer));
+            layerTilesSaved[tile_infos.at(tile).layer].insert(tile_infos.at(tile).position);
 
             tiles_unqueued.push_back(tile);
         }
@@ -1041,11 +1038,6 @@ void Canvas::UpdateTileUnloading() {
             tile_write_queue.erase(tile);
         }
     }
-}
-
-static glm::ivec2 GetTilePos(const glm::vec2 canvas_pos) {
-    constexpr glm::vec2 tile_size = glm::vec2(TILE_SIZE);
-    return glm::ivec2(glm::floor(canvas_pos / tile_size));
 }
 
 std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
@@ -1150,7 +1142,7 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
     }
 
     const auto distance = glm::distance(previous_point.position, point.position);
-    const int stroke_num = std::floor(distance / brush_options.spacing);
+    const int stroke_num = static_cast<int>(std::floor(distance / brush_options.spacing));
     if (stroke_num == 0) {
         return;
     }
@@ -1169,24 +1161,24 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
     while (t < 1.0f) {
         ZoneScoped;
 
-        StrokePoint point;
+        StrokePoint newPoint;
 
         // Maybe use SIMD for this
-        point.position = glm::mix(start_point.position, end_point.position, t);
-        point.color = glm::mix(start_point.color, end_point.color, t);
-        point.flow = std::lerp(start_point.flow, end_point.flow, t);
-        point.radius = std::lerp(start_point.radius, end_point.radius, t);
-        point.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
+        newPoint.position = glm::mix(start_point.position, end_point.position, t);
+        newPoint.color = glm::mix(start_point.color, end_point.color, t);
+        newPoint.flow = std::lerp(start_point.flow, end_point.flow, t);
+        newPoint.radius = std::lerp(start_point.radius, end_point.radius, t);
+        newPoint.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
 
-        stroke_points.push_back(point);
-        previous_point = point;
+        stroke_points.push_back(newPoint);
+        previous_point = newPoint;
 
         t += t_step;
         i++;
 
         {
             ZoneScoped;
-            const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
+            const auto tiles_pos = GetTilePosAffectedByStrokePoint(newPoint);
             for (const auto &tile_pos : tiles_pos) {
                 Tile strokeLayertile = GetTileAt(stroke_layer, tile_pos);
                 if (strokeLayertile == 0) {
@@ -1645,7 +1637,7 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
     }
 
     const auto distance = glm::distance(previous_point.position, point.position);
-    const int stroke_num = std::floor(distance / eraser_options.spacing);
+    const int stroke_num = static_cast<int>(std::floor(distance / eraser_options.spacing));
     if (stroke_num == 0) {
         return;
     }
@@ -1664,23 +1656,23 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
     while (t < 1.0f) {
         ZoneScoped;
 
-        StrokePoint point;
+        StrokePoint newPoint;
 
         // Maybe use SIMD for this
-        point.position = glm::mix(start_point.position, end_point.position, t);
-        point.color = glm::mix(start_point.color, end_point.color, t);
-        point.flow = std::lerp(start_point.flow, end_point.flow, t);
-        point.radius = std::lerp(start_point.radius, end_point.radius, t);
-        point.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
+        newPoint.position = glm::mix(start_point.position, end_point.position, t);
+        newPoint.color = glm::mix(start_point.color, end_point.color, t);
+        newPoint.flow = std::lerp(start_point.flow, end_point.flow, t);
+        newPoint.radius = std::lerp(start_point.radius, end_point.radius, t);
+        newPoint.hardness = std::lerp(start_point.hardness, end_point.hardness, t);
 
-        stroke_points.push_back(point);
-        previous_point = point;
+        stroke_points.push_back(newPoint);
+        previous_point = newPoint;
 
         t += t_step;
         i++;
 
         {
-            const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
+            const auto tiles_pos = GetTilePosAffectedByStrokePoint(newPoint);
 
             SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
             SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);

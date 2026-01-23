@@ -111,11 +111,11 @@ class LayerDepthCommand : public Command {
    private:
     App &app_;
     Layer layer_;
-    int previousDepth_;
-    int newDepth_;
+    uint8_t previousDepth_;
+    uint8_t newDepth_;
 
    public:
-    explicit LayerDepthCommand(App &app, Layer layer, int previousDepth, int newDepth);
+    explicit LayerDepthCommand(App &app, Layer layer, uint8_t previousDepth, uint8_t newDepth);
 
     virtual std::string name() const { return "Layer Depth"; }
     virtual void execute();

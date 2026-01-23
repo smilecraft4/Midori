@@ -139,11 +139,11 @@ std::vector<glm::ivec2> Viewport::VisibleTiles(glm::ivec2 screenSize) {
     c = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(c, 0.0f, 1.0f)) / tile_size;
     d = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(d, 0.0f, 1.0f)) / tile_size;
 
-    glm::vec2 min, max;
-    min.x = std::floor(std::min(a.x, std::min(b.x, std::min(c.x, d.x))));
-    min.y = std::floor(std::min(a.y, std::min(b.y, std::min(c.y, d.y))));
-    max.x = std::ceil(std::max(a.x, std::max(b.x, std::max(c.x, d.x))));
-    max.y = std::ceil(std::max(a.y, std::max(b.y, std::max(c.y, d.y))));
+    glm::ivec2 min, max;
+    min.x = static_cast<int>(std::floor(std::min(a.x, std::min(b.x, std::min(c.x, d.x)))));
+    min.y = static_cast<int>(std::floor(std::min(a.y, std::min(b.y, std::min(c.y, d.y)))));
+    max.x = static_cast<int>(std::ceil(std::max(a.x, std::max(b.x, std::max(c.x, d.x)))));
+    max.y = static_cast<int>(std::ceil(std::max(a.y, std::max(b.y, std::max(c.y, d.y)))));
 
     std::vector<glm::ivec2> positions;
     for (int y = min.y; y < max.y; y++) {

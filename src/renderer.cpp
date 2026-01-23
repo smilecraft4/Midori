@@ -582,7 +582,7 @@ bool Renderer::InitPaint() {
     }
 
     qoi_desc desc;
-    auto *pixels = (uint8_t *)qoi_decode(data, dataSize, &desc, 4);
+    auto *pixels = (uint8_t *)qoi_decode(data, static_cast<int>(dataSize), &desc, 4);
     SDL_free(data);
     if (pixels == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to decode brush texture");
@@ -1046,8 +1046,8 @@ bool Renderer::Render() {
             ZoneScopedN("Layer blending and rendering");
 
             auto rgb = glm::vec3(app->bg_color);
-            rgb = glm::mix(glm::pow((rgb + glm::vec3(0.055)) * glm::vec3(1.0 / 1.055), glm::vec3(2.4)),
-                           rgb * glm::vec3(1.0 / 12.92), glm::lessThanEqual(rgb, glm::vec3(0.04045)));
+            rgb = glm::mix(glm::pow((rgb + glm::vec3(0.055f)) * glm::vec3(1.0f / 1.055f), glm::vec3(2.4f)),
+                           rgb * glm::vec3(1.0f / 12.92f), glm::lessThanEqual(rgb, glm::vec3(0.04045f)));
             rgb *= app->bg_color.a;
 
             const SDL_GPUColorTargetInfo target_info = {

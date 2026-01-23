@@ -82,8 +82,6 @@ bool App::Init() {
     return true;
 }
 
-void DebugDrawTile(ImDrawList *draw_list, glm::ivec2 pos) {}
-
 static const SDL_DialogFileFilter filters[] = {{"Midori files (.mido)", "mido"}, {"All files", "*"}};
 
 bool App::Update() {
@@ -170,7 +168,7 @@ bool App::Update() {
                     // Temporary layer stuff
                     std::vector<LayerInfo> layer_info;
                     layer_info.reserve(canvas.layer_infos.size());
-                    for (auto &[layer, info] : canvas.layer_infos) {
+                    for (auto &[_, info] : canvas.layer_infos) {
                         layer_info.push_back(info);
                     }
 
@@ -180,7 +178,7 @@ bool App::Update() {
                         (float)window_size.x / (float)window_size.y * 50.0f,
                         50.0f,
                     };
-                    for (int i = layer_info.size() - 1; i >= 0; i--) {
+                    for (int i = static_cast<int>(layer_info.size()) - 1; i >= 0; i--) {
                         auto &real_data = canvas.layer_infos[layer_info[i].layer];
                         const std::string title = std::format("-{}: {}", real_data.depth, real_data.name);
                         ImGui::SeparatorText(title.c_str());
@@ -228,10 +226,10 @@ bool App::Update() {
                         ImGui::PopID();
                     }
                     if (ImGui::Button("+")) {
-                        const auto layer = canvas.CreateLayer("New Layer", 0);
+                        const auto newLayer = canvas.CreateLayer("New Layer", 0);
                         // canvas.canvasHistory.store(std::make_unique<LayerCreateCommand>(*this,
                         // canvas.layer_infos[layer]));
-                        canvas.SaveLayer(layer);
+                        canvas.SaveLayer(newLayer);
                     }
                     ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color));
                 }
@@ -736,6 +734,7 @@ void App::CursorRelease(Uint8 button) {
 
 // Need to detect when a mods is disengaged
 void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
+    (void)mods;
     if (key == SDLK_SPACE) {
         space_pressed = true;
     }
@@ -820,6 +819,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
 }
 
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
+    (void)mods;
     if (key == SDLK_SPACE) {
         space_pressed = false;
         if (canvas.currentViewportChangeCommand != nullptr) {

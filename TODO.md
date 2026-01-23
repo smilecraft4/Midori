@@ -7,18 +7,14 @@
 - fix stroke layer opacity missmatch
 - properly check srgb -> linear -> srgb
 - add opacity on eraser for soft erasing
-- add wintab for higher pen resolution
 - move to a more Data oriented architecture (structs of arrays)
 - brush and eraser dynamic cursor
-- undo/redo for layer creation/modification/deletion
-- color picker preview and confirmation
-- Tweening
-- UI library
 
 ### In Progress
 
 #### UI Library 🔨
 
+- UI Tweening
 - [State of Text Rendering 2024](https://behdad.org/text2024/)
 - [Text Rendering](https://learnopengl.com/In-Practice/Text-Rendering)
 - [Rendering Crispy Text On The GPU](https://osor.io/text)
@@ -28,6 +24,8 @@
 
 ### Done
 
+- add wintab for higher pen resolution
+- color picker preview and confirmation
 - adding wintab to SDL
 - color picker
 - viewport undo/redo
