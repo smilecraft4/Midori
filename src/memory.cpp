@@ -4,9 +4,6 @@
 #include <cstring>
 
 #include <SDL3/SDL.h>
-#if defined(NDEBUG) && defined(TRACY_ENABLE)
-#undef TRACY_ENABLE
-#endif
 #include <tracy/Tracy.hpp>
 
 void *Midori::Malloc(size_t size) {

@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <backends/imgui_impl_sdl3.h>
+#include <tracy/Tracy.hpp>
 
 #include "app.h"
 #include "layers.h"
@@ -22,14 +23,17 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 }
 
 SDL_AppResult SDL_AppIterate(void *appstate) {
+    FrameMarkStart(nullptr);
     auto *app = static_cast<Midori::App *>(appstate);
 
     app->Update();
 
     if (app->CanQuit() && app->should_quit) {
+        FrameMarkEnd(nullptr);
         return SDL_APP_SUCCESS;
     }
 
+    FrameMarkEnd(nullptr);
     return SDL_APP_CONTINUE;
 }
 

@@ -1,7 +1,7 @@
 
 find_program(DXC_EXECUTABLE dxc)
 
-if(NOT GLSLANG_VALIDATOR)
+if(NOT DXC_EXECUTABLE)
   message(FATAL_ERROR "dxc not found! Install glslang or add to PATH.")
 endif()
 

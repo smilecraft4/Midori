@@ -1,15 +1,21 @@
 #pragma once
 
-#include <bitset>
 #include <cstdint>
-#include <glm/vec2.hpp>
-#include <glm/vec4.hpp>
 #include <string_view>
 #include <vector>
+#include <string>
+
+#include <ft2build.h>
+#include <glm/vec2.hpp>
+#include <glm/vec4.hpp>
+#include FT_FREETYPE_H
+#include <hb.h>
 
 // Needed for this to work
 
 namespace Midori {
+class App;
+
 class UI {
    public:
     enum class Alignment : uint8_t {
@@ -97,35 +103,67 @@ class UI {
         TextureScale scaling;
     };
 
-    void Start(glm::ivec2 pos, glm::ivec2 size);
-    void End(); // Construct UI RenderGraph
+    explicit UI(App& app);
 
-    void Render();
+    void Init();
+    void Quit();
 
-    TextStyleID CreateTextStyle(TextStyle textStyle);
-    ColorStyleID CreateColorStyle(ColorStyle colorStyle);
-    StrokeStyleID CreateStrokeStyle(StrokeStyle strokeStyle);
-    TextureStyleID CreateTextureStyle(TextureStyle textureStyle);
+    TextStyleID CreateTextStyle(const TextStyle& style);
+    void DestroyTextStyle(TextStyleID id);
 
-    void DestroyTextStyle(TextStyleID textStyleID);
-    void DestroyColorStyle(ColorStyleID colorStyleID);
-    void DestroyStrokeStyle(StrokeStyleID strokeStyleID);
-    void DestroyTextureStyle(TextureStyleID textureStyleID);
+    void Text(std::string text, TextStyleID id, glm::ivec2 size, glm::ivec2 position, Alignment alignment = Alignment::TopLeft);
 
-    using ContainerID = int;
-    ContainerID StartContainer(const ContainerInfo& info, ColorStyleID colorStyleID = 0, StrokeStyleID strokeStyleID = 0);
-    void EndContainer();
-    bool IsOverContainer(ContainerID containerID, glm::ivec2 position) const;
+    // void Start(glm::ivec2 pos, glm::ivec2 size);
+    // void End();  // Construct UI RenderGraph
 
-    void Text(std::string text, Alignment alignment, TextStyleID textStyleID = 0);
-    void Texture(void* textureID, TextureStyleID textureStyleID = 0);
+    // void Render();
+
+    // TextStyleID CreateTextStyle(TextStyle textStyle);
+    // ColorStyleID CreateColorStyle(ColorStyle colorStyle);
+    // StrokeStyleID CreateStrokeStyle(StrokeStyle strokeStyle);
+    // TextureStyleID CreateTextureStyle(TextureStyle textureStyle);
+
+    // void DestroyTextStyle(TextStyleID textStyleID);
+    // void DestroyColorStyle(ColorStyleID colorStyleID);
+    // void DestroyStrokeStyle(StrokeStyleID strokeStyleID);
+    // void DestroyTextureStyle(TextureStyleID textureStyleID);
+
+    // using ContainerID = int;
+    // ContainerID StartContainer(const ContainerInfo& info, ColorStyleID colorStyleID = 0,
+    //    StrokeStyleID strokeStyleID = 0);
+    // void EndContainer();
+    // bool IsOverContainer(ContainerID containerID, glm::ivec2 position) const;
+
+    // void Text(std::string text, Alignment alignment, TextStyleID textStyleID = 0);
+    // void Texture(void* textureID, TextureStyleID textureStyleID = 0);
 
     std::vector<ColorStyleID> containersColorStyles;
     std::vector<StrokeStyleID> containersStrokeStyles;
     std::vector<ContainerInfo> containersContainerInfos;
     std::vector<StateInfo> containersStateInfos;
+
+   private:
+    bool HasGlyph(TextStyleID textId, uint32_t glyph) const;
+    void AddGlyph(TextStyleID textId, uint32_t glyph);
+    void RemoveGlyph(TextStyleID textId, uint32_t glyph);
+
+    struct TextStyleInfo {
+        std::string fontname;
+        TextWeight weight;
+        int size;
+        FT_Face ftFace;
+        hb_font_t* font;
+        std::unordered_map<uint32_t, int> glyphsTexAtlasIndex;
+        std::unordered_map<uint32_t, glm::vec4> glyphsTexAtlasCoords;
+    };
+    std::unordered_map<TextStyleID, TextStyleInfo> textStyleInfo;
+
+    App& app;
+    FT_Library ftLib;
+    FT_Face ftFace;
 };
 
+/*
 class Demo {
    public:
     Demo() {
@@ -149,6 +187,11 @@ class Demo {
             .size = 10,
             .weight = UI::TextWeight::Regular,
         });
+        iconStyle = ui.CreateTextStyle(UI::TextStyle{
+            .font = "Segoe Fluent Icons",
+            .size = 10,
+            .weight = UI::TextWeight::Regular,
+        });
     }
 
     ~Demo() {
@@ -157,7 +200,7 @@ class Demo {
 
     void Update() {
         ui.Start({0, 0}, windowSize);
-        if(Button("Demo button")) {
+        if (Button("Demo button")) {
             // Do something on press
         }
         ui.End();
@@ -179,28 +222,30 @@ class Demo {
     UI::ColorStyleID colorStyleHighlight{};
     UI::StrokeStyleID strokeStyle{};
     UI::TextStyleID textStyle{};
+    UI::TextStyleID iconStyle{};
 
     bool Button(std::string text) {
-     const auto id = ui.StartContainer(
-        UI::ContainerInfo{
-            .pos = {10, 10},
-            .size = {-1, 18},
-            .corners = {2, 2, 2, 2},
-            .padding = {10, 2, 10, 2},
-            .direction = UI::Direction::Horizontal,
-            .alignment = UI::Alignment::MiddleCenter,
-        },
-        colorStylePrimary, strokeStyle);
-        
+        const auto id = ui.StartContainer(
+            UI::ContainerInfo{
+                .pos = {10, 10},
+                .size = {-1, 18},
+                .corners = {2, 2, 2, 2},
+                .padding = {10, 2, 10, 2},
+                .direction = UI::Direction::Horizontal,
+                .alignment = UI::Alignment::MiddleCenter,
+            },
+            colorStylePrimary, strokeStyle);
+
         ui.Text(text, UI::Alignment::MiddleCenter, textStyle);
 
         ui.EndContainer();
-        
-        if(ui.IsOverContainer(id, cursorPos)) {
+
+        if (ui.IsOverContainer(id, cursorPos)) {
         }
 
         return false;
     }
 };
+*/
 
 }  // namespace Midori

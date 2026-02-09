@@ -18,7 +18,8 @@ Checks: "\
   -readability-uppercase-literal-suffix,\
   -readability-function-cognitive-complexity,\
   -readability-simplify-boolean-expr,\
-  -readability-magic-numbers\
+  -readability-magic-numbers,\
+  -missing-designated-field-initializers\
   "
 WarningsAsErrors: ""
 HeaderFilterRegex: ""

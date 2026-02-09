@@ -13,9 +13,6 @@
 #include <imgui.h>
 #include <qoi.h>
 #include <glm/gtc/matrix_transform.hpp>
-#if defined(NDEBUG) && defined(TRACY_ENABLE)
-#undef TRACY_ENABLE
-#endif
 #include <tracy/Tracy.hpp>
 
 #include "app.h"
@@ -34,7 +31,7 @@ bool Renderer::Init() {
     constexpr bool debugMode = false;
 #else
     constexpr bool debugMode = true;
-#endif NDEBUG
+#endif // NDEBUG
 
     device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, debugMode, nullptr);
     if (device == nullptr) {

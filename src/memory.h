@@ -3,12 +3,6 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <SDL3/SDL.h>
-#if defined(NDEBUG) && defined(TRACY_ENABLE)
-#undef TRACY_ENABLE
-#endif
-#include <tracy/Tracy.hpp>
-
 namespace Midori {
 
 void *Malloc(size_t size);

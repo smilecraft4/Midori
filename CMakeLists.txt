@@ -5,6 +5,8 @@ project(Midori)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -12,10 +14,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Data
 
+set(TRACY_ENABLE ON)
+
 # Core
 add_subdirectory(deps/SDL)
 add_subdirectory(deps/glm)
 add_subdirectory(deps/tracy)
+add_subdirectory(deps/freetype)
+add_subdirectory(deps/harfbuzz)
+
 add_library(midori_lib
   "src/app.cpp"
   "src/canvas.cpp"
@@ -28,12 +35,14 @@ add_library(midori_lib
   "src/ui.cpp"
 )
 target_compile_options(midori_lib PRIVATE /W4 /WX)
-target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)
-target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm)
+# target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)
+# target_compile_definitions(midori_lib PRIVATE TRACY_ENABLE)
+target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm freetype harfbuzz)
 target_include_directories(midori_lib PUBLIC "deps/imgui/")
 target_include_directories(midori_lib PUBLIC "deps/nlohmann/")
 target_include_directories(midori_lib PUBLIC "deps/qoi/")
 target_include_directories(midori_lib PUBLIC "deps/uuid/")
+target_include_directories(midori_lib PUBLIC "deps/utf8/")
 target_sources(midori_lib PRIVATE
   "deps/imgui/imgui.cpp"
   "deps/imgui/imgui_draw.cpp"

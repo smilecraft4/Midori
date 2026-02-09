@@ -9,16 +9,13 @@
 #include <backends/imgui_impl_sdlgpu3.h>
 #include <imgui.h>
 #include <glm/gtc/type_ptr.hpp>
-#if defined(NDEBUG) && defined(TRACY_ENABLE)
-#undef TRACY_ENABLE
-#endif
 #include <tracy/Tracy.hpp>
 
 #include "layers.h"
 
 namespace Midori {
 
-App::App(int argc, char *argv[]) : renderer(this), canvas(this) {
+App::App(int argc, char *argv[]) : renderer(this), canvas(this), ui(*this) {
     ZoneScoped;
     args.resize(argc);
     for (size_t i = 0; i < args.size(); i++) {
@@ -50,6 +47,8 @@ bool App::Init() {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize renderer");
         return false;
     }
+
+    ui.Init();
 
     if (!canvas.Open()) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create new canvas");
@@ -85,7 +84,6 @@ bool App::Init() {
 static const SDL_DialogFileFilter filters[] = {{"Midori files (.mido)", "mido"}, {"All files", "*"}};
 
 bool App::Update() {
-    FrameMark;
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     if (window_size.x > 0 && window_size.y > 0 && !hidden) {
@@ -102,17 +100,9 @@ bool App::Update() {
             }
             ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
             if (ui_debug_culling && layer > 0) {
-                draw_list->AddRect(
-                    ImVec2{
-                        static_cast<float>(window_size.x - window_size.x / 2) / 2.0f,
-                        static_cast<float>(window_size.y - window_size.y / 2) / 2.0f,
-                    },
-                    ImVec2{
-                        static_cast<float>(window_size.x + window_size.x / 2) / 2.0f,
-                        static_cast<float>(window_size.y + window_size.y / 2) / 2.0f,
-                    },
-                    IM_COL32(0, 255, 0, 64));
-                for (const auto pos : canvas.viewport.VisibleTiles(window_size / 2)) {
+                for (const auto& [pos, tile] : canvas.layer_tile_pos[layer]) {
+                    ImU32 col = IM_COL32(0, 0, 0, 64);
+                    
                     ImVec2 points[5]{};
                     ImVec2 center;
                     glm::vec2 offsets[5] = {
@@ -136,9 +126,62 @@ bool App::Update() {
                         center.y += points[i].y / 5.0f;
                     }
 
-                    draw_list->AddPolyline(points, 5, IM_COL32(0, 0, 0, 64), 0, 1.0f);
-                    std::string text = std::format("[{}, {}]", pos.x, pos.y);
-                    draw_list->AddText(center, IM_COL32(0, 0, 0, 64), text.c_str());
+                    if(canvas.tile_read_queue.contains(tile)) {
+                        col = IM_COL32(255, 0, 0, 64);
+                        const char* str{};
+                        switch (canvas.tile_read_queue.at(tile).state) {                            
+                            case Canvas::TileReadState::Queued:
+                                        str = "TileReadState::Queued";
+                            break;
+                            case Canvas::TileReadState::Read:
+                                        str = "TileReadState::Read";
+                            break;
+                            case Canvas::TileReadState::Decompressed:
+                                        str = "TileReadState::Decompressed";
+                            break;
+                            case Canvas::TileReadState::Uploaded:
+                                        str = "TileReadState::Uploaded";
+                            break;
+                            default:
+                                str = "TileReadState::N/A";
+                                break;
+                        }
+                        draw_list->AddText(ImVec2(center.x + 0.0f, center.y + 20.0f), col, str);
+                    } 
+                    if(canvas.tile_write_queue.contains(tile)) {
+                        col = IM_COL32(0, 255, 0, 64);
+                        const char* str{};
+                        switch (canvas.tile_write_queue.at(tile).state) {
+                            case Canvas::TileWriteState::Queued:
+                                str = "TileWriteState::Queued";
+                            break;
+                            case Canvas::TileWriteState::Downloading:
+                                str = "TileWriteState::Downloading";
+                            break;
+                            case Canvas::TileWriteState::Downloaded:
+                                str = "TileWriteState::Downloaded";
+                            break;
+                            case Canvas::TileWriteState::Encoded:
+                                str = "TileWriteState::Encoded";
+                            break;
+                            case Canvas::TileWriteState::Written:
+                                str = "TileWriteState::Written";
+                            break;
+                            default:
+                                str = "TileWriteState::N/A";
+                                break;
+                        }
+                        draw_list->AddText(ImVec2(center.x + 0.0f, center.y + 30.0f), col, str);
+                    }
+                    if(canvas.layerTilesModified.at(layer).contains(tile)) {
+                        std::string text = std::format("[{}, {}]*", pos.x, pos.y);
+                        draw_list->AddText(ImVec2(center.x, center.y), col, text.c_str());
+                    } else {
+                        std::string text = std::format("[{}, {}]", pos.x, pos.y);
+                        draw_list->AddText(ImVec2(center.x, center.y), col, text.c_str());
+                    }
+
+                    draw_list->AddPolyline(points, 5, col, 0, 1.0f);
                 }
             }
 
@@ -163,6 +206,23 @@ bool App::Update() {
 
             if (!hide_ui) {                
                 canvas.viewport.UI();
+
+                if (ImGui::Begin("Debug")) {
+                    ImGui::Checkbox("view loaded tiles", &ui_debug_culling);
+
+                    size_t tileModified{};
+                    size_t tileSaved{};
+                    for(const auto& [la, infos]: canvas.layer_infos) {
+                        tileModified += canvas.layerTilesModified.at(la).size();
+                        tileSaved += canvas.layerTilesSaved.at(layer).size();
+                    }
+                    
+                    ImGui::LabelText("tile loaded", "%zu", canvas.tile_infos.size());
+                    ImGui::LabelText("tile textures", "%zu", renderer.tile_textures.size());
+                    ImGui::LabelText("tile modified", "%zu", tileModified);
+                    ImGui::LabelText("tile saved", "%zu", tileSaved);
+                }
+                ImGui::End();
 
                 if (ImGui::Begin("Layers")) {
                     // Temporary layer stuff
@@ -527,6 +587,11 @@ bool App::Update() {
                 ImGui::ColorEdit4("BrushColor", glm::value_ptr(canvas.brush_options.color), 0);
                 ImGui::End();
             }
+
+            if(saving) {
+                ImGui::Begin("Saving");
+                ImGui::End();
+            }
         }
 
         ImGui::Render();
@@ -597,6 +662,8 @@ void App::Quit() {
     ImGui_ImplSDL3_Shutdown();
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui::DestroyContext();
+
+    ui.Quit();
     renderer.Quit();
 
     SDL_DestroyWindow(window);
@@ -813,9 +880,44 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         if (key == SDLK_RIGHT && alt_pressed) {
             canvas.viewHistory.redo();
         }
+
+        if(key == SDLK_S && ctrl_pressed && !shift_pressed && !alt_pressed) {
+            Save();
+        }
     }
 
     canvas.ViewUpdateState(cursor_current_pos);
+}
+
+void App::Save() {    
+    if(saving) {
+        return;
+    }
+    saving = true;
+    
+    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    if (canvas.brush_options_modified) {
+        canvas.SaveBrush();
+    }
+    if (canvas.eraser_options_modified) {
+        canvas.SaveEraser();
+    }
+
+    for (const auto &layer : layersToSave) {
+        if (canvas.layer_infos[layer].temporary) {
+            continue;
+        }
+
+        canvas.SaveLayer(layer);
+    }
+
+    for (const auto &layer : canvas.Layers()) {
+        for (const auto &tile : canvas.LayerTiles(layer)) {
+            canvas.SaveTile(layer, tile);
+        }
+    }
+
+    saving = false;
 }
 
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {

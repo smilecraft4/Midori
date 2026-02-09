@@ -10,6 +10,7 @@
 
 #include "canvas.h"
 #include "renderer.h"
+#include "ui.h"
 
 namespace Midori {
 
@@ -29,6 +30,7 @@ class App {
     void ShouldQuit();
     bool CanQuit();
     void Quit();
+    void Save();
 
     void Fullscreen(bool enable);
 
@@ -41,6 +43,7 @@ class App {
     SDL_Window *window = nullptr;
     std::vector<std::string> args;
 
+    bool saving = false;
     bool should_quit = false;
     bool hidden = false;
     bool fullscreen = false;
@@ -51,8 +54,9 @@ class App {
     bool colorPicker = false;
     glm::vec4 sampledColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
-    Canvas canvas;
     Renderer renderer;
+    Canvas canvas;
+    UI ui;
 
     glm::vec4 bg_color = {1.0F, 1.0F, 1.0F, 1.0F};
     glm::ivec2 window_pos = {SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED};

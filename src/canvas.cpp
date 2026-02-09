@@ -12,9 +12,6 @@
 
 #include <SDL3/SDL_assert.h>
 #include <imgui.h>
-#if defined(NDEBUG) && defined(TRACY_ENABLE)
-#undef TRACY_ENABLE
-#endif
 #include <tracy/Tracy.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
@@ -771,15 +768,16 @@ std::expected<Tile, TileError> Canvas::LoadTile(const Layer layer, const glm::iv
     return tile;
 }
 
-std::optional<TileError> Canvas::UnloadTile(const Layer layer, const Tile tile) {
+std::optional<TileError> Canvas::SaveTile(const Layer layer, const Tile tile) {
     ZoneScoped;
     SDL_assert(layer_infos.contains(layer) && "Layer not found");
+    SDL_assert(layerTilesModified.contains(layer) && "Tile not found");
     SDL_assert(tile_infos.contains(tile) && "Tile not found");
+
     if (tile_write_queue.contains(tile)) {
-        return TileError::Unknwown;
+        return std::nullopt;
     }
 
-    tile_to_unload.insert(tile);
     const LayerInfo layer_info = layer_infos.at(layer);
     tile_write_queue[tile] = TileWriteStatus{
         .layer_id = layer_info.id,
@@ -787,6 +785,17 @@ std::optional<TileError> Canvas::UnloadTile(const Layer layer, const Tile tile) 
         .state = TileWriteState::Queued,
         .position = tile_infos.at(tile).position,
     };
+
+    return std::nullopt;
+};
+
+std::optional<TileError> Canvas::UnloadTile(const Layer layer, const Tile tile) {
+    ZoneScoped;
+    SDL_assert(layer_infos.contains(layer) && "Layer not found");
+    SDL_assert(tile_infos.contains(tile) && "Tile not found");
+
+    SaveTile(layer, tile);
+    tile_to_unload.insert(tile);
 
     return std::nullopt;
 }
@@ -942,19 +951,24 @@ void Canvas::UpdateTileLoading() {
 void Canvas::UpdateTileUnloading() {
     ZoneScoped;
 
-    std::vector<Tile> tiles_unqueued;
+    std::vector<Tile> tiles_written;
     size_t i = 0;
     for (auto &[tile, tile_write] : tile_write_queue) {
-        const auto tile_info = tile_infos.at(tile);
+         const auto tile_info = tile_infos.at(tile);
 
+        // If the tile is already saved marked it as finished
         if (!layerTilesModified.at(tile_info.layer).contains(tile)) {
-            tiles_unqueued.push_back(tile);
+            tile_write.state = TileWriteState::Written;
+            tiles_written.push_back(tile);
             continue;
         }
 
+        // limit the amount of download per frame
         if (i >= Midori::Renderer::TILE_MAX_DOWNLOAD_TRANSFER) {
             break;
         }
+
+        //  The queue to allow multithreading later on
         if (tile_write.state == TileWriteState::Queued) {
             if (app->renderer.DownloadTileTexture(tile)) {
                 tile_write.state = TileWriteState::Downloading;
@@ -963,6 +977,7 @@ void Canvas::UpdateTileUnloading() {
         if (tile_write.state == TileWriteState::Downloading) {
             if (app->renderer.IsTileTextureDownloaded(tile)) {
                 if (app->renderer.CopyTileTextureDownloaded(tile, tile_write.raw_texture)) {
+                    ZoneScopedN("Check if tile is empty");
                     bool empty = true;
                     for (const auto &v : tile_write.raw_texture) {
                         if (v != 0) {
@@ -972,7 +987,8 @@ void Canvas::UpdateTileUnloading() {
                     }
                     if (empty) {
                         DeleteTile(tile_info.layer, tile);
-                        tiles_unqueued.push_back(tile);
+                        tiles_written.push_back(tile);
+                        tile_write.state = TileWriteState::Written;
                     } else {
                         tile_write.state = TileWriteState::Downloaded;
                     }
@@ -1014,17 +1030,23 @@ void Canvas::UpdateTileUnloading() {
         }
         if (tile_write.state == TileWriteState::Written) {
             ZoneScopedN("Write Tile file");
+            const auto& tileInfos = tile_infos[tile];
             SDL_assert(tile_infos.contains(tile));
-            SDL_assert(layer_infos.contains(tile_infos.at(tile).layer));
-            layerTilesSaved[tile_infos.at(tile).layer].insert(tile_infos.at(tile).position);
-
-            tiles_unqueued.push_back(tile);
+            SDL_assert(layer_infos.contains(tileInfos.layer));
+            layerTilesSaved[tileInfos.layer].insert(tileInfos.position);            
+            layerTilesModified[tileInfos.layer].erase(tile);
+            tiles_written.push_back(tile);
         }
     }
 
     {
         ZoneScopedN("Unqueing unload queue");
-        for (const auto &tile : tiles_unqueued) {
+        for (const auto &tile : tiles_written) {
+            tile_write_queue.erase(tile);
+            
+            if(!tile_to_unload.contains(tile)) {
+                continue;
+            }
             const auto &tile_info = tile_infos.at(tile);
             if (!tile_to_delete.contains(tile)) {
                 app->renderer.ReleaseTileTexture(tile);
@@ -1035,7 +1057,6 @@ void Canvas::UpdateTileUnloading() {
             }
 
             tile_to_unload.erase(tile);
-            tile_write_queue.erase(tile);
         }
     }
 }
@@ -1223,6 +1244,7 @@ void Canvas::EndBrushStroke(StrokePoint point) {
         SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
 
         for (const auto &tile : allTileStrokeAffected) {
+            SDL_assert(app->renderer.tile_textures.contains(tile) && "Mising tile for copying");
             SDL_GPUTexture *texture = app->renderer.DuplicateTileTexture(copyPass, app->renderer.tile_textures[tile]);
             paintCommand->AddPreviousTileTexture(tile_infos.at(tile).position, texture);
         }
