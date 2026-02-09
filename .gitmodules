@@ -16,3 +16,9 @@
 [submodule "deps/benchmark"]
 	path = deps/benchmark
 	url = https://github.com/google/benchmark
+[submodule "deps/harfbuzz"]
+	path = deps/harfbuzz
+	url = https://github.com/harfbuzz/harfbuzz.git
+[submodule "deps/freetype"]
+	path = deps/freetype
+	url = https://github.com/freetype/freetype
