@@ -1,0 +1,46 @@
+﻿// Microsoft Visual C++ generated resource script.
+//
+#pragma code_page(65001)
+
+#include "../src/resource.h"
+
+// Icon
+
+IDI_ICON1 ICON "icon.ico"
+
+
+// Version INFO
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,1
+ PRODUCTVERSION 1,0,0,1
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x0L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080904b0"
+        BEGIN
+            VALUE "CompanyName", "smilecraft4"
+            VALUE "FileDescription", "Infinite painting app"
+            VALUE "FileVersion", "1.0.0.1"
+            VALUE "InternalName", "midori.exe"
+            VALUE "LegalCopyright", "Copyright (C) 2025"
+            VALUE "OriginalFilename", "midori.exe"
+            VALUE "ProductName", "Midori"
+            VALUE "ProductVersion", "1.0.0.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x809, 1200
+    END
+END
+

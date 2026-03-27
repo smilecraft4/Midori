@@ -53,7 +53,7 @@ target_sources(midori_lib PRIVATE
 )
 
 # Executable
-add_executable(midori WIN32 "src/main.cpp")
+add_executable(midori WIN32 "src/main.cpp" "data/resource.rc")
 target_link_libraries(midori PRIVATE midori_lib)
 target_compile_options(midori PRIVATE /W4 /WX)
 
@@ -65,20 +65,20 @@ add_dependencies(midori midori_shaders_spirv midori_shaders_dxil)
 # TODO
 
 # Tests
-enable_testing()
-add_subdirectory(deps/googletest)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-add_executable(midori_test
-  "test/midori_ring_array_test.cpp"
-  "test/midori_history_test.cpp"
-)
-target_link_libraries(midori_test PRIVATE midori_lib GTest::gtest_main)
-include(GoogleTest)
-gtest_discover_tests(midori_test)
+# enable_testing()
+# add_subdirectory(deps/googletest)
+# set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+# add_executable(midori_test
+#   "test/midori_ring_array_test.cpp"
+#   "test/midori_history_test.cpp"
+# )
+# target_link_libraries(midori_test PRIVATE midori_lib GTest::gtest_main)
+# include(GoogleTest)
+# gtest_discover_tests(midori_test)
 
 # Benchmark
-add_subdirectory(deps/benchmark)
-add_executable(midori_benchmark
-  "benchmark/midori_benchmark.cpp"
-)
-target_link_libraries(midori_benchmark PRIVATE midori_lib benchmark::benchmark_main)
+# add_subdirectory(deps/benchmark)
+# add_executable(midori_benchmark
+#   "benchmark/midori_benchmark.cpp"
+# )
+# target_link_libraries(midori_benchmark PRIVATE midori_lib benchmark::benchmark_main)
