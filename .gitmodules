@@ -22,3 +22,6 @@
 [submodule "deps/freetype"]
 	path = deps/freetype
 	url = https://github.com/freetype/freetype
+[submodule "deps/EASTL"]
+	path = deps/EASTL
+	url = https://github.com/electronicarts/EASTL
