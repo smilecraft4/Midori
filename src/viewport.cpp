@@ -1,4 +1,4 @@
-#include "viewport.h"
+﻿#include "viewport.h"
 
 #include <numbers>
 
@@ -167,9 +167,9 @@ void Viewport::UI() {
     }
     ImGui::End();
 }
-void ViewportChangeCommand::execute() { app_.canvas.viewport = new_viewport_; }
+void ViewportChangeCommand::Execute() { app_.canvas.viewport = new_viewport_; }
 
-void ViewportChangeCommand::revert() { app_.canvas.viewport = previous_viewport_; }
+void ViewportChangeCommand::Revert() { app_.canvas.viewport = previous_viewport_; }
 
 void ViewportChangeCommand::SetNewViewport(Viewport viewport) { new_viewport_ = viewport; }
 void ViewportChangeCommand::SetPreviousViewport(Viewport viewport) { previous_viewport_ = viewport; }

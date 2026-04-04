@@ -11,8 +11,6 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <tracy/Tracy.hpp>
 
-#include "layers.h"
-
 namespace Midori {
 
 App::App(int argc, char *argv[]) : renderer(this), canvas(this), ui(*this) {
@@ -547,7 +545,7 @@ bool App::Update() {
                     if (canvas.canvasHistory.size() > 0) {
                         for (size_t pos = 0; pos < canvas.canvasHistory.size(); pos++) {
                             const Command *command = canvas.canvasHistory.get(pos);
-                            const auto name = command->name();
+                            const auto name = command->Name();
                             if (pos < canvas.canvasHistory.position()) {
                                 ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
                             } else if (pos == canvas.canvasHistory.position()) {
@@ -565,7 +563,7 @@ bool App::Update() {
                     if (canvas.viewHistory.size() > 0) {
                         for (size_t pos = 0; pos < canvas.viewHistory.size(); pos++) {
                             const Command *command = canvas.viewHistory.get(pos);
-                            const auto name = command->name();
+                            const auto name = command->Name();
                             if (pos < canvas.viewHistory.position()) {
                                 ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
                             } else if (pos == canvas.viewHistory.position()) {

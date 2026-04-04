@@ -22,22 +22,23 @@ add_subdirectory(deps/glm)
 add_subdirectory(deps/tracy)
 add_subdirectory(deps/freetype)
 add_subdirectory(deps/harfbuzz)
+add_subdirectory(deps/EASTL)
 
 add_library(midori_lib
   "src/app.cpp"
   "src/canvas.cpp"
   "src/renderer.cpp"
   "src/memory.cpp"
-  "src/history.cpp"
+  "src/commands/history.cpp"
   "src/viewport.cpp"
-  "src/waypoint.cpp"
-  "src/layers.cpp"
+  "src/commands/commands.cpp"
+  
+  
   "src/ui.cpp"
 )
-target_compile_options(midori_lib PRIVATE /W4 /WX)
 # target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)
 # target_compile_definitions(midori_lib PRIVATE TRACY_ENABLE)
-target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm freetype harfbuzz)
+target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm freetype harfbuzz EASTL)
 target_include_directories(midori_lib PUBLIC "deps/imgui/")
 target_include_directories(midori_lib PUBLIC "deps/nlohmann/")
 target_include_directories(midori_lib PUBLIC "deps/qoi/")
@@ -55,7 +56,6 @@ target_sources(midori_lib PRIVATE
 # Executable
 add_executable(midori WIN32 "src/main.cpp" "data/resource.rc")
 target_link_libraries(midori PRIVATE midori_lib)
-target_compile_options(midori PRIVATE /W4 /WX)
 
 add_subdirectory(data/shaders/dxil)
 add_subdirectory(data/shaders/spirv)

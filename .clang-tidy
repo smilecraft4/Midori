@@ -19,7 +19,7 @@ Checks: "\
   -readability-function-cognitive-complexity,\
   -readability-simplify-boolean-expr,\
   -readability-magic-numbers,\
-  -missing-designated-field-initializers\
+  -missing-designated-field-initializers,\
   "
 WarningsAsErrors: ""
 HeaderFilterRegex: ""

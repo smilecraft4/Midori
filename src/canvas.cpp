@@ -22,13 +22,13 @@
 
 #include "app.h"
 #include "renderer.h"
-#include "types.h"
+#include "defines.h"
 
 namespace Midori {
 
 // PaintStrokeCommand
 
-PaintStrokeCommand::PaintStrokeCommand(App &app, Layer layer) : Command(Type::PaintStroke), app_(app), layer_(layer) {}
+PaintStrokeCommand::PaintStrokeCommand(App &app, Layer layer) : Command(Type::Paint), app_(app), layer_(layer) {}
 PaintStrokeCommand::~PaintStrokeCommand() {
     for (const auto &[pos, texture] : previousTileTextures_) {
         SDL_ReleaseGPUTexture(app_.renderer.device, texture);
@@ -37,8 +37,6 @@ PaintStrokeCommand::~PaintStrokeCommand() {
         SDL_ReleaseGPUTexture(app_.renderer.device, texture);
     }
 }
-
-std::string PaintStrokeCommand::name() const { return "Paint Stroke"; }
 
 void PaintStrokeCommand::AddPreviousTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture) {
     assert(previousTexture);
@@ -51,7 +49,7 @@ void PaintStrokeCommand::AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *
     newTileTextures_[tile_pos] = newTexture;
 }
 
-void PaintStrokeCommand::execute() {
+void PaintStrokeCommand::Execute() {
     assert(newTileTextures_.size() == previousTileTextures_.size() && "Mismatch in texture states");
     auto &canvas = app_.canvas;
 
@@ -96,7 +94,7 @@ void PaintStrokeCommand::execute() {
     }
 }
 
-void PaintStrokeCommand::revert() {
+void PaintStrokeCommand::Revert() {
     assert(newTileTextures_.size() == previousTileTextures_.size() && "Mismatch in texture states");
 
     auto &canvas = app_.canvas;
@@ -143,7 +141,7 @@ void PaintStrokeCommand::revert() {
 
 // EraseStrokeCommand
 
-EraseStrokeCommand::EraseStrokeCommand(App &app, Layer layer) : Command(Type::EraseStroker), app_(app), layer_(layer) {}
+EraseStrokeCommand::EraseStrokeCommand(App &app, Layer layer) : Command(Type::Erase), app_(app), layer_(layer) {}
 EraseStrokeCommand::~EraseStrokeCommand() {
     for (const auto &[pos, texture] : previousTileTextures_) {
         SDL_ReleaseGPUTexture(app_.renderer.device, texture);
@@ -164,9 +162,7 @@ void EraseStrokeCommand::AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *
     newTileTextures_[tile_pos] = newTexture;
 }
 
-std::string EraseStrokeCommand::name() const { return "Erase Stroke"; }
-
-void EraseStrokeCommand::execute() {
+void EraseStrokeCommand::Execute() {
     assert(newTileTextures_.size() == previousTileTextures_.size() && "Mismatch in texture states");
     auto &canvas = app_.canvas;
 
@@ -211,7 +207,7 @@ void EraseStrokeCommand::execute() {
     }
 }
 
-void EraseStrokeCommand::revert() {
+void EraseStrokeCommand::Revert() {
     assert(newTileTextures_.size() == previousTileTextures_.size() && "Mismatch in texture states");
 
     auto &canvas = app_.canvas;
@@ -385,7 +381,7 @@ void Canvas::Update() {
             std::unordered_set<glm::ivec2> tile_positions(view_visible_tiles.begin(), view_visible_tiles.end());
 
             // Iterate over every tile in layer
-            const auto& tiles = layer_tiles.at(layer);
+            const auto &tiles = layer_tiles.at(layer);
             std::unordered_set<Tile> remove_tiles(tiles.begin(), tiles.end());
             for (const auto &tile : tiles) {
                 if (tile_positions.contains(tile_infos.at(tile).position)) {
@@ -651,7 +647,6 @@ bool Canvas::SetLayerDepth(const Layer layer, std::uint8_t depth) {
     return true;
 }
 
-// TODO: Make this a queued action
 void Canvas::DeleteLayer(const Layer layer) {
     ZoneScoped;
     SDL_assert(HasLayer(layer) && "Layer not found");
@@ -789,6 +784,7 @@ std::optional<TileError> Canvas::SaveTile(const Layer layer, const Tile tile) {
     return std::nullopt;
 };
 
+// TODO: Create another version to use TileCoord instead
 std::optional<TileError> Canvas::UnloadTile(const Layer layer, const Tile tile) {
     ZoneScoped;
     SDL_assert(layer_infos.contains(layer) && "Layer not found");
@@ -811,6 +807,7 @@ std::optional<TileError> Canvas::DeleteTile(const Layer layer, const Tile tile) 
     return std::nullopt;
 }
 
+// FIXME: Rename this to GetLoadedTileAt instead
 Tile Canvas::GetTileAt(const Layer layer, const glm::ivec2 position) const {
     ZoneScoped;
     SDL_assert(layer_tile_pos.contains(layer));
@@ -954,7 +951,7 @@ void Canvas::UpdateTileUnloading() {
     std::vector<Tile> tiles_written;
     size_t i = 0;
     for (auto &[tile, tile_write] : tile_write_queue) {
-         const auto tile_info = tile_infos.at(tile);
+        const auto tile_info = tile_infos.at(tile);
 
         // If the tile is already saved marked it as finished
         if (!layerTilesModified.at(tile_info.layer).contains(tile)) {
@@ -1030,10 +1027,10 @@ void Canvas::UpdateTileUnloading() {
         }
         if (tile_write.state == TileWriteState::Written) {
             ZoneScopedN("Write Tile file");
-            const auto& tileInfos = tile_infos[tile];
+            const auto &tileInfos = tile_infos[tile];
             SDL_assert(tile_infos.contains(tile));
             SDL_assert(layer_infos.contains(tileInfos.layer));
-            layerTilesSaved[tileInfos.layer].insert(tileInfos.position);            
+            layerTilesSaved[tileInfos.layer].insert(tileInfos.position);
             layerTilesModified[tileInfos.layer].erase(tile);
             tiles_written.push_back(tile);
         }
@@ -1043,8 +1040,8 @@ void Canvas::UpdateTileUnloading() {
         ZoneScopedN("Unqueing unload queue");
         for (const auto &tile : tiles_written) {
             tile_write_queue.erase(tile);
-            
-            if(!tile_to_unload.contains(tile)) {
+
+            if (!tile_to_unload.contains(tile)) {
                 continue;
             }
             const auto &tile_info = tile_infos.at(tile);
@@ -1083,8 +1080,6 @@ std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint poin
 static float Remap(float v, float min, float max) { return (v * (max - min)) + min; }
 
 Canvas::StrokePoint Canvas::ApplyBrushPressure(StrokePoint point, const float pressure) const {
-    // TODO: Add min max value
-
     if (brush_options.opacity_pressure) {
         // map pressure from [0, 1] to [min, max]
         point.color.a *=
@@ -1121,8 +1116,6 @@ void Canvas::StartBrushStroke(StrokePoint point) {
     layer_infos.at(stroke_layer).temporary = true;
     layer_infos.at(stroke_layer).opacity = layer_infos.at(selected_layer).opacity;
     // layer_infos.at(stroke_layer).opacity = point.color.a;
-
-    // TODO: Only affect necesary texels, (bouding box of brush)
 
     const auto tiles_pos = GetTilePosAffectedByStrokePoint(point);
     for (const auto &tile_pos : tiles_pos) {
@@ -1588,8 +1581,6 @@ bool Canvas::SampleTexture(const std::vector<Color> &texture, glm::ivec2 texture
 }
 
 Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float pressure) const {
-    // TODO: Add min max value
-
     if (eraser_options.opacity_pressure) {
         point.color.a *=
             Remap(pressure, eraser_options.opacity_pressure_range.x, eraser_options.opacity_pressure_range.y);
@@ -1626,7 +1617,7 @@ void Canvas::StartEraserStroke(StrokePoint point) {
 
     for (const auto &tile_pos : tiles_pos) {
         Tile tile = GetTileAt(selected_layer, tile_pos);
-        if (tile) {
+        if (tile != TILE_INVALID) {
             stroke_tile_affected.insert(tile);
             layerTilesModified[selected_layer].insert(tile);
             allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));
@@ -1674,7 +1665,6 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
 
     const auto t_step = eraser_options.spacing / distance;
     float t = t_step;
-    int i = 1;
     while (t < 1.0f) {
         ZoneScoped;
 
@@ -1691,7 +1681,6 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
         previous_point = newPoint;
 
         t += t_step;
-        i++;
 
         {
             const auto tiles_pos = GetTilePosAffectedByStrokePoint(newPoint);
@@ -1701,7 +1690,7 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
 
             for (const auto &tile_pos : tiles_pos) {
                 Tile tile = GetTileAt(selected_layer, tile_pos);
-                if (tile) {
+                if (tile != TILE_INVALID) {
                     stroke_tile_affected.insert(tile);
                     layerTilesModified[selected_layer].insert(tile);
                     allTileStrokeAffected.insert(layer_tile_pos.at(selected_layer).at(tile_pos));

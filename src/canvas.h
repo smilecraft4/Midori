@@ -17,8 +17,9 @@
 #include <glm/gtx/hash.hpp>
 
 #include "color.h"
-#include "history.h"
-#include "types.h"
+#include "defines.h"
+#include "commands/commands.h"
+#include "commands/history.h"
 #include "viewport.h"
 
 namespace Midori {
@@ -39,9 +40,9 @@ class PaintStrokeCommand : public Command {
     void AddPreviousTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture);
     void AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *newTexture);
 
-    virtual std::string name() const;
-    virtual void execute();
-    virtual void revert();
+    virtual std::string Name() const {return "Paint";}
+    virtual void Execute();
+    virtual void Revert();
 };
 
 class EraseStrokeCommand : public Command {
@@ -58,9 +59,9 @@ class EraseStrokeCommand : public Command {
     void AddPreviousTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *previousTexture);
     void AddNewTileTexture(glm::ivec2 tile_pos, SDL_GPUTexture *newTexture);
 
-    virtual std::string name() const;
-    virtual void execute();
-    virtual void revert();
+    virtual std::string Name() const {return "Erase";}
+    virtual void Execute();
+    virtual void Revert();
 };
 
 class Canvas {
@@ -91,6 +92,7 @@ class Canvas {
     bool Open();
 
     // Viewport Stuff
+    // TODO: Move this to the viewport class
     void ViewUpdateState(glm::vec2 cursor_pos);
     void ViewUpdateCursor(glm::vec2 cursor_pos);
     bool viewZooming = false;
@@ -98,6 +100,8 @@ class Canvas {
     bool viewRotating = false;
     glm::vec2 viewCursorStart = glm::vec2(0.0f);
     glm::vec2 viewCursorPrevious = glm::vec2(0.0f);
+    Viewport viewport;
+    HistoryTree viewHistory;
 
     [[nodiscard]] bool HasLayer(Layer layer) const;
     [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
@@ -114,10 +118,6 @@ class Canvas {
 
     [[nodiscard]] std::uint8_t GetLayerDepth(Layer layer) const;
     [[nodiscard]] Tile GetTileAt(Layer layer, glm::ivec2 position) const;
-
-    Viewport viewport;
-    static constexpr size_t VIEW_HISTORY_MAX_SIZE = 2048;
-    HistoryTree viewHistory;
 
     static constexpr size_t HISTORY_MAX_SIZE = 128;
     std::unordered_map<glm::ivec2, SDL_GPUTexture *> eraseStrokeDuplicatedTextures;
@@ -214,6 +214,8 @@ class Canvas {
     bool brush_mode = true;
     bool eraser_mode = false;
 
+    // TODO: Move the Brush and Eraser to it's own struct and func
+
     struct BrushOptions {
         glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         bool opacity_pressure = false;
@@ -268,15 +270,27 @@ class Canvas {
     void SaveEraser();
     void OpenEraser();
 
+    // TODO: Selection
+    void StartLassoSelection(StrokePoint strokePoint);
+    void UpdateLassoSelection(StrokePoint strokePoint);
+    void EndLassoSelection(StrokePoint strokePoint);
+    bool selecting{false};
+    std::vector<glm::vec2> selectionPoint;
+    std::unordered_set<glm::ivec2> selectionConcernedTiles;
+    Layer selectionLayer{0};
+
+    void CopyLassoSelection();
+    void DeleteLassoSelection();
+
+    void Paste(const std::vector<uint32_t> texture, int width, int height, int x, int y);
+
+    void StartTransformSelection();
+    void UpdateTransformSelection();
+    void EndTransformSelection();
+
     void ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode);
 
-    /// @brief Will download the canvas texture (RGBA8 linear srgb premultiplied) immediatly (may freeze)
     std::vector<Color> DownloadCanvasTexture(glm::ivec2 &size);
-
-    /// @brief sample the RGBA8 at texture coordinates with nearest neighbour blending is activated (the color is linear
-    /// srgb premultiplied), THERE MUST BE a valid canvasTexture downloaded beforehand or this function will fail, to
-    /// download the canvasTexture call `DownloadCanvasTexture()`
-    /// @param pos [-1, 1]
     bool SampleTexture(const std::vector<Color> &texture, glm::ivec2 textureSize, glm::vec2 pos, Color &color);
 
     std::vector<Color> canvasTexture_;
@@ -284,44 +298,36 @@ class Canvas {
 };
 }  // namespace Midori
 
-/*
-struct File {
-    char id[4]; // file extension name only using 2 char tho
-    uint8_t fileVersion[3]; //https://semver.org/
-    uint64_t fileSize; // keep in track the size of the file
-
-    struct Layer {
-        UUID uuid;  // unique id for this layer used to find tile layer in file
-        char *name;
-        uint8_t height;
-        uint8_t blendMode;
-        bool locked;
-        bool hidden;
-        uint64_t tileCount;
-    };
-    uint8_t layerCount;
-    Layer layers[UINT8_MAX]; // This is always added to disk too avoid rewrite when deleting or adding a new layer
-
-    // malloc like allocator
-    struct Tile {
-        UUID layerUuid // find a way to create a true UUID for a layer that linked to a layer
-        int32_t x;
-        int32_t y;
-        uint64_t encodedPos; // compressed as .qoi file
-        uint16_t encodedSize;
-    };
-    Tile *tiles;
-
-    uint8_t* tilesData; // store the data of the file. This is not loaded in ram and kept on disk (this is the large bit
->3Gb)
-    // if no slot are available just append from this place and do not override the Slot structure
-
-    // get's rewritten everytime no large enough
-    struct Slot {
-        size_t *pos;
-        size_t *size;
-    };
-    size_t slotCount;
-    Slot *slots;
+enum class PointerFeatures : uint8_t {
+    Position = 1,
+    Pressure = 2,
+    Azimuth = 4,
+    Altitude = 8,
+    Twist = 16,
 };
-*/
+
+struct Pointer {
+    PointerFeatures features;
+
+    struct State {
+        // Canvas space in canvas unit
+        float x;
+
+        // Canvas space in canvas unit
+        float y;
+
+        // normalized pressure [0.0, 1.0]
+        float pressure;
+
+        // clockwise rotation relative to the canvas north (Y-) and 0° is Y-, 90° is X+, etc.. [0°,
+        // 360°[ in radians, it
+        float azimuth;
+
+        // [0°, 90°] in radians
+        float altitude;
+
+        // clockwise rotation through the main axis, 0° is facing up, 90° is facing right, etc...
+        // [0°, 360°[ in radians,
+        float twist;
+    } state;
+};

@@ -1,4 +1,4 @@
-#include "history.h"
+﻿#include "history.h"
 
 #include <cassert>
 
@@ -15,13 +15,13 @@ void HistoryTree::store(std::unique_ptr<Command> command) {
 }
 void HistoryTree::undo() {
     if (pos_ > 0) {
-        commands_[pos_ - 1]->revert();
+        commands_[pos_ - 1]->Revert();
         pos_--;
     }
 }
 void HistoryTree::redo() {
     if (pos_ < commands_.size()) {
-        commands_[pos_]->execute();
+        commands_[pos_]->Execute();
         pos_++;
     }
 }

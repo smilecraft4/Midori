@@ -17,8 +17,7 @@
 
 #include "app.h"
 #include "canvas.h"
-#include "renderer.h"
-#include "types.h"
+#include "defines.h"
 
 namespace Midori {
 

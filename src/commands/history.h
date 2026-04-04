@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include <memory>
 
-#include "command.h"
-#include "ring_array.h"
+#include "commands.h"
+#include "../core/ring_array.h"
 
 namespace Midori {
 

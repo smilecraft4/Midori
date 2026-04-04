@@ -11,7 +11,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 
-#include "types.h"
+#include "defines.h"
 
 namespace Midori {
 
@@ -47,23 +47,8 @@ class Renderer {
         Unknwon,
     };
 
-    /**
-     * @brief Create a Tile texture on the gpu, The will be initialized by the time the gpu start to render a frame
-     * before this the tile texture is undefined and must not be used for anything
-     *
-     * @param tile
-     * @return std::optional<TileError>
-     */
-    std::optional<TileTextureError> CreateTileTexture(Tile tile);
 
-    /**
-     * @brief Set the texture pixels of the specified tile. It must be of size `TILE_SIZE * TILE_SIZE * 4`, This
-     * operation may be completed only after 1~2 frame
-     *
-     * @param tile
-     * @param pixels
-     * @return std::optional<TileError>
-     */
+    std::optional<TileTextureError> CreateTileTexture(Tile tile);
     std::optional<TileTextureError> UploadTileTexture(Tile tile, std::span<const uint8_t> pixels);
 
     void ReleaseTileTexture(Tile tile);
@@ -103,7 +88,7 @@ class Renderer {
     // Tile data
     struct TileRenderData {
         glm::vec2 position = glm::vec2(0.0f, 0.0f);
-        glm::vec2 size = glm::vec2(TILE_SIZE, TILE_SIZE);  // Maybe hard code this
+        glm::vec2 size = glm::vec2(TILE_SIZE, TILE_SIZE);
     } tile_render_data;
 
     SDL_GPUShader *tile_vertex_shader = nullptr;

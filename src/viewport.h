@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <unordered_set>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 
-#include "command.h"
+#include "commands/commands.h"
 
 namespace Midori {
 class App;
@@ -47,12 +47,12 @@ class ViewportChangeCommand : public Command {
     Viewport previous_viewport_;
 
    public:
-    ViewportChangeCommand(App& app) : Command(Type::Unknown), app_(app) {};
+    ViewportChangeCommand(App& app) : Command(Type::None), app_(app) {};
     virtual ~ViewportChangeCommand() = default;
 
-    virtual std::string name() const { return "View change"; }
-    virtual void execute();
-    virtual void revert();
+    virtual std::string Name() const {return "Viewport Change";}
+    virtual void Execute();
+    virtual void Revert();
 
     void SetNewViewport(Viewport viewport);
     void SetPreviousViewport(Viewport viewport);

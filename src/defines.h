@@ -10,6 +10,8 @@
 
 namespace Midori {
 
+constexpr size_t VIEW_HISTORY_MAX_SIZE = 2048;
+
 enum class BlendMode : std::uint8_t {
     Normal,
     Multiply,
@@ -30,6 +32,7 @@ struct LayerInfo {
     bool visible = true;
     bool temporary = false;
     bool locked = false;
+    bool mask = false;
 };
 
 enum class TileError : uint8_t {
@@ -52,6 +55,11 @@ using Tile = std::uint32_t;
 constexpr size_t TILE_INVALID = 0;
 constexpr size_t TILE_MAX = UINT32_MAX;
 constexpr size_t TILE_SIZE = 256;
+
+struct TileCoord {
+    Layer layer;
+    glm::ivec2 pos;
+};
 
 struct TileInfo {
     Layer layer;

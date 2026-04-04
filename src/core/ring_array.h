@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "memory.h"
+#include "../memory.h"
 
 namespace Midori {
 

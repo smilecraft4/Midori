@@ -1,6 +1,6 @@
 #include "ui.h"
 
-#include <SDL3/SDL_Log.h>
+#include <SDL3/SDL_log.h>
 #include <SDL3/SDL_assert.h>
 #include <hb-ft.h>
 #include <utf8.h>
