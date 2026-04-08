@@ -1,25 +1,20 @@
 ﻿#pragma once
 
-#include <unordered_set>
-
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 
-#include "commands/commands.h"
-
 namespace Midori {
-class App;
-
+    
 struct Viewport {
     glm::vec2 translation_ = glm::vec2(0.0f);
     glm::vec2 zoom_ = glm::vec2(1.0f);
-    glm::vec2 zoom_origin_ = glm::vec2(0.0f);
+    glm::vec2 zoomOrigin_ = glm::vec2(0.0f);
     float rotation_ = 0.0f;
     bool flippedH_ = false;
 
-    glm::mat4 view_mat_ = glm::mat4(1.0f);
-    glm::mat4 view_mat_inv_ = glm::mat4(1.0f);
-    bool view_mat_computed_ = false;
+    glm::mat4 viewMat_ = glm::mat4(1.0f);
+    glm::mat4 viewMatInv_ = glm::mat4(1.0f);
+    bool viewMatComputed_ = false;
 
     void Translate(glm::vec2 amount);
     void SetTranslation(glm::vec2 translation);
@@ -38,24 +33,6 @@ struct Viewport {
 
    private:
     void ComputeViewMatrix();
-};
-
-class ViewportChangeCommand : public Command {
-   private:
-    App& app_;
-    Viewport new_viewport_;
-    Viewport previous_viewport_;
-
-   public:
-    ViewportChangeCommand(App& app) : Command(Type::None), app_(app) {};
-    virtual ~ViewportChangeCommand() = default;
-
-    virtual std::string Name() const {return "Viewport Change";}
-    virtual void Execute();
-    virtual void Revert();
-
-    void SetNewViewport(Viewport viewport);
-    void SetPreviousViewport(Viewport viewport);
 };
 
 }  // namespace Midori

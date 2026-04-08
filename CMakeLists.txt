@@ -29,11 +29,8 @@ add_library(midori_lib
   "src/canvas.cpp"
   "src/renderer.cpp"
   "src/memory.cpp"
-  "src/commands/history.cpp"
   "src/viewport.cpp"
-  "src/commands/commands.cpp"
-  
-  
+  "src/commands.cpp"
   "src/ui.cpp"
 )
 # target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)

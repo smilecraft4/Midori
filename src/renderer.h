@@ -11,7 +11,8 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 
-#include "defines.h"
+#include "layers.h"
+#include "tiles.h"
 
 namespace Midori {
 
@@ -75,7 +76,7 @@ class Renderer {
     // Layer data
     struct LayerRenderData {
         float opacity = 1.0f;
-        std::uint32_t blend_mode = (uint32_t)BlendMode::Normal;
+        std::uint32_t blend_mode = (uint32_t)BlendMode::Alpha;
     } layer_render_data;
 
     SDL_GPUShader *layer_vertex_shader = nullptr;
@@ -88,7 +89,7 @@ class Renderer {
     // Tile data
     struct TileRenderData {
         glm::vec2 position = glm::vec2(0.0f, 0.0f);
-        glm::vec2 size = glm::vec2(TILE_SIZE, TILE_SIZE);
+        glm::vec2 size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
     } tile_render_data;
 
     SDL_GPUShader *tile_vertex_shader = nullptr;

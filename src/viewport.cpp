@@ -1,11 +1,10 @@
 ﻿#include "viewport.h"
 
-#include <numbers>
-
-#include <imgui.h>
-#include <tracy/Tracy.hpp>
-
 #include "app.h"
+#include "commands.h"
+#include <imgui.h>
+#include <numbers>
+#include <tracy/Tracy.hpp>
 
 namespace Midori {
 void Viewport::Translate(glm::vec2 amount) {
@@ -16,11 +15,11 @@ void Viewport::Translate(glm::vec2 amount) {
     glm::vec2 correctedAmount{};
     correctedAmount.x = amount.x * std::cos(-rotation_) - amount.y * std::sin(-rotation_);
     correctedAmount.y = amount.x * std::sin(-rotation_) + amount.y * std::cos(-rotation_);
-    
+
     correctedAmount /= zoom_;
-    
+
     translation_ += correctedAmount;
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::SetTranslation(glm::vec2 translation) {
@@ -33,7 +32,7 @@ void Viewport::SetTranslation(glm::vec2 translation) {
     correctedTranslation.y = translation.x * std::sin(-rotation_) + translation.y * std::cos(-rotation_);
 
     translation_ = correctedTranslation;
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
@@ -41,21 +40,21 @@ void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
 
     origin = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(origin, 0.0f, 1.0f));
 
-    zoom_origin_ = origin;
+    zoomOrigin_ = origin;
     zoom_ += amount;
     zoom_.x = std::max(0.25f, std::min(2.5f, zoom_.x));
     zoom_.y = std::max(0.25f, std::min(2.5f, zoom_.y));
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
     // automaticly change the translation based on the zoom origin
 
-    zoom_origin_ = origin;
+    zoomOrigin_ = origin;
     zoom_ = amount;
     zoom_.x = std::max(0.01f, std::min(100.0f, zoom_.x));
     zoom_.y = std::max(0.01f, std::min(100.0f, zoom_.y));
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::Rotate(float amount) {
@@ -71,52 +70,52 @@ void Viewport::Rotate(float amount) {
         rotation_ += 2.0f * std::numbers::pi_v<float>;
     }
 
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::SetRotation(float rotation) {
     rotation_ = rotation;
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::FlipHorizontal() {
     flippedH_ = !flippedH_;
-    view_mat_computed_ = false;
+    viewMatComputed_ = false;
 }
 
 void Viewport::ComputeViewMatrix() {
     ZoneScoped;
-    view_mat_ = glm::mat4(1.0f);
+    viewMat_ = glm::mat4(1.0f);
 
     if (flippedH_) {
-        view_mat_ = glm::scale(view_mat_, glm::vec3(-1.0f, 1.0f, 1.0f));
+        viewMat_ = glm::scale(viewMat_, glm::vec3(-1.0f, 1.0f, 1.0f));
     }
-    view_mat_ = glm::scale(view_mat_, glm::vec3(zoom_, 1.0f));
+    viewMat_ = glm::scale(viewMat_, glm::vec3(zoom_, 1.0f));
 
-    view_mat_ = glm::rotate(view_mat_, rotation_, glm::vec3(0.0f, 0.0f, 1.0f));
-    view_mat_ = glm::translate(view_mat_, glm::vec3(glm::floor(translation_), 0.0f));
+    viewMat_ = glm::rotate(viewMat_, rotation_, glm::vec3(0.0f, 0.0f, 1.0f));
+    viewMat_ = glm::translate(viewMat_, glm::vec3(glm::floor(translation_), 0.0f));
 
     // TODO: take into account zoom offset;
 
-    view_mat_inv_ = glm::inverse(view_mat_);
+    viewMatInv_ = glm::inverse(viewMat_);
 
-    view_mat_computed_ = true;
+    viewMatComputed_ = true;
 }
 
 glm::mat4 Viewport::ViewMatrix() {
-    if (!view_mat_computed_) {
+    if (!viewMatComputed_) {
         ComputeViewMatrix();
     }
 
-    return view_mat_;
+    return viewMat_;
 }
 
 glm::mat4 Viewport::InverseViewMatrix() {
-    if (!view_mat_computed_) {
+    if (!viewMatComputed_) {
         ComputeViewMatrix();
     }
 
-    return view_mat_inv_;
+    return viewMatInv_;
 }
 
 glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos, glm::ivec2 screenSize) {
@@ -127,7 +126,7 @@ glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos, glm::ivec2 screenSize) {
 
 std::vector<glm::ivec2> Viewport::VisibleTiles(glm::ivec2 screenSize) {
     ZoneScoped;
-    constexpr auto tile_size = glm::vec2(TILE_SIZE);
+    constexpr auto tile_size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
 
     glm::vec2 a = static_cast<glm::vec2>(screenSize * glm::ivec2(-1, -1)) / 2.0f;
     glm::vec2 b = static_cast<glm::vec2>(screenSize * glm::ivec2(1, -1)) / 2.0f;
@@ -161,17 +160,11 @@ void Viewport::UI() {
     if (ImGui::Begin("Viewport")) {
         ImGui::LabelText("Pos", "%.2f, %.2f", translation_.x, translation_.y);
         ImGui::LabelText("Zoom", "%.2f, %.2f", zoom_.x, zoom_.y);
-        ImGui::LabelText("Zoom origin", "%.2f, %.2f", zoom_origin_.x, zoom_origin_.y);
+        ImGui::LabelText("Zoom origin", "%.2f, %.2f", zoomOrigin_.x, zoomOrigin_.y);
         ImGui::LabelText("Rotation", "%.2f°", rotation_);
         ImGui::LabelText("Flipped H", "%s", flippedH_ ? "true" : "false");
     }
     ImGui::End();
 }
-void ViewportChangeCommand::Execute() { app_.canvas.viewport = new_viewport_; }
 
-void ViewportChangeCommand::Revert() { app_.canvas.viewport = previous_viewport_; }
-
-void ViewportChangeCommand::SetNewViewport(Viewport viewport) { new_viewport_ = viewport; }
-void ViewportChangeCommand::SetPreviousViewport(Viewport viewport) { previous_viewport_ = viewport; }
-
-}  // namespace Midori
+} // namespace Midori

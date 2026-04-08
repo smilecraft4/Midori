@@ -1,7 +1,8 @@
 ﻿#pragma once
 
 namespace Midori {
-class Brush {
+    
+struct Brush {
     float opacity;
     float flow;
     float radius;

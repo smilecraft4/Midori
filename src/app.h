@@ -1,27 +1,25 @@
 ﻿#pragma once
 
+#include "canvas.h"
+#include "renderer.h"
+#include "ui.h"
+#include <SDL3/SDL.h>
+#include <glm/vec2.hpp>
+#include <glm/vec4.hpp>
 #include <random>
 #include <string>
 #include <vector>
 
-#include <SDL3/SDL.h>
-#include <glm/vec2.hpp>
-#include <glm/vec4.hpp>
-
-#include "canvas.h"
-#include "renderer.h"
-#include "ui.h"
-
 namespace Midori {
 
 class App {
-   public:
-    App(const App &) = delete;
-    App(App &&) = delete;
-    App &operator=(const App &) = delete;
-    App &operator=(App &&) = delete;
+public:
+    App(const App&) = delete;
+    App(App&&) = delete;
+    App& operator=(const App&) = delete;
+    App& operator=(App&&) = delete;
 
-    App(int argc, char *argv[]);
+    App(int argc, char* argv[]);
     ~App() = default;
 
     bool Init();
@@ -40,7 +38,7 @@ class App {
     void KeyPress(SDL_Keycode key, SDL_Keymod mods);
     void KeyRelease(SDL_Keycode key, SDL_Keymod mods);
 
-    SDL_Window *window = nullptr;
+    SDL_Window* window = nullptr;
     std::vector<std::string> args;
 
     bool saving = false;
@@ -76,4 +74,4 @@ class App {
     bool pen_in_range = false;
     float pen_pressure = 1.0f;
 };
-}  // namespace Midori
+} // namespace Midori
