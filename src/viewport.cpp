@@ -51,7 +51,7 @@ void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
     ComputeViewMatrix();
 }
 
-void Viewport::Rotate(float amount) {    
+void Viewport::Rotate(float amount) {
     amount *= flip_.x;
     rotation_ += amount;
 
@@ -145,12 +145,8 @@ bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
         tMax = glm::max(tMax, tCorners[i]);
     }
 
-    if ((tMin.x <= (viewSize_.x / 2.0f) && tMax.x >= (-viewSize_.x / 2.0f)) &&
-        (tMin.y <= (viewSize_.y / 2.0f) && tMax.y >= (-viewSize_.y / 2.0f))) {
-        return true;
-    }
-
-    return false;
+    return (tMin.x <= (viewSize_.x / 2.0f) && tMax.x >= (-viewSize_.x / 2.0f)) &&
+           (tMin.y <= (viewSize_.y / 2.0f) && tMax.y >= (-viewSize_.y / 2.0f));
 }
 
 std::vector<glm::ivec2> Viewport::VisibleTiles() const {
@@ -175,8 +171,7 @@ std::vector<glm::ivec2> Viewport::VisibleTiles() const {
     vAabbMax = glm::ceil(vAabbMax / tSize);
 
     std::vector<glm::ivec2> tPositions;
-    tPositions.reserve(((vAabbMax.x) - std::floor(vAabbMin.x)) *
-                       (std::ceil(vAabbMax.y) - std::floor(vAabbMin.y)));
+    tPositions.reserve((vAabbMax.x - vAabbMin.x) * (vAabbMax.y - vAabbMin.y));
 
     // If needed this can be simded
     for (int y = std::floor(vAabbMin.y); y < std::ceil(vAabbMax.y); y++) {
