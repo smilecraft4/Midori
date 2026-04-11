@@ -6,6 +6,7 @@
 #include <SDL3/SDL.h>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
+#include <imgui.h>
 #include <random>
 #include <string>
 #include <vector>
@@ -37,6 +38,9 @@ public:
     void CursorRelease(Uint8 button);
     void KeyPress(SDL_Keycode key, SDL_Keymod mods);
     void KeyRelease(SDL_Keycode key, SDL_Keymod mods);
+
+    void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList);
+    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "");
 
     SDL_Window* window = nullptr;
     std::vector<std::string> args;

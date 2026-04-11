@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <glm/vec4.hpp>
 
 namespace Midori {
 
@@ -10,10 +11,6 @@ enum class BlendMode : uint8_t {
     Add,
 };
 
-struct Color {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-    uint8_t a;
-};
+using Color = glm::vec4;
+
 }  // namespace Midori

@@ -8,60 +8,51 @@
 
 namespace Midori {
 void Viewport::Translate(glm::vec2 amount) {
-    if (flippedH_) {
-        amount.x = -amount.x;
-    }
-    // The amount is in view space not canvas space, so we undo every visual modification
+    amount *= flip_;
     glm::vec2 correctedAmount{};
     correctedAmount.x = amount.x * std::cos(-rotation_) - amount.y * std::sin(-rotation_);
     correctedAmount.y = amount.x * std::sin(-rotation_) + amount.y * std::cos(-rotation_);
-
     correctedAmount /= zoom_;
-
     translation_ += correctedAmount;
-    viewMatComputed_ = false;
+
+    viewComputed_ = false;
+    ComputeViewMatrix();
 }
 
 void Viewport::SetTranslation(glm::vec2 translation) {
-    // if (flippedH_) {
-    //     translation_.x = -translation_.x;
-    // }
-
     glm::vec2 correctedTranslation{};
     correctedTranslation.x = translation.x * std::cos(-rotation_) - translation.y * std::sin(-rotation_);
     correctedTranslation.y = translation.x * std::sin(-rotation_) + translation.y * std::cos(-rotation_);
-
     translation_ = correctedTranslation;
-    viewMatComputed_ = false;
+
+    viewComputed_ = false;
+    ComputeViewMatrix();
 }
 
 void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
-    // automaticly change the translation based on the zoom origin
-
     origin = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(origin, 0.0f, 1.0f));
 
     zoomOrigin_ = origin;
     zoom_ += amount;
     zoom_.x = std::max(0.25f, std::min(2.5f, zoom_.x));
     zoom_.y = std::max(0.25f, std::min(2.5f, zoom_.y));
-    viewMatComputed_ = false;
+
+    viewComputed_ = false;
+    ComputeViewMatrix();
 }
 
 void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
-    // automaticly change the translation based on the zoom origin
-
     zoomOrigin_ = origin;
     zoom_ = amount;
     zoom_.x = std::max(0.01f, std::min(100.0f, zoom_.x));
     zoom_.y = std::max(0.01f, std::min(100.0f, zoom_.y));
-    viewMatComputed_ = false;
+
+    viewComputed_ = false;
+    ComputeViewMatrix();
 }
 
-void Viewport::Rotate(float amount) {
-    if (flippedH_) {
-        amount = -amount;
-    }
-    // The input is in radians
+void Viewport::Rotate(float amount) {    
+    amount *= flip_.x;
     rotation_ += amount;
 
     if (rotation_ >= 2.0f * std::numbers::pi_v<float>) {
@@ -70,90 +61,133 @@ void Viewport::Rotate(float amount) {
         rotation_ += 2.0f * std::numbers::pi_v<float>;
     }
 
-    viewMatComputed_ = false;
+    viewComputed_ = false;
+    ComputeViewMatrix();
 }
 
 void Viewport::SetRotation(float rotation) {
     rotation_ = rotation;
-    viewMatComputed_ = false;
+    viewComputed_ = false;
+    ComputeViewMatrix();
+}
+
+void Viewport::Resize(glm::vec2 viewSize) {
+    viewSize_ = viewSize;
+    viewComputed_ = false;
+    ComputeViewMatrix();
 }
 
 void Viewport::FlipHorizontal() {
-    flippedH_ = !flippedH_;
-    viewMatComputed_ = false;
+    flip_.x = -flip_.x;
+    viewComputed_ = false;
+    ComputeViewMatrix();
+}
+
+void Viewport::FlipVertical() {
+    flip_.y = -flip_.y;
+    viewComputed_ = false;
+    ComputeViewMatrix();
+}
+
+glm::vec2 Viewport::Zoom() const {
+    return zoom_;
 }
 
 void Viewport::ComputeViewMatrix() {
     ZoneScoped;
     viewMat_ = glm::mat4(1.0f);
-
-    if (flippedH_) {
-        viewMat_ = glm::scale(viewMat_, glm::vec3(-1.0f, 1.0f, 1.0f));
-    }
+    viewMat_ = glm::scale(viewMat_, glm::vec3(flip_.x, flip_.y, 1.0f));
     viewMat_ = glm::scale(viewMat_, glm::vec3(zoom_, 1.0f));
-
     viewMat_ = glm::rotate(viewMat_, rotation_, glm::vec3(0.0f, 0.0f, 1.0f));
-    viewMat_ = glm::translate(viewMat_, glm::vec3(glm::floor(translation_), 0.0f));
+    viewMat_ = glm::translate(viewMat_, glm::vec3(glm::floor(translation_), 0.0f)); // Snap to pixels
+
+    vX = glm::vec2(viewMat_[0]) * static_cast<float>(TILE_WIDTH);
+    vY = glm::vec2(viewMat_[1]) * static_cast<float>(TILE_HEIGHT);
+    vTrans = glm::vec2(viewMat_[3]);
 
     // TODO: take into account zoom offset;
 
     viewMatInv_ = glm::inverse(viewMat_);
 
-    viewMatComputed_ = true;
+    viewComputed_ = true;
 }
 
-glm::mat4 Viewport::ViewMatrix() {
-    if (!viewMatComputed_) {
-        ComputeViewMatrix();
-    }
-
+glm::mat4 Viewport::ViewMatrix() const {
+    SDL_assert(viewComputed_);
     return viewMat_;
 }
 
-glm::mat4 Viewport::InverseViewMatrix() {
-    if (!viewMatComputed_) {
-        ComputeViewMatrix();
-    }
-
+glm::mat4 Viewport::InverseViewMatrix() const {
+    SDL_assert(viewComputed_);
     return viewMatInv_;
 }
 
-glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos, glm::ivec2 screenSize) {
-    glm::vec2 pos = (screenPos - (glm::vec2(screenSize) / 2.0f));
+glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos) const {
+    SDL_assert(viewComputed_);
+    glm::vec2 pos = screenPos - (viewSize_ / 2.0f);
     pos = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(pos, 0.0f, 1.0f));
     return pos;
 }
 
-std::vector<glm::ivec2> Viewport::VisibleTiles(glm::ivec2 screenSize) {
-    ZoneScoped;
-    constexpr auto tile_size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
+bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
+    SDL_assert(viewComputed_);
+    const glm::vec2 t0 = static_cast<float>(tilePos.x) * vX + static_cast<float>(tilePos.y) * vY + vTrans;
+    const std::array<glm::vec2, 4> tCorners = {
+        t0,
+        t0 + vX,
+        t0 + vY,
+        t0 + vX + vY,
+    };
 
-    glm::vec2 a = static_cast<glm::vec2>(screenSize * glm::ivec2(-1, -1)) / 2.0f;
-    glm::vec2 b = static_cast<glm::vec2>(screenSize * glm::ivec2(1, -1)) / 2.0f;
-    glm::vec2 c = static_cast<glm::vec2>(screenSize * glm::ivec2(-1, 1)) / 2.0f;
-    glm::vec2 d = static_cast<glm::vec2>(screenSize * glm::ivec2(1, 1)) / 2.0f;
+    glm::vec2 tMin{tCorners[0]}, tMax{tCorners[0]};
+    for (int i = 1; i < 4; ++i) {
+        tMin = glm::min(tMin, tCorners[i]);
+        tMax = glm::max(tMax, tCorners[i]);
+    }
 
-    a = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(a, 0.0f, 1.0f)) / tile_size;
-    b = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(b, 0.0f, 1.0f)) / tile_size;
-    c = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(c, 0.0f, 1.0f)) / tile_size;
-    d = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(d, 0.0f, 1.0f)) / tile_size;
+    if ((tMin.x <= (viewSize_.x / 2.0f) && tMax.x >= (-viewSize_.x / 2.0f)) &&
+        (tMin.y <= (viewSize_.y / 2.0f) && tMax.y >= (-viewSize_.y / 2.0f))) {
+        return true;
+    }
 
-    glm::ivec2 min, max;
-    min.x = static_cast<int>(std::floor(std::min(a.x, std::min(b.x, std::min(c.x, d.x)))));
-    min.y = static_cast<int>(std::floor(std::min(a.y, std::min(b.y, std::min(c.y, d.y)))));
-    max.x = static_cast<int>(std::ceil(std::max(a.x, std::max(b.x, std::max(c.x, d.x)))));
-    max.y = static_cast<int>(std::ceil(std::max(a.y, std::max(b.y, std::max(c.y, d.y)))));
+    return false;
+}
 
-    std::vector<glm::ivec2> positions;
-    for (int y = min.y; y < max.y; y++) {
-        for (int x = min.x; x < max.x; x++) {
-            // TODO: make sure the position is inside the rectangle
+std::vector<glm::ivec2> Viewport::VisibleTiles() const {
+    SDL_assert(viewComputed_);
+    constexpr glm::vec2 tSize(TILE_WIDTH, TILE_HEIGHT);
 
-            positions.emplace_back(x, y);
+    // Broad pass (AABB in canvas Space)
+    const glm::vec2 vCorners[4] = {
+        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(-0.5f, -0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(0.5f, -0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(-0.5f, 0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(0.5f, 0.5f), 0.0f, 1.0f)),
+    };
+
+    glm::vec2 vAabbMin{vCorners[0]}, vAabbMax{vCorners[0]};
+    for (int i = 1; i < 4; ++i) {
+        vAabbMin = glm::min(vAabbMin, vCorners[i]);
+        vAabbMax = glm::max(vAabbMax, vCorners[i]);
+    }
+
+    vAabbMin = glm::floor(vAabbMin / tSize);
+    vAabbMax = glm::ceil(vAabbMax / tSize);
+
+    std::vector<glm::ivec2> tPositions;
+    tPositions.reserve(((vAabbMax.x) - std::floor(vAabbMin.x)) *
+                       (std::ceil(vAabbMax.y) - std::floor(vAabbMin.y)));
+
+    // If needed this can be simded
+    for (int y = std::floor(vAabbMin.y); y < std::ceil(vAabbMax.y); y++) {
+        for (int x = std::floor(vAabbMin.x); x < std::ceil(vAabbMax.x); x++) {
+            if (IsTileVisible(glm::ivec2(x, y))) {
+                tPositions.push_back(glm::ivec2(x, y));
+            }
         }
     }
 
-    return positions;
+    return tPositions;
 }
 
 void Viewport::UI() {
@@ -161,8 +195,8 @@ void Viewport::UI() {
         ImGui::LabelText("Pos", "%.2f, %.2f", translation_.x, translation_.y);
         ImGui::LabelText("Zoom", "%.2f, %.2f", zoom_.x, zoom_.y);
         ImGui::LabelText("Zoom origin", "%.2f, %.2f", zoomOrigin_.x, zoomOrigin_.y);
-        ImGui::LabelText("Rotation", "%.2f°", rotation_);
-        ImGui::LabelText("Flipped H", "%s", flippedH_ ? "true" : "false");
+        ImGui::LabelText("Rotation", "%.2f", rotation_);
+        ImGui::LabelText("Flipped", "(%.1f, %.1f)", flip_.x, flip_.y);
     }
     ImGui::End();
 }

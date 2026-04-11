@@ -47,6 +47,7 @@ bool App::Init() {
 
     ui.Init();
 
+    canvas.viewport.Resize(glm::vec2(window_size));
     if (!canvas.Open()) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create new canvas");
         return false;
@@ -96,90 +97,58 @@ bool App::Update() {
                 layer = canvas.strokeLayer;
             }
             ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+
+            // DebugTileCulling(glm::vec2(window_size) / 2.0f, draw_list);
+
             if (ui_debug_culling && layer > 0) {
                 for (const auto& [pos, tile] : canvas.layerTilePos[layer]) {
-                    ImU32 col = IM_COL32(0, 0, 0, 64);
-
-                    ImVec2 points[5]{};
-                    ImVec2 center;
-                    glm::vec2 offsets[5] = {
-                        {1.0f, 1.0f},
-                        {static_cast<float>(TILE_WIDTH), 0.0f},
-                        {static_cast<float>(TILE_HEIGHT), static_cast<float>(TILE_WIDTH)},
-                        {1.0f, static_cast<float>(TILE_HEIGHT)},
-                        {1.0f, 1.0f},
-                    };
-                    for (size_t i = 0; i < 5; i++) {
-                        glm::vec4 p =
-                            canvas.viewport.ViewMatrix() *
-                            glm::vec4(static_cast<glm::vec2>(pos) * static_cast<float>(TILE_WIDTH, TILE_HEIGHT) +
-                                          offsets[i],
-                                      0.0f, 1.0f);
-
-                        points[i] = ImVec2{
-                            static_cast<float>(window_size.x) / 2.0f + p.x,
-                            static_cast<float>(window_size.y) / 2.0f + p.y,
-                        };
-                        center.x += points[i].x / 5.0f;
-                        center.y += points[i].y / 5.0f;
-                    }
-
                     if (canvas.tile_read_queue.contains(tile)) {
-                        col = IM_COL32(255, 0, 0, 64);
+                        ImU32 col = IM_COL32(255, 0, 0, 64);
                         const char* str{};
                         switch (canvas.tile_read_queue.at(tile).state) {
                         case Canvas::TileReadState::Queued:
-                            str = "TileReadState::Queued";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Queued");
                             break;
                         case Canvas::TileReadState::Read:
-                            str = "TileReadState::Read";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Read");
                             break;
                         case Canvas::TileReadState::Decompressed:
-                            str = "TileReadState::Decompressed";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Decompressed");
                             break;
                         case Canvas::TileReadState::Uploaded:
-                            str = "TileReadState::Uploaded";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Uploaded");
                             break;
                         default:
-                            str = "TileReadState::N/A";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::N/A");
                             break;
                         }
-                        draw_list->AddText(ImVec2(center.x + 0.0f, center.y + 20.0f), col, str);
-                    }
-                    if (canvas.tile_write_queue.contains(tile)) {
-                        col = IM_COL32(0, 255, 0, 64);
+                    } else if (canvas.tile_write_queue.contains(tile)) {
+                        ImU32 col = IM_COL32(0, 255, 0, 64);
                         const char* str{};
                         switch (canvas.tile_write_queue.at(tile).state) {
                         case Canvas::TileWriteState::Queued:
-                            str = "TileWriteState::Queued";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Queued");
                             break;
                         case Canvas::TileWriteState::Downloading:
-                            str = "TileWriteState::Downloading";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Downloading");
                             break;
                         case Canvas::TileWriteState::Downloaded:
-                            str = "TileWriteState::Downloaded";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Downloaded");
                             break;
                         case Canvas::TileWriteState::Encoded:
-                            str = "TileWriteState::Encoded";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Encoded");
                             break;
                         case Canvas::TileWriteState::Written:
-                            str = "TileWriteState::Written";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::Written");
                             break;
                         default:
-                            str = "TileWriteState::N/A";
+                            DrawTileDebug(pos, draw_list, col, "TileReadState::N/A");
                             break;
                         }
-                        draw_list->AddText(ImVec2(center.x + 0.0f, center.y + 30.0f), col, str);
-                    }
-                    if (canvas.layerTilesModified.at(layer).contains(tile)) {
-                        std::string text = std::format("[{}, {}]*", pos.x, pos.y);
-                        draw_list->AddText(ImVec2(center.x, center.y), col, text.c_str());
                     } else {
-                        std::string text = std::format("[{}, {}]", pos.x, pos.y);
-                        draw_list->AddText(ImVec2(center.x, center.y), col, text.c_str());
+                        ImU32 col = IM_COL32(0, 0, 0, 64);
+                        DrawTileDebug(pos, draw_list, col);
                     }
-
-                    draw_list->AddPolyline(points, 5, col, 0, 1.0f);
                 }
             }
 
@@ -191,11 +160,11 @@ bool App::Update() {
                     pos.x = cursor_current_pos.x;
                     pos.y = cursor_current_pos.y;
                     if (canvas.brushMode) {
-                        radius.x = canvas.brushOptions.radius * canvas.viewport.zoom_.x;
-                        radius.y = canvas.brushOptions.radius * canvas.viewport.zoom_.y;
+                        radius.x = canvas.brushOptions.radius * canvas.viewport.Zoom().x;
+                        radius.y = canvas.brushOptions.radius * canvas.viewport.Zoom().y;
                     } else {
-                        radius.x = canvas.eraserOptions.radius * canvas.viewport.zoom_.x;
-                        radius.y = canvas.eraserOptions.radius * canvas.viewport.zoom_.y;
+                        radius.x = canvas.eraserOptions.radius * canvas.viewport.Zoom().x;
+                        radius.y = canvas.eraserOptions.radius * canvas.viewport.Zoom().y;
                     }
                     draw_list->AddEllipse(pos, radius, ImColor(0, 0, 0, 255));
                 }
@@ -229,7 +198,7 @@ bool App::Update() {
                         layer_info.push_back(info);
                     }
 
-                    std::ranges::sort(layer_info, [](LayerInfo& a, LayerInfo& b) { return a.height> b.height; });
+                    std::ranges::sort(layer_info, [](LayerInfo& a, LayerInfo& b) { return a.height > b.height; });
 
                     const ImVec2 image_size = {
                         (float)window_size.x / (float)window_size.y * 50.0f,
@@ -608,6 +577,7 @@ bool App::Resize(const int width, const int height) {
         if (!renderer.Resize()) {
             return false;
         }
+        canvas.viewport.Resize(glm::vec2(window_size));
     }
 
     return true;
@@ -713,7 +683,7 @@ void App::CursorMove(glm::vec2 new_pos) {
             if (canvas.brushMode) {
                 canvas.UpdateBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
                     .radius = canvas.brushOptions.radius,
                     .flow = canvas.brushOptions.flow,
                     .hardness = canvas.brushOptions.hardness,
@@ -721,7 +691,7 @@ void App::CursorMove(glm::vec2 new_pos) {
             } else if (canvas.eraserMode) {
                 canvas.UpdateEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
                     .radius = canvas.eraserOptions.radius,
                     .flow = canvas.eraserOptions.flow,
                     .hardness = canvas.eraserOptions.hardness,
@@ -749,7 +719,7 @@ void App::CursorPress(Uint8 button) {
             if (canvas.brushMode) {
                 canvas.StartBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
                     .radius = canvas.brushOptions.radius,
                     .flow = canvas.brushOptions.flow,
                     .hardness = canvas.brushOptions.hardness,
@@ -757,7 +727,7 @@ void App::CursorPress(Uint8 button) {
             } else if (canvas.eraserMode) {
                 canvas.StartEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
                     .radius = canvas.eraserOptions.radius,
                     .flow = canvas.eraserOptions.flow,
                     .hardness = canvas.eraserOptions.hardness,
@@ -774,7 +744,7 @@ void App::CursorRelease(Uint8 button) {
             if (canvas.brushMode) {
                 canvas.EndBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
                     .radius = canvas.brushOptions.radius,
                     .flow = canvas.brushOptions.flow,
                     .hardness = canvas.brushOptions.hardness,
@@ -782,7 +752,7 @@ void App::CursorRelease(Uint8 button) {
             } else if (canvas.eraserMode) {
                 canvas.EndEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos, window_size),
+                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
                     .radius = canvas.eraserOptions.radius,
                     .flow = canvas.eraserOptions.flow,
                     .hardness = canvas.eraserOptions.hardness,
@@ -944,6 +914,44 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     }
 
     canvas.ViewUpdateState(cursor_current_pos);
+}
+
+void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) {
+    const auto tilePositions = canvas.viewport.VisibleTiles();
+    for(const auto& tilePosition : tilePositions) {
+        DrawTileDebug(tilePosition, drawList, IM_COL32(255, 0, 0, 128));
+    }
+}
+
+void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) {
+    ImVec2 points[5]{};
+    ImVec2 center;
+    glm::vec2 offsets[5] = {
+        {1.0f, 1.0f},
+        {static_cast<float>(TILE_WIDTH), 0.0f},
+        {static_cast<float>(TILE_HEIGHT), static_cast<float>(TILE_WIDTH)},
+        {1.0f, static_cast<float>(TILE_HEIGHT)},
+        {1.0f, 1.0f},
+    };
+    for (size_t i = 0; i < 5; i++) {
+        glm::vec4 p = canvas.viewport.ViewMatrix() *
+                      glm::vec4(static_cast<glm::vec2>(pos) * static_cast<float>(TILE_WIDTH, TILE_HEIGHT) + offsets[i],
+                                0.0f, 1.0f);
+
+        points[i] = ImVec2{
+            static_cast<float>(window_size.x) / 2.0f + p.x,
+            static_cast<float>(window_size.y) / 2.0f + p.y,
+        };
+        center.x += points[i].x / 5.0f;
+        center.y += points[i].y / 5.0f;
+    }
+
+    const auto text = std::format("[{},{}]", pos.x, pos.y);
+    drawList->AddText(ImVec2(center.x, center.y), col, text.c_str());
+    if(!label.empty()) {
+        drawList->AddText(ImVec2(center.x, center.y + 20.0f), col, label.c_str());
+    }
+    drawList->AddPolyline(points, 5, col, 0, 1.0f);
 }
 
 void App::Fullscreen(bool enable) {

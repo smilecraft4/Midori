@@ -47,6 +47,8 @@ public:
     ~Canvas() = default;
 
     void Update();
+    void CullTiles(Viewport& viewport);
+
     void DeleteUpdate();
 
     // File Stuff
@@ -91,6 +93,7 @@ public:
 
     App* app;
 
+    // TODO: Move to a Layers Class
     LayerHeight layersCurrentMaxHeight = 0;
     std::unordered_map<Layer, LayerInfo> layerInfos;
     std::unordered_map<Layer, std::unordered_set<Tile>> layerTiles;
@@ -104,6 +107,7 @@ public:
     Layer layerLastAssigned = 0;
     std::vector<Layer> layersUnassigned;
 
+    // Move to a Tile Structs
     std::unordered_map<Tile, TileCoord> tileInfos;
     Tile tileLastAssigned = 0;
     std::vector<Tile> tilesUnassigned;

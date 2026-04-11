@@ -139,40 +139,180 @@ void Canvas::CompactLayerHeight() {
 
 void Canvas::Update() {
     ZoneScoped;
-    { // Loading/Unloading culled tiles
-        ZoneScopedN("Tile culling");
-        std::vector<glm::ivec2> view_visible_tiles = viewport.VisibleTiles(app->window_size);
 
-        for (const auto& layer : Layers()) {
-            if (layerInfos.at(layer).hidden) {
-                // Should be already culled maybe who knwon
-                continue;
+    CullTiles(viewport);
+    UpdateTileLoading();
+}
+
+void Canvas::CullTiles(Viewport& viewport) {
+    ZoneScoped;
+
+    // AABB + Scanline
+    // Generate the AABB of the viewport relative to the canvasSpace
+    // Take into consideration: rotation, translation, zoom
+    // Loop over the min and max of the viewportAABB
+
+    // const auto viewInv = viewport.InverseViewMatrix();
+    // constexpr glm::vec2 tileSize(TILE_WIDTH, TILE_HEIGHT);
+
+    // // Compute the viewport axis in canvasSpace
+    // const glm::vec2 viewY = glm::vec2(viewInv * glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+    // const glm::vec2 viewX = glm::vec2(viewInv * glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
+
+    // const glm::vec2 viewCorners[4] = {
+    //     glm::vec2(viewInv * glm::vec4(glm::vec2(app->window_size) * glm::vec2(-0.5f, -0.5f), 0.0f, 1.0f)) / tileSize,
+    //     glm::vec2(viewInv * glm::vec4(glm::vec2(app->window_size) * glm::vec2(0.5f, -0.5f), 0.0f, 1.0f)) / tileSize,
+    //     glm::vec2(viewInv * glm::vec4(glm::vec2(app->window_size) * glm::vec2(-0.5f, 0.5f), 0.0f, 1.0f)) / tileSize,
+    //     glm::vec2(viewInv * glm::vec4(glm::vec2(app->window_size) * glm::vec2(0.5f, 0.5f), 0.0f, 1.0f)) / tileSize,
+    // };
+
+    // const glm::vec2 viewMin =
+    //     glm::min(viewCorners[3], glm::min(viewCorners[2], glm::min(viewCorners[1], viewCorners[0])));
+    // const glm::vec2 viewMax =
+    //     glm::max(viewCorners[3], glm::max(viewCorners[2], glm::max(viewCorners[1], viewCorners[0])));
+
+    // for (int y = std::floor(viewMin.y); y < std::ceil(viewMax.y); y++) {
+    //     for (int x = std::floor(viewMin.x); x < std::ceil(viewMax.x); x++) {
+    //         const std::array<float, 4> cornersX = {
+    //             glm::dot(glm::vec2(x, y) * tileSize, viewX),
+    //             glm::dot(glm::vec2(x + 1, y) * tileSize, viewX),
+    //             glm::dot(glm::vec2(x, y + 1) * tileSize, viewX),
+    //             glm::dot(glm::vec2(x + 1, y + 1) * tileSize, viewX),
+    //         };
+
+    //         float minX = cornersX[0], maxX = cornersX[0];
+    //         for (int i = 1; i < 4; ++i) {
+    //             minX = std::min(minX, cornersX[i]);
+    //             maxX = std::max(maxX, cornersX[i]);
+    //         }
+
+    //         const std::array<float, 4> cornersY = {
+    //             glm::dot(glm::vec2(x, y) * tileSize, viewY),
+    //             glm::dot(glm::vec2(x + 1, y) * tileSize, viewY),
+    //             glm::dot(glm::vec2(x, y + 1) * tileSize, viewY),
+    //             glm::dot(glm::vec2(x + 1, y + 1) * tileSize, viewY),
+    //         };
+
+    //         float minY = cornersY[0], maxY = cornersY[0];
+    //         for (int i = 1; i < 4; ++i) {
+    //             minY = std::min(minY, cornersY[i]);
+    //             maxY = std::max(maxY, cornersY[i]);
+    //         }
+
+    //         // Check overlap against viewport (assume 0 to width/height)
+    //         if (maxX < 0.0f || minX > app->window_size.x || maxY < 0.0f || minY > app->window_size.y) {
+    //             SDL_Log("[%i, %i] success", x, y);
+    //         } else {
+    //             SDL_Log("[%i, %i] failed", x, y);
+    //         }
+    //     }
+    // }
+
+    // for (const auto& [layer, infos] : layerInfos) {
+    //     if (infos.hidden || infos.transparency == 1.0f) {
+    //         for (const auto& tile : layerTiles.at(layer)) {
+    //             QueueUnloadTile(layer, tile);
+    //         }
+    //     } else {
+    //         for (const auto& [pos, tile] : layerTilePos.at(layer)) {
+    //             const std::array<float, 4> cornersX = {
+    //                 glm::dot(glm::vec2(pos.x, pos.y), viewX),
+    //                 glm::dot(glm::vec2(pos.x + TILE_WIDTH, pos.y), viewX),
+    //                 glm::dot(glm::vec2(pos.x, pos.y + TILE_HEIGHT), viewX),
+    //                 glm::dot(glm::vec2(pos.x + TILE_WIDTH, pos.y + TILE_HEIGHT), viewX),
+    //             };
+
+    //             float minX = cornersX[0], maxX = cornersX[0];
+    //             for (int i = 1; i < 4; ++i) {
+    //                 minX = std::min(minX, cornersX[i]);
+    //                 maxX = std::max(maxX, cornersX[i]);
+    //             }
+
+    //             const std::array<float, 4> cornersY = {
+    //                 glm::dot(glm::vec2(pos.x, pos.y), viewY),
+    //                 glm::dot(glm::vec2(pos.x + TILE_WIDTH, pos.y), viewY),
+    //                 glm::dot(glm::vec2(pos.x, pos.y + TILE_HEIGHT), viewY),
+    //                 glm::dot(glm::vec2(pos.x + TILE_WIDTH, pos.y + TILE_HEIGHT), viewY),
+    //             };
+
+    //             float minY = cornersY[0], maxY = cornersY[0];
+    //             for (int i = 1; i < 4; ++i) {
+    //                 minY = std::min(minY, cornersY[i]);
+    //                 maxY = std::max(maxY, cornersY[i]);
+    //             }
+
+    //             // Check overlap against viewport (assume 0 to width/height)
+    //             if (maxX < 0.0f || minX > app->window_size.x || maxY < 0.0f || minY > app->window_size.y) {
+    //                 continue;
+    //             }
+    //         }
+
+    //         for (float y = viewMin.y; y < viewMax.y; y++) {
+    //             for (float x = viewMin.x; x < viewMax.x; x++) {
+    //                 const std::array<float, 4> cornersX = {
+    //                     glm::dot(glm::vec2(x, y), viewX),
+    //                     glm::dot(glm::vec2(x + TILE_WIDTH, y), viewX),
+    //                     glm::dot(glm::vec2(x, y + TILE_HEIGHT), viewX),
+    //                     glm::dot(glm::vec2(x + TILE_WIDTH, y + TILE_HEIGHT), viewX),
+    //                 };
+
+    //                 float minX = cornersX[0], maxX = cornersX[0];
+    //                 for (int i = 1; i < 4; ++i) {
+    //                     minX = std::min(minX, cornersX[i]);
+    //                     maxX = std::max(maxX, cornersX[i]);
+    //                 }
+
+    //                 const std::array<float, 4> cornersY = {
+    //                     glm::dot(glm::vec2(pos.x, pos.y), viewY),
+    //                     glm::dot(glm::vec2(pos.x + TILE_WIDTH, pos.y), viewY),
+    //                     glm::dot(glm::vec2(pos.x, pos.y + TILE_HEIGHT), viewY),
+    //                     glm::dot(glm::vec2(pos.x + TILE_WIDTH, pos.y + TILE_HEIGHT), viewY),
+    //                 };
+
+    //                 float minY = cornersY[0], maxY = cornersY[0];
+    //                 for (int i = 1; i < 4; ++i) {
+    //                     minY = std::min(minY, cornersY[i]);
+    //                     maxY = std::max(maxY, cornersY[i]);
+    //                 }
+
+    //                 // Check overlap against viewport (assume 0 to width/height)
+    //                 if (maxX < 0.0f || minX > app->window_size.x || maxY < 0.0f || minY > app->window_size.y) {
+    //                     continue;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    std::vector<glm::ivec2> view_visible_tiles = viewport.VisibleTiles();
+
+    for (const auto& layer : Layers()) {
+        if (layerInfos.at(layer).hidden) {
+            // Should be already culled maybe who knwon
+            continue;
+        }
+        std::unordered_set<glm::ivec2> tile_positions(view_visible_tiles.begin(), view_visible_tiles.end());
+
+        // Iterate over every tile in layer
+        const auto& tiles = layerTiles.at(layer);
+        std::unordered_set<Tile> remove_tiles(tiles.begin(), tiles.end());
+        for (const auto& tile : tiles) {
+            if (tile_positions.contains(tileInfos.at(tile).pos)) {
+                tile_positions.erase(tileInfos.at(tile).pos);
+                remove_tiles.erase(tile);
             }
-            std::unordered_set<glm::ivec2> tile_positions(view_visible_tiles.begin(), view_visible_tiles.end());
+        }
 
-            // Iterate over every tile in layer
-            const auto& tiles = layerTiles.at(layer);
-            std::unordered_set<Tile> remove_tiles(tiles.begin(), tiles.end());
-            for (const auto& tile : tiles) {
-                if (tile_positions.contains(tileInfos.at(tile).pos)) {
-                    tile_positions.erase(tileInfos.at(tile).pos);
-                    remove_tiles.erase(tile);
-                }
-            }
+        for (const auto& tile : remove_tiles) {
+            QueueUnloadTile(layer, tile);
+        }
 
-            for (const auto& tile : remove_tiles) {
-                QueueUnloadTile(layer, tile);
-            }
-
-            for (const auto& tile_pos : tile_positions) {
-                if (layerTilesSaved.at(layer).contains(tile_pos)) {
-                    const auto result = QueueLoadTile(layer, tile_pos);
-                }
+        for (const auto& tile_pos : tile_positions) {
+            if (layerTilesSaved.at(layer).contains(tile_pos)) {
+                const auto result = QueueLoadTile(layer, tile_pos);
             }
         }
     }
-
-    UpdateTileLoading();
 }
 
 void Canvas::DeleteUpdate() {
@@ -541,7 +681,10 @@ void Canvas::QueueUnloadTile(const Layer layer, const Tile tile) {
     SDL_assert(layerInfos.contains(layer) && "Layer not found");
     SDL_assert(tileInfos.contains(tile) && "Tile not found");
 
-    QueueSaveTile(layer, tile);
+    if(!tile_write_queue.contains(tile)) {
+        QueueSaveTile(layer, tile);
+    }
+
     tileToUnload.insert(tile);
 }
 

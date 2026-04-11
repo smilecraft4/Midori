@@ -15,7 +15,6 @@
 namespace Midori {
 
 struct Canvas;
-struct Brush;
 
 struct ICommand {
     ICommand() = default;
