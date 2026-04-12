@@ -101,7 +101,7 @@ void TileModificationCommand::ApplyTilesTexture(
         SDL_assert(texture && "Texture is invalid");
         Tile tile = canvas_->GetLoadedTileAt(layer_, tileCoord.pos);
         if (tile == TILE_INVALID) {
-            Tile tile = canvas_->CreateTile(layer_, tileCoord.pos);
+            tile = canvas_->CreateTile(layer_, tileCoord.pos);
             SDL_assert(tile != TILE_INVALID && "Failed to create tile");
 
             // We don't need to upload a blank texture to this tile, this could be avoided by providing an override to

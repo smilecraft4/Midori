@@ -471,6 +471,8 @@ void Canvas::MergeLayer(const Layer over_layer, const Layer below_layer) {
         const auto below_tile = layerTilePos.at(below_layer).at(tile_merge_pos);
         tile_to_merge.emplace_back(over_tile, below_tile);
     }
+    // TODO: Batch all merging action to only have a single command_buffer for this
+    // per frame
     for (const auto& [over, below] : tile_to_merge) {
         MergeTiles(over, below);
     }
@@ -574,8 +576,6 @@ Tile Canvas::GetLoadedTileAt(const Layer layer, const glm::ivec2 position) const
     return tile;
 }
 
-// TODO: Batch all merging action to only have a single command_buffer for this
-// per frame
 void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
     SDL_assert(tileInfos.contains(over_tile));
     SDL_assert(!tileToDelete.contains(over_tile));
@@ -768,8 +768,8 @@ void Canvas::UpdateTileUnloading() {
         }
         if (tile_write.state == TileWriteState::Encoded) {
             ZoneScopedN("Write Tile file");
-            const std::string tile_filename =
-                std::format("{}/{}/{}_{}.qoi", filename, tile_write.layer, tile_write.position.x, tile_write.position.y);
+            const std::string tile_filename = std::format("{}/{}/{}_{}.qoi", filename, tile_write.layer,
+                                                          tile_write.position.x, tile_write.position.y);
 
             SDL_IOStream* file_io = SDL_IOFromFile(tile_filename.c_str(), "wb");
             SDL_assert(file_io != nullptr);
@@ -1317,7 +1317,6 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     stroke_started = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
 
-    // TODO: is this used to detect if the pointer is a stylus or a mouse ?
     if (app->pen_in_range) {
         point = ApplyEraserPressure(point, app->pen_pressure);
     }
@@ -1328,7 +1327,7 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
 
     // TODO: find a better algorithm when erasing on layers. Right now the opacity of the erase brush does not work.
-    // TODO: find a way to duplicate the layer this early and instead use a temporary internal texture as the
+    // TODO: find a way to duplicate the layer this early and instead use a temporary internal layer as the
     // modification source
     eastl::hash_set<Tile> tileTexturesToSave;
     for (const auto& tile_pos : tilesPos) {
