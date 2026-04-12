@@ -39,7 +39,6 @@ target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm f
 target_include_directories(midori_lib PUBLIC "deps/imgui/")
 target_include_directories(midori_lib PUBLIC "deps/nlohmann/")
 target_include_directories(midori_lib PUBLIC "deps/qoi/")
-target_include_directories(midori_lib PUBLIC "deps/uuid/")
 target_include_directories(midori_lib PUBLIC "deps/utf8/")
 target_sources(midori_lib PRIVATE
   "deps/imgui/imgui.cpp"

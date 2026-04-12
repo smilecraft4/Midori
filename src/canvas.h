@@ -3,6 +3,8 @@
 #include "colors.h"
 #include "commands.h"
 #include "viewport.h"
+#include <EASTL/unordered_map.h>
+#include <EASTL/unordered_set.h>
 #include <SDL3/SDL_gpu.h>
 #include <cstdint>
 #include <expected>
@@ -12,11 +14,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
-#include <EASTL/unordered_set.h>
-#include <EASTL/unordered_map.h>
 #include <vector>
-#define UUID_SYSTEM_GENERATOR
-#include <uuid.h>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 
@@ -72,7 +70,7 @@ public:
     [[nodiscard]] std::vector<Layer> Layers() const;
     [[nodiscard]] std::vector<Tile> LayerTiles(Layer layer) const;
 
-    Layer CreateLayer(const std::string& name, LayerHeight height);
+    Layer CreateLayer(LayerInfo layerInfo);
     void DeleteLayer(Layer layer);
     bool SaveLayer(Layer layer);
     Layer DuplicateLayer(Layer layer, bool temporary = false);
@@ -93,13 +91,17 @@ public:
 
     App* app;
 
-    // TODO: Move to a Layers Class
     LayerHeight layersCurrentMaxHeight = 0;
     std::unordered_map<Layer, LayerInfo> layerInfos;
     std::unordered_map<Layer, std::unordered_set<Tile>> layerTiles;
     std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>> layerTilePos;
     std::unordered_set<Layer> layerToDelete;
     std::unordered_set<Layer> layersModified;
+
+    // eastl::unordered_map<Layer, LayerInfo> layersInfo; // store data such as height, name, opacity, blendMode, etc...
+    // eastl::vector<Layer> layersReusable;               // layers that are available before increasing layerLastIssued;
+    eastl::vector<Layer> layersHeightSorted;           // layer sorted by rendering order
+    // std::atomic<Layer> layerLastIssued;                // last layer issued, check layersReusable before
 
     Layer selectedLayer = 0;
     Layer strokeLayer = 0;
@@ -129,7 +131,7 @@ public:
     };
 
     struct TileReadStatus {
-        uuids::uuid layer_id;
+        Layer layer;
         Tile tile;
         TileReadState state;
         std::vector<std::uint8_t> encodedTexture;
@@ -147,7 +149,7 @@ public:
     };
 
     struct TileWriteStatus {
-        uuids::uuid layer_id;
+        Layer layer;
         Tile tile;
         TileWriteState state;
         glm::ivec2 position;
@@ -226,14 +228,13 @@ public:
     bool eraserOptionsModified = false;
     void SaveEraser();
     void OpenEraser();
-    
+
     [[nodiscard]] StrokePoint ApplyEraserPressure(StrokePoint point, float pressure) const;
     void StartEraserStroke(StrokePoint point);
     void UpdateEraserStroke(StrokePoint point);
     void EndEraserStroke(StrokePoint point);
 
     void ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode);
-
 };
 
 } // namespace Midori

@@ -42,13 +42,15 @@ SDL_EnumerationResult findLayersCallback(void* userdata, const char* dirname, co
         const std::string name = layerJson.at("name");
         const uint8_t depth = layerJson.at("height");
 
-        const auto layer = canvas->CreateLayer(name, depth);
-        canvas->selectedLayer = layer;
-        std::string uuid = layerJson.at("uuid");
-        canvas->layerInfos[layer].id = uuids::uuid::from_string(uuid).value();
-        canvas->layerInfos[layer].transparency = layerJson.at("transparency");
-        canvas->layerInfos[layer].locked = layerJson.at("locked");
-        canvas->layerInfos[layer].hidden = layerJson.at("hidden");
+        LayerInfo layerInfo{};
+        layerInfo.id = layerJson.at("id");
+        layerInfo.opacity = layerJson.at("opacity");
+        layerInfo.locked = layerJson.at("locked");
+        layerInfo.hidden = layerJson.at("hidden");
+        const auto layer = canvas->CreateLayer(layerInfo);
+        SDL_assert(layer != LAYER_INVALID);
+
+        canvas->selectedLayer = layer; // TODO: Move this elsewhere
         canvas->layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
 
         int tilesCount;
@@ -112,7 +114,11 @@ bool Canvas::Open() {
     }
 
     if (layerInfos.empty()) {
-        const auto layer = CreateLayer("Base Layer", 0);
+        LayerInfo layerInfo{};
+        layerInfo.name = "Base Layer";
+        const auto layer = CreateLayer(layerInfo);
+        SDL_assert(layer != LAYER_INVALID);
+
         selectedLayer = layer;
         layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
         SaveLayer(layer);
@@ -149,7 +155,9 @@ void Canvas::CullTiles(Viewport& viewport) {
 
     const auto& tilesVisible = viewport.VisibleTiles();
     for (const auto& [layer, info] : layerInfos) {
-        if (info.hidden || info.transparency == 1.0f) {
+        if (info.hidden) {
+            // A layer with 0 opacity can still be painted on,
+            // so we keep it's tile loaded in case
             for (const auto& tile : layerTiles[layer]) {
                 QueueUnloadTile(layer, tile);
             }
@@ -189,9 +197,8 @@ void Canvas::DeleteUpdate() {
             const auto tile_info = tileInfos.at(tile);
             SDL_assert(layerInfos.contains(tile_info.layer));
 
-            const auto uuidString = uuids::to_string(layerInfos.at(tile_info.layer).id);
             const std::string tilePath =
-                std::format("{}/{}/{}_{}.qoi", filename, uuidString, tile_info.pos.x, tile_info.pos.y);
+                std::format("{}/{}/{}_{}.qoi", filename, tile_info.layer, tile_info.pos.x, tile_info.pos.y);
             SDL_RemovePath(tilePath.c_str());
 
             layerTiles.at(tile_info.layer).erase(tile);
@@ -221,8 +228,7 @@ void Canvas::DeleteUpdate() {
 
             app->renderer.DeleteLayerTexture(layer);
             if (!layerInfos.at(layer).internal) {
-                const auto uuidString = uuids::to_string(layerInfos.at(layer).id);
-                const std::string folderPath = std::format("{}/{}", filename, uuidString);
+                const std::string folderPath = std::format("{}/{}", filename, layer);
                 const std::string infoPath = std::format("{}/layer.json", folderPath);
                 SDL_RemovePath(infoPath.c_str());
                 SDL_RemovePath(folderPath.c_str());
@@ -278,26 +284,29 @@ std::vector<Tile> Canvas::LayerTiles(const Layer layer) const {
     return tiles;
 }
 
-Layer Canvas::CreateLayer(const std::string& name, const LayerHeight height) {
+Layer Canvas::CreateLayer(LayerInfo layerInfo) {
     ZoneScoped;
-    Layer layer = 0;
 
-    if (layersUnassigned.empty()) {
-        if (layerLastAssigned >= LAYERS_MAX) {
-            SDL_assert(false && "Max layer reached");
-            return 0;
-        }
-        layerLastAssigned++;
-        layer = layerLastAssigned;
+    if (layerInfo.id != LAYER_INVALID) {
+        layerLastAssigned = std::max(layerLastAssigned, layerInfo.id);
     } else {
-        layer = layersUnassigned.back();
-        layersUnassigned.pop_back();
+        if (layersUnassigned.empty()) {
+            if (layerLastAssigned >= LAYERS_MAX) {
+                SDL_assert(false && "Max layer reached");
+                return 0;
+            }
+            layerLastAssigned++;
+            layerInfo.id = layerLastAssigned;
+        } else {
+            layerInfo.id = layersUnassigned.back();
+            layersUnassigned.pop_back();
+        }
     }
+    SDL_assert(layerInfo.id != LAYER_INVALID);
+    SDL_assert(!HasLayer(layerInfo.id) && "Layer already exists");
 
-    SDL_assert(!HasLayer(layer) && "Layer already exists");
-
-    if (!app->renderer.CreateLayerTexture(layer)) {
-        layersUnassigned.push_back(layer);
+    if (!app->renderer.CreateLayerTexture(layerInfo.id)) {
+        layersUnassigned.push_back(layerInfo.id);
         return 0;
     }
 
@@ -307,36 +316,36 @@ Layer Canvas::CreateLayer(const std::string& name, const LayerHeight height) {
             continue;
         }
 
-        if (other_layer == layer) {
+        if (other_layer == layerInfo.id) {
             continue;
         }
-        if (other_layer_info.height >= height) {
+        if (other_layer_info.height >= layerInfo.height) {
             other_layer_info.height++;
             layersModified.insert(other_layer);
         }
     }
 
-    const auto layer_info = LayerInfo{.id = uuids::uuid_system_generator{}(), .name = name, .layer = layer};
+    layerInfos[layerInfo.id] = layerInfo;
+    layerTiles[layerInfo.id] = std::unordered_set<Tile>();
+    layerTilePos[layerInfo.id] = std::unordered_map<glm::ivec2, Tile>();
+    layerTilesSaved[layerInfo.id] = std::unordered_set<glm::ivec2>();
+    layerTilesModified[layerInfo.id] = std::unordered_set<Tile>();
 
-    layerInfos[layer] = layer_info;
-    layerTiles[layer] = std::unordered_set<Tile>();
-    layerTilePos[layer] = std::unordered_map<glm::ivec2, Tile>();
-    layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
-    layerTilesModified[layer] = std::unordered_set<Tile>();
+    // TODO: do this properly
+    layersHeightSorted.push_back(layerInfo.id);
 
-    return layer;
+    return layerInfo.id;
 }
 
 bool Canvas::SaveLayer(Layer layer) {
     SDL_assert(layerInfos.contains(layer));
     const auto& layerInfo = layerInfos.at(layer);
-    const auto uuidString = uuids::to_string(layerInfo.id);
-    std::string path = std::format("{}/{}", filename, uuidString);
+    std::string path = std::format("{}/{}", filename, layerInfo.id);
 
     SDL_CreateDirectory(path.c_str());
 
     nlohmann::json layerJson = {
-        {"uuid", uuidString},         {"name", layerInfo.name},     {"transparency", layerInfo.transparency},
+        {"id", layerInfo.id},         {"name", layerInfo.name},     {"opacity", layerInfo.opacity},
         {"locked", layerInfo.locked}, {"hidden", layerInfo.hidden}, {"height", layerInfo.height},
     };
     std::string layerDump = layerJson.dump(4);
@@ -354,16 +363,19 @@ bool Canvas::SaveLayer(Layer layer) {
 Layer Canvas::DuplicateLayer(Layer layer, bool internal) {
     assert(layerInfos.contains(layer));
 
-    Layer newLayer = CreateLayer(layerInfos.at(layer).name, layerInfos.at(layer).height++);
-    layerInfos.at(layer).internal = internal;
+    Layer newLayer = LAYER_INVALID;
+    { // We can't use the informations since they are create informations and not the real generated informations
+        auto newLayerInfo = layerInfos[layer];
+        newLayerInfo.id = LAYER_INVALID;
+        newLayerInfo.height++;
+        newLayerInfo.internal = internal;
+        newLayer = CreateLayer(newLayerInfo);
+    }
 
     if (!internal) {
         // Duplicate save folder for layers
-        const auto uuidString = uuids::to_string(layerInfos.at(layer).id);
-        std::string layerPath = std::format("{}/{}", filename, uuidString);
-
-        const auto newUuidString = uuids::to_string(layerInfos.at(newLayer).id);
-        std::string newLayerPath = std::format("{}/{}", filename, newUuidString);
+        std::string layerPath = std::format("{}/{}", filename, layerInfos[layer].id);
+        std::string newLayerPath = std::format("{}/{}", filename, layerInfos[newLayer].id);
         std::filesystem::copy(layerPath, newLayerPath);
 
         // Overwrite copied settings
@@ -503,9 +515,8 @@ Tile Canvas::QueueLoadTile(const Layer layer, const glm::ivec2 position) {
     const auto tile = CreateTile(layer, position);
     SDL_assert(tile != TILE_INVALID && "Tile invalid ?");
 
-    const auto layer_info = layerInfos.at(layer);
     tile_read_queue[tile] = TileReadStatus{
-        .layer_id = layer_info.id,
+        .layer = layer,
         .tile = tile,
         .state = TileReadState::Queued,
     };
@@ -520,12 +531,11 @@ bool Canvas::QueueSaveTile(const Layer layer, const Tile tile) {
     SDL_assert(tileInfos.contains(tile) && "Tile not found");
     SDL_assert(!tile_write_queue.contains(tile) && "Tile already being queued for saving");
 
-    const LayerInfo layer_info = layerInfos.at(layer);
     tile_write_queue[tile] = TileWriteStatus{
-        .layer_id = layer_info.id,
+        .layer = layer,
         .tile = tile,
         .state = TileWriteState::Queued,
-        .position = tileInfos.at(tile).pos,
+        .position = tileInfos[tile].pos,
     };
 
     return true;
@@ -641,9 +651,8 @@ void Canvas::UpdateTileLoading() {
         if (tile_load.state == TileReadState::Queued) {
             SDL_assert(tileInfos.contains(tile));
             const auto tile_info = tileInfos.at(tile);
-            const auto uuidString = uuids::to_string(tile_load.layer_id);
             const std::string tile_filename =
-                std::format("{}/{}/{}_{}.qoi", filename, uuidString, tile_info.pos.x, tile_info.pos.y);
+                std::format("{}/{}/{}_{}.qoi", filename, tile_load.layer, tile_info.pos.x, tile_info.pos.y);
 
             ZoneScopedN("Reading Tile");
             size_t buf_size;
@@ -759,9 +768,8 @@ void Canvas::UpdateTileUnloading() {
         }
         if (tile_write.state == TileWriteState::Encoded) {
             ZoneScopedN("Write Tile file");
-            const auto uuidString = uuids::to_string(tile_write.layer_id);
             const std::string tile_filename =
-                std::format("{}/{}/{}_{}.qoi", filename, uuidString, tile_write.position.x, tile_write.position.y);
+                std::format("{}/{}/{}_{}.qoi", filename, tile_write.layer, tile_write.position.x, tile_write.position.y);
 
             SDL_IOStream* file_io = SDL_IOFromFile(tile_filename.c_str(), "wb");
             SDL_assert(file_io != nullptr);
@@ -861,11 +869,13 @@ void Canvas::StartBrushStroke(StrokePoint point) {
 
     SDL_assert(strokeLayer == 0);
     // Create a internal layer above the selected layer and set it as active
-    strokeLayer = CreateLayer("Stroke Layer", layerInfos.at(selectedLayer).height);
-    SDL_assert(strokeLayer != 0);
-    layerInfos.at(strokeLayer).internal = true;
-    layerInfos.at(strokeLayer).transparency = layerInfos.at(selectedLayer).transparency;
-    // layerInfos.at(strokeLayer).opacity = point.color.a;
+    LayerInfo layerInfo{};
+    layerInfo.name = "Stroke Layer";
+    layerInfo.height = layerInfos[selectedLayer].height;
+    layerInfo.opacity = layerInfos[selectedLayer].opacity; // FIXME: this is broken, the blending is bad
+    layerInfo.internal = true;
+    strokeLayer = CreateLayer(layerInfo);
+    SDL_assert(strokeLayer != LAYER_INVALID);
 
     const auto tilesPos = GetTilePosAffectedByStrokePoint(point);
     for (const auto& tilePos : tilesPos) {

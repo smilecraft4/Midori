@@ -978,7 +978,7 @@ bool Renderer::Render() {
                 ZoneScopedN("Filtering layers");
                 layer_rendering.reserve(app->canvas.layerInfos.size());
                 for (const auto &[layer, info] : app->canvas.layerInfos) {
-                    if (info.hidden /*||  info.transparency == 1.0f */) {
+                    if (info.hidden ||  info.opacity == 0.0f) {
                         continue;
                     }
                     if (app->canvas.layerToDelete.contains(layer)) {
@@ -986,14 +986,13 @@ bool Renderer::Render() {
                     }
 
                     SDL_assert(layer_textures.contains(layer) && "Layer texture not found");
-                    // would be could to add bubbles sort right here
                     layer_rendering.push_back(info);
                 }
             }
             {
                 ZoneScopedN("Sorting layer by depth");
-                // Sort the layers based on depth
-                std::ranges::sort(layer_rendering, [](LayerInfo &a, LayerInfo &b) { return a.height < b.height; });
+                // TODO: use app->canvas.layersHeightSorted instead
+                std::ranges::sort(layer_rendering, [](LayerInfo &a, LayerInfo &b) { return a.height > b.height; });
             }
         }
 
@@ -1003,7 +1002,7 @@ bool Renderer::Render() {
                 ZoneScopedN("Render Tile");
                 // TODO: only redraw changed & visible tiles
                 const SDL_GPUColorTargetInfo target_info = {
-                    .texture = layer_textures.at(layer_info.layer),
+                    .texture = layer_textures[layer_info.id],
                     .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f},
                     .load_op = SDL_GPU_LOADOP_CLEAR,
                     .store_op = SDL_GPU_STOREOP_STORE,
@@ -1013,7 +1012,7 @@ bool Renderer::Render() {
 
                 SDL_PushGPUVertexUniformData(command_buffer, 0, &viewport_render_data, sizeof(ViewportRenderData));
 
-                for (const auto &tile : app->canvas.layerTiles.at(layer_info.layer)) {
+                for (const auto &tile : app->canvas.layerTiles[layer_info.id]) {
                     if (app->canvas.tileToDelete.contains(tile) || app->canvas.tileToUnload.contains(tile)) {
                         continue;
                     }
@@ -1081,12 +1080,12 @@ bool Renderer::Render() {
             for (const auto &layer_info : layer_rendering) {
                 ZoneScopedN("Blend layer to canvas");
                 merge_render_data.src_blend_mode = static_cast<std::uint32_t>(layer_info.blendMode);
-                merge_render_data.src_opacity = 1.0f - layer_info.transparency;
+                merge_render_data.src_opacity = layer_info.opacity;
                 // Maybe dividing the buffer into a dst and src could be benificial
                 SDL_PushGPUComputeUniformData(command_buffer, 0, &merge_render_data, sizeof(MergeRenderData));
 
                 const SDL_GPUTextureSamplerBinding samplers[] = {{
-                    .texture = layer_textures.at(layer_info.layer),
+                    .texture = layer_textures[layer_info.id],
                     .sampler = layer_sampler,
                 }};
                 SDL_BindGPUComputeSamplers(merge_compute_pass, 0, samplers, 1);
@@ -1354,11 +1353,11 @@ bool Renderer::MergeTileTextures(const Tile over_tile, const Tile below_tile) {
         const glm::ivec2 merge_compute_invocations = glm::ceil(tile_size / 32.0f);
         MergeRenderData merge_render_data = {
             .src_blend_mode = static_cast<std::uint32_t>(over_layer_info.blendMode),
-            .src_opacity = 1.0f - over_layer_info.transparency,
+            .src_opacity = over_layer_info.opacity,
             .src_pos = glm::vec2(0.0),
             .src_size = tile_size,
             .dst_blend_mode = static_cast<std::uint32_t>(below_layer_info.blendMode),
-            .dst_opacity = 1.0f - below_layer_info.transparency,
+            .dst_opacity = below_layer_info.opacity,
             .dst_pos = glm::vec2(0.0),
             .dst_size = tile_size,
         };

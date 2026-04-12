@@ -205,16 +205,16 @@ bool App::Update() {
                         50.0f,
                     };
                     for (int i = static_cast<int>(layer_info.size()) - 1; i >= 0; i--) {
-                        auto& real_data = canvas.layerInfos[layer_info[i].layer];
+                        auto& real_data = canvas.layerInfos[layer_info[i].id]; // Wut ??
                         const std::string title = std::format("-{}: {}", real_data.height, real_data.name);
                         ImGui::SeparatorText(title.c_str());
-                        ImGui::PushID(real_data.layer);
+                        ImGui::PushID(real_data.id);
 
-                        bool layer_selected = real_data.layer == canvas.selectedLayer;
+                        bool layer_selected = real_data.id == canvas.selectedLayer;
                         if (ImGui::Checkbox("Selected", &layer_selected)) {
-                            canvas.selectedLayer = real_data.layer;
+                            canvas.selectedLayer = real_data.id;
                         }
-                        ImGui::SliderFloat("", &real_data.transparency, 0.0f, 1.0f);
+                        ImGui::SliderFloat("", &real_data.opacity, 0.0f, 1.0f);
 
                         // ImGui::Image(
                         //     (ImTextureID)(intptr_t)renderer.layer_textures.at(real_data.layer),
@@ -225,7 +225,7 @@ bool App::Update() {
                             if (ImGui::Button("-")) {
                                 // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
                                 // *this, real_data.layer, real_data.depth, real_data.depth + 1));
-                                canvas.SetLayerHeight(real_data.layer, real_data.height + 1);
+                                canvas.SetLayerHeight(real_data.id, real_data.height + 1);
                             }
                         }
                         if (real_data.height > 0) {
@@ -233,7 +233,7 @@ bool App::Update() {
                             if (ImGui::Button("+")) {
                                 // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
                                 // *this, real_data.layer, real_data.depth, real_data.depth - 1));
-                                canvas.SetLayerHeight(real_data.layer, real_data.height - 1);
+                                canvas.SetLayerHeight(real_data.id, real_data.height - 1);
                             }
                         }
                         if (i != 0) {
@@ -246,13 +246,16 @@ bool App::Update() {
                         ImGui::SameLine();
                         if (ImGui::Button("x")) {
                             // canvas.canvasHistory.store(std::make_unique<LayerDeleteCommand>(*this, real_data.layer));
-                            canvas.DeleteLayer(real_data.layer);
+                            canvas.DeleteLayer(real_data.id);
                         }
 
                         ImGui::PopID();
                     }
                     if (ImGui::Button("+")) {
-                        const auto newLayer = canvas.CreateLayer("New Layer", 0);
+                        LayerInfo layerInfo{};
+                        layerInfo.name = "NewLayer";
+                        layerInfo.height = 0;
+                        const auto newLayer = canvas.CreateLayer(layerInfo);
                         // canvas.canvasHistory.store(std::make_unique<LayerCreateCommand>(*this,
                         // canvas.layerInfos[layer]));
                         canvas.SaveLayer(newLayer);

@@ -41,10 +41,10 @@ namespace eastl {
     template <>
     struct hash<Midori::TileCoord> {
         size_t operator()(const Midori::TileCoord& tc) const {
-            // Combine hashes — use a good mixing strategy
+            // this may create hash too big for what is trully needed
             size_t h1 = eastl::hash<Midori::Layer>{}(tc.layer);
             size_t h2 = eastl::hash<glm::ivec2>{}(tc.pos);
-            return h1 ^ (h2 * 2654435761u); // Knuth multiplicative hash mix
+            return h1 ^ (h2 * 2654435761u);
         }
     };
 }
