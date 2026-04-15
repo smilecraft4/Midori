@@ -49,7 +49,7 @@ void TileModificationCommand::SavePreviousTilesTexture(const eastl::hash_set<Til
 
     previousTileTextures_.reserve(previousTileTextures_.bucket_count() + duplicateTileTextures.size());
     for (const auto& [tileCoord, texture] : duplicateTileTextures) {
-        if(previousTileTextures_.contains(tileCoord)) {
+        if (previousTileTextures_.contains(tileCoord)) {
             continue;
         }
         previousTileTextures_[tileCoord] = texture;
@@ -63,7 +63,7 @@ void TileModificationCommand::SaveNewTilesTexture(const eastl::hash_set<Tile>& t
 
     newTileTextures_.reserve(newTileTextures_.bucket_count() + duplicateTileTextures.size());
     for (const auto& [tileCoord, texture] : duplicateTileTextures) {
-        if(newTileTextures_.contains(tileCoord)) {
+        if (newTileTextures_.contains(tileCoord)) {
             continue;
         }
         newTileTextures_[tileCoord] = texture;
@@ -163,62 +163,63 @@ CommandHistory::CommandHistory(size_t capacity) : commands(capacity) {
 CommandHistory::~CommandHistory() = default;
 
 void CommandHistory::Undo() {
-    if(currentPosition == 0) {
+    if (position == 0) {
         return;
     }
-
-    currentPosition--;
-    commands[currentPosition]->Revert();
+    commands[Index(position)]->Revert();
+    position--;
 }
 
 void CommandHistory::Redo() {
-    if(currentPosition >= size) {
+    if (position == count) {
         return;
     }
-
-    commands[currentPosition]->Execute();
-    currentPosition++;
+    SDL_assert(position < count);
+    position++;
+    commands[Index(position)]->Execute();
 }
 
 void CommandHistory::Clear() {
-    currentPosition = 0;
+    position = 0;
+    count = 0;
+    start = 0;
     commands.clear();
 }
 
-void CommandHistory::Push(std::unique_ptr<ICommand> command) {
-    // remove the element until the currentPosition is at the latest command
-    if (currentPosition <= size) {
-        for (size_t i = currentPosition; i < size; i++) {
-            auto index = (begin + i) % commands.size();
-            commands[index] = nullptr;
-        };
-        size = currentPosition + 1;
-    } else {
-        size++;
-    }
-
-    SDL_assert(size < commands.size());
-
-    const auto index = (begin + currentPosition) % commands.size();
-    commands[currentPosition] = std::move(command);
-    currentPosition++;
-    SDL_assert(index < commands.size());
-    
-    if(begin == begin + currentPosition) {
-        begin = (begin + 1) % commands.size();
-    }
+size_t CommandHistory::Index(size_t pos) const {
+    SDL_assert(pos > 0);
+    SDL_assert(pos <= count);
+    return (start + (pos - 1)) % commands.capacity();
 }
 
-const ICommand* CommandHistory::Get(size_t position) const {
-    return commands[(begin + position) % commands.size()].get();
+void CommandHistory::Push(std::unique_ptr<ICommand> command) {
+    if (position < count) {
+        for (int pos = count - 1; pos > position; pos--) {
+            commands[Index(pos)].reset();
+        }
+    }
+    
+    if (position < commands.capacity()) {
+        position++;
+        count = position;
+    } else {
+        start = (start + 1) % commands.size();
+    }
+
+    commands[Index(position)] = std::move(command);
+}
+
+const ICommand* CommandHistory::Get(size_t index) const {
+    SDL_assert(index < count);
+    return commands[Index(index + 1)].get();
 }
 
 size_t CommandHistory::Empty() const {
-    return size == 0;
+    return count == 0;
 }
 
 size_t CommandHistory::Count() const {
-    return size;
+    return count;
 }
 
 ViewportChangeCommand::ViewportChangeCommand(Canvas* canvas) : canvas_(canvas) {

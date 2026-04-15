@@ -47,8 +47,8 @@ class Renderer {
     };
 
 
-    std::optional<TileTextureError> CreateTileTexture(Tile tile);
-    std::optional<TileTextureError> UploadTileTexture(Tile tile, const eastl::vector<uint8_t>& pixels);
+    TileTextureError CreateTileTexture(Tile tile);
+    TileTextureError UploadTileTexture(Tile tile, const eastl::vector<uint8_t>& pixels);
 
     void ReleaseTileTexture(Tile tile);
     bool MergeTileTextures(Tile over_tile, Tile below_tile);

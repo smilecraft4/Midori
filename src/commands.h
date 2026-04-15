@@ -39,21 +39,23 @@ struct CommandHistory final {
 
     CommandHistory(size_t capacity);
     ~CommandHistory();
+    
+    void Push(std::unique_ptr<ICommand> command);
 
     void Undo();
     void Redo();
     void Clear();
 
-    void Push(std::unique_ptr<ICommand> command);
-    const ICommand* Get(size_t position) const;
+    const ICommand* Get(size_t index) const;
+    size_t Index(size_t pos) const;
 
     [[nodiscard]] size_t Empty() const;
     [[nodiscard]] size_t Count() const;
 
     eastl::vector<std::unique_ptr<ICommand>> commands;
-    size_t currentPosition{0};
-    size_t size{0};
-    size_t begin{0};
+    size_t position{0}; // starts at 1 and end at capacity, 0 means nothing
+    size_t count{0}; // starts at 1 and end at capacity, 0 means no element
+    size_t start{0};
 };
 
 struct TileModificationCommand final : public ICommand {

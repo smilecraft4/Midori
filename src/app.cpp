@@ -510,15 +510,15 @@ bool App::Update() {
 
                 if (ImGui::Begin("Canvas History")) {
                     if (!canvas.canvasCommands.Empty()) {
-                        for (size_t pos = 0; pos < canvas.canvasCommands.Count(); pos++) {
+                        for (int pos = canvas.canvasCommands.Count() - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.canvasCommands.Get(pos);
-                            const auto name = command->Name();
-                            if (pos < canvas.canvasCommands.currentPosition) {
+                             const auto name = command->Name();
+                            if ((pos + 1) < canvas.canvasCommands.position) {
                                 ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
-                            } else if (pos == canvas.canvasCommands.currentPosition) {
+                            } else if ((pos + 1) == canvas.canvasCommands.position) {
                                 ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
-                            } else if (pos > canvas.canvasCommands.currentPosition) {
-                                ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: %s", pos, name.c_str());
+                            } else if ((pos + 1) > canvas.canvasCommands.position) {
+                                ImGui::TextColored(ImColor(0, 0, 128), "[%llu]: %s", pos, name.c_str());
                             }
                         }
                     } else {
@@ -528,15 +528,15 @@ bool App::Update() {
                 ImGui::End();
                 if (ImGui::Begin("View History")) {
                     if (!canvas.viewCommands.Empty()) {
-                        for (size_t pos = 0; pos < canvas.viewCommands.Count(); pos++) {
+                        for (int pos = canvas.viewCommands.Count() - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.viewCommands.Get(pos);
-                            const auto name = command->Name();
-                            if (pos < canvas.viewCommands.currentPosition) {
+                             const auto name = command->Name();
+                            if ((pos + 1) < canvas.viewCommands.position) {
                                 ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
-                            } else if (pos == canvas.viewCommands.currentPosition) {
+                            } else if ((pos + 1) == canvas.viewCommands.position) {
                                 ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
-                            } else if (pos > canvas.viewCommands.currentPosition) {
-                                ImGui::TextColored(ImColor(0, 128, 128), "[%llu]: %s", pos, name.c_str());
+                            } else if ((pos + 1) > canvas.viewCommands.position) {
+                                ImGui::TextColored(ImColor(0, 0, 128), "[%llu]: %s", pos, name.c_str());
                             }
                         }
                     } else {
@@ -921,7 +921,7 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
 
 void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) {
     const auto tilePositions = canvas.viewport.VisibleTiles();
-    for(const auto& tilePosition : tilePositions) {
+    for (const auto& tilePosition : tilePositions) {
         DrawTileDebug(tilePosition, drawList, IM_COL32(255, 0, 0, 128));
     }
 }
@@ -951,7 +951,7 @@ void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const s
 
     const auto text = std::format("[{},{}]", pos.x, pos.y);
     drawList->AddText(ImVec2(center.x, center.y), col, text.c_str());
-    if(!label.empty()) {
+    if (!label.empty()) {
         drawList->AddText(ImVec2(center.x, center.y + 20.0f), col, label.c_str());
     }
     drawList->AddPolyline(points, 5, col, 0, 1.0f);
