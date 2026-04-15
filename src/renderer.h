@@ -1,18 +1,16 @@
 ﻿#pragma once
 
+#include "layers.h"
+#include "tiles.h"
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <unordered_map>
-#include <unordered_set>
+#include <EASTL/unordered_map.h>
+#include <EASTL/unordered_set.h>
 #include <vector>
-
 #include <SDL3/SDL_gpu.h>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
-
-#include "layers.h"
-#include "tiles.h"
 
 namespace Midori {
 
@@ -50,22 +48,22 @@ class Renderer {
 
 
     std::optional<TileTextureError> CreateTileTexture(Tile tile);
-    std::optional<TileTextureError> UploadTileTexture(Tile tile, std::span<const uint8_t> pixels);
+    std::optional<TileTextureError> UploadTileTexture(Tile tile, const eastl::vector<uint8_t>& pixels);
 
     void ReleaseTileTexture(Tile tile);
     bool MergeTileTextures(Tile over_tile, Tile below_tile);
 
     App *app;
 
-    std::unordered_set<Tile> tile_to_draw;
-    std::unordered_set<Layer> layer_to_draw;
+    eastl::unordered_set<Tile> tile_to_draw;
+    eastl::unordered_set<Layer> layer_to_draw;
 
     // Common data
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTextureFormat texture_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
     SDL_GPUTexture *canvas_texture = nullptr;
-    std::vector<SDL_GPUTexture *> textures_to_delete;
+    eastl::vector<SDL_GPUTexture *> textures_to_delete;
 
     struct ViewportRenderData {
         glm::mat4 projection = glm::mat4(1.0f);
@@ -83,7 +81,7 @@ class Renderer {
     SDL_GPUShader *layer_fragment_shader = nullptr;
     SDL_GPUGraphicsPipeline *layer_graphics_pipeline = nullptr;
     SDL_GPUSampler *layer_sampler = nullptr;
-    std::unordered_map<Layer, SDL_GPUTexture *> layer_textures;
+    eastl::unordered_map<Layer, SDL_GPUTexture *> layer_textures;
     size_t last_layer_rendered_num = 0;
 
     // Tile data
@@ -96,8 +94,8 @@ class Renderer {
     SDL_GPUShader *tile_fragment_shader = nullptr;
     SDL_GPUGraphicsPipeline *tile_graphics_pipeline = nullptr;
     SDL_GPUSampler *tile_sampler = nullptr;
-    std::unordered_map<Tile, SDL_GPUTexture *> tile_textures;
-    std::unordered_set<Tile> tile_texture_uninitialized;
+    eastl::unordered_map<Tile, SDL_GPUTexture *> tile_textures;
+    eastl::unordered_set<Tile> tile_texture_uninitialized;
     size_t last_rendered_tiles_num = 0;
 
     // Tile upload
@@ -105,22 +103,22 @@ class Renderer {
     SDL_GPUTransferBuffer *tile_upload_buffer = nullptr;
     SDL_GPUTransferBuffer *tile_blank_texture_buffer = nullptr;
     uint8_t *tile_upload_buffer_ptr = nullptr;
-    std::unordered_map<Tile, size_t> allocated_tile_upload_offset;
-    std::vector<size_t> free_tile_upload_offset;
+    eastl::unordered_map<Tile, size_t> allocated_tile_upload_offset;
+    eastl::vector<size_t> free_tile_upload_offset;
 
     // Tile download
 
     bool DownloadTileTexture(Tile tile);
     bool IsTileTextureDownloaded(Tile tile) const;
-    bool CopyTileTextureDownloaded(Tile tile, std::vector<uint8_t> &tile_texture);
+    bool CopyTileTextureDownloaded(Tile tile, eastl::vector<uint8_t> &tile_texture);
     SDL_GPUTexture *DuplicateTileTexture(SDL_GPUCopyPass *copyPass, SDL_GPUTexture *tileTexture) const;
 
     static constexpr size_t TILE_MAX_DOWNLOAD_TRANSFER = 32;
     SDL_GPUTransferBuffer *tile_download_buffer = nullptr;
     uint8_t *tile_download_buffer_ptr = nullptr;
-    std::unordered_map<Tile, size_t> allocated_tile_download_offset;
-    std::unordered_set<Tile> tile_downloaded;
-    std::vector<size_t> free_tile_download_offset;
+    eastl::unordered_map<Tile, size_t> allocated_tile_download_offset;
+    eastl::unordered_set<Tile> tile_downloaded;
+    eastl::vector<size_t> free_tile_download_offset;
     SDL_GPUFence *tile_download_fence = nullptr;  // TODO: Use multiple fences
 
     // OPERATIONS
@@ -154,6 +152,7 @@ class Renderer {
     std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
 
     SDL_GPUShaderFormat shaderFormat;
+    // TODO: use headers instead dxc -Fh
     std::string layerVertFilename;
     std::string layerFragFilename;
     std::string tileVertFilename;

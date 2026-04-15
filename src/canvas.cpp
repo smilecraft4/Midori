@@ -51,7 +51,7 @@ SDL_EnumerationResult findLayersCallback(void* userdata, const char* dirname, co
         SDL_assert(layer != LAYER_INVALID);
 
         canvas->selectedLayer = layer; // TODO: Move this elsewhere
-        canvas->layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
+        canvas->layerTilesSaved[layer] = eastl::unordered_set<glm::ivec2>();
 
         int tilesCount;
         const auto* tilesFile = SDL_GlobDirectory(folder.c_str(), "*.qoi", 0, &tilesCount);
@@ -120,7 +120,7 @@ bool Canvas::Open() {
         SDL_assert(layer != LAYER_INVALID);
 
         selectedLayer = layer;
-        layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
+        layerTilesSaved[layer] = eastl::unordered_set<glm::ivec2>();
         SaveLayer(layer);
     }
 
@@ -185,7 +185,7 @@ void Canvas::DeleteUpdate() {
     { // Deleting tiles
         ZoneScopedN("Deleting tiles");
 
-        std::vector<Tile> clear_tiles;
+        eastl::vector<Tile> clear_tiles;
         for (const auto& tile : tileToDelete) {
             SDL_assert(!tile_read_queue.contains(tile));
 
@@ -217,7 +217,7 @@ void Canvas::DeleteUpdate() {
     { // Deleting layers
         ZoneScopedN("Delete layer");
 
-        std::vector<Layer> layer_cleared;
+        eastl::vector<Layer> layer_cleared;
         for (const auto layer : layerToDelete) {
             if (!layerTiles.at(layer).empty()) {
                 continue;
@@ -250,9 +250,9 @@ void Canvas::DeleteUpdate() {
     }
 }
 
-std::vector<Layer> Canvas::Layers() const {
+eastl::vector<Layer> Canvas::Layers() const {
     ZoneScoped;
-    std::vector<Layer> layers;
+    eastl::vector<Layer> layers;
     layers.reserve(layerInfos.size());
     for (const auto& [layer, info] : layerInfos) {
         layers.push_back(layer);
@@ -270,11 +270,11 @@ bool Canvas::LayerHasTile(const Layer layer, const Tile tile) const {
     return layerTiles.at(layer).contains(tile);
 }
 
-std::vector<Tile> Canvas::LayerTiles(const Layer layer) const {
+eastl::vector<Tile> Canvas::LayerTiles(const Layer layer) const {
     ZoneScoped;
     SDL_assert(HasLayer(layer) && "Layer not found");
 
-    std::vector<Tile> tiles;
+    eastl::vector<Tile> tiles;
     tiles.reserve(layerTiles.at(layer).size());
     for (const auto& tile : layerTiles.at(layer)) {
         SDL_assert(tile != 0 && "Invalid tile found");
@@ -326,10 +326,10 @@ Layer Canvas::CreateLayer(LayerInfo layerInfo) {
     }
 
     layerInfos[layerInfo.id] = layerInfo;
-    layerTiles[layerInfo.id] = std::unordered_set<Tile>();
-    layerTilePos[layerInfo.id] = std::unordered_map<glm::ivec2, Tile>();
-    layerTilesSaved[layerInfo.id] = std::unordered_set<glm::ivec2>();
-    layerTilesModified[layerInfo.id] = std::unordered_set<Tile>();
+    layerTiles[layerInfo.id] = eastl::unordered_set<Tile>();
+    layerTilePos[layerInfo.id] = eastl::unordered_map<glm::ivec2, Tile>();
+    layerTilesSaved[layerInfo.id] = eastl::unordered_set<glm::ivec2>();
+    layerTilesModified[layerInfo.id] = eastl::unordered_set<Tile>();
 
     // TODO: do this properly
     layersHeightSorted.push_back(layerInfo.id);
@@ -439,7 +439,7 @@ void Canvas::DeleteLayer(const Layer layer) {
         selectedLayer = 0;
     }
 
-    std::vector<Tile> tiles = LayerTiles(layer);
+    eastl::vector<Tile> tiles = LayerTiles(layer);
     if (layerInfos.at(layer).internal) {
         for (const auto tile : tiles) {
             QueueUnloadTile(layer, tile);
@@ -464,8 +464,8 @@ void Canvas::MergeLayer(const Layer over_layer, const Layer below_layer) {
     SDL_assert(!layerToDelete.contains(below_layer));
 
     // TODO: Do this for all the tiles stored in file
-    std::vector<std::pair<Tile, Tile>> tile_to_merge;
-    std::vector<Tile> tile_to_move;
+    eastl::vector<std::pair<Tile, Tile>> tile_to_merge;
+    eastl::vector<Tile> tile_to_move;
     for (const auto& over_tile : layerTiles.at(over_layer)) {
         const auto tile_merge_pos = tileInfos.at(over_tile).pos;
         const auto below_tile = layerTilePos.at(below_layer).at(tile_merge_pos);
@@ -641,7 +641,7 @@ void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos) {
 void Canvas::UpdateTileLoading() {
     ZoneScoped;
 
-    std::vector<Tile> tiles_unqueued;
+    eastl::vector<Tile> tiles_unqueued;
     size_t i = 0;
     for (auto& [tile, tile_load] : tile_read_queue) {
         if (i >= Midori::Renderer::TILE_MAX_UPLOAD_TRANSFER) {
@@ -703,7 +703,7 @@ void Canvas::UpdateTileLoading() {
 void Canvas::UpdateTileUnloading() {
     ZoneScoped;
 
-    std::vector<Tile> tiles_written;
+    eastl::vector<Tile> tiles_written;
     size_t i = 0;
     for (auto& [tile, tile_write] : tile_write_queue) {
         const auto tile_info = tileInfos.at(tile);
@@ -812,9 +812,9 @@ void Canvas::UpdateTileUnloading() {
     }
 }
 
-std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
+eastl::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
     constexpr glm::vec2 tile_size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
-    std::vector<glm::ivec2> tilesPos;
+    eastl::vector<glm::ivec2> tilesPos;
 
     glm::ivec2 tile_pos_min = glm::floor((point.position - (point.radius + 16.0f)) / tile_size);
     glm::ivec2 tile_pos_max = glm::ceil((point.position + (point.radius + 16.0f)) / tile_size);
@@ -1200,7 +1200,7 @@ void Canvas::ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode) {
     }
 }
 
-std::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
+eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
     ZoneScoped;
 
     SDL_assert(app->window_size.x > 0);
@@ -1210,7 +1210,7 @@ std::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
     size.x = app->window_size.x;
     size.y = app->window_size.y;
 
-    std::vector<Color> canvasTexture(static_cast<std::size_t>(app->window_size.x) *
+    eastl::vector<Color> canvasTexture(static_cast<std::size_t>(app->window_size.x) *
                                      static_cast<std::size_t>(app->window_size.y));
 
     const SDL_GPUTransferBufferCreateInfo transferBufferCreateInfo = {
@@ -1259,7 +1259,7 @@ std::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
     return canvasTexture;
 }
 
-bool Canvas::SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color) {
+bool Canvas::SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color) {
     SDL_assert(textureSize.x > 0);
     SDL_assert(textureSize.y > 0);
     SDL_assert(texture.size() == textureSize.x * textureSize.y);

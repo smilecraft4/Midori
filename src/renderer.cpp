@@ -971,7 +971,7 @@ bool Renderer::Render() {
         }
 
         // Get all layers that needs redrawing
-        std::vector<LayerInfo> layer_rendering;
+        eastl::vector<LayerInfo> layer_rendering;
         {
             ZoneScopedN("Layer Culling");
             {
@@ -1161,7 +1161,7 @@ bool Renderer::Resize() {
         glm::ortho(-std::floor((float)app->window_size.x / 2.0f), std::ceil((float)app->window_size.x / 2.0f),
                    -std::floor((float)app->window_size.y / 2.0f), std::ceil((float)app->window_size.y / 2.0f));
 
-    std::vector<Layer> layers;
+    eastl::vector<Layer> layers;
     layers.reserve(layer_textures.size());
     for (const auto &[layer, texture] : layer_textures) {
         layers.push_back(layer);
@@ -1295,7 +1295,7 @@ std::optional<Renderer::TileTextureError> Renderer::CreateTileTexture(const Tile
 }
 
 std::optional<Renderer::TileTextureError> Renderer::UploadTileTexture(const Tile tile,
-                                                                      std::span<const uint8_t> pixels) {
+                                                                      const eastl::vector<uint8_t>& pixels) {
     ZoneScoped;
     if (!tile_textures.contains(tile)) {
         return TileTextureError::MissingTexture;
@@ -1313,7 +1313,7 @@ std::optional<Renderer::TileTextureError> Renderer::UploadTileTexture(const Tile
     }
 
     auto *dst = (uint8_t *)(tile_upload_buffer_ptr + allocated_tile_upload_offset.at(tile));
-    memcpy(dst, pixels.data(), pixels.size_bytes());
+    memcpy(dst, pixels.data(), pixels.size() * sizeof(pixels[0]));
 
     return std::nullopt;
 }
@@ -1425,7 +1425,7 @@ bool Renderer::IsTileTextureDownloaded(Tile tile) const {
     return tile_downloaded.contains(tile);
 }
 
-bool Renderer::CopyTileTextureDownloaded(const Tile tile, std::vector<uint8_t> &tile_texture) {
+bool Renderer::CopyTileTextureDownloaded(const Tile tile, eastl::vector<uint8_t> &tile_texture) {
     ZoneScoped;
     SDL_assert(tile > 0 && "Tile is invalid");
     SDL_assert(IsTileTextureDownloaded(tile));

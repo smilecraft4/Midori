@@ -192,7 +192,7 @@ bool App::Update() {
 
                 if (ImGui::Begin("Layers")) {
                     // Temporary layer stuff
-                    std::vector<LayerInfo> layer_info;
+                    eastl::vector<LayerInfo> layer_info;
                     layer_info.reserve(canvas.layerInfos.size());
                     for (auto& [_, info] : canvas.layerInfos) {
                         layer_info.push_back(info);
@@ -591,7 +591,7 @@ void App::ShouldQuit() {
 
     canvas.canvasCommands.Clear();
 
-    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    const eastl::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
     if (canvas.brushOptionsModified) {
         canvas.SaveBrush();
     }
@@ -860,7 +860,7 @@ void App::Save() {
     }
     saving = true;
 
-    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    const eastl::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
     if (canvas.brushOptionsModified) {
         canvas.SaveBrush();
     }

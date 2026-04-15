@@ -67,8 +67,8 @@ public:
 
     [[nodiscard]] bool HasLayer(Layer layer) const;
     [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
-    [[nodiscard]] std::vector<Layer> Layers() const;
-    [[nodiscard]] std::vector<Tile> LayerTiles(Layer layer) const;
+    [[nodiscard]] eastl::vector<Layer> Layers() const;
+    [[nodiscard]] eastl::vector<Tile> LayerTiles(Layer layer) const;
 
     Layer CreateLayer(LayerInfo layerInfo);
     void DeleteLayer(Layer layer);
@@ -92,11 +92,11 @@ public:
     App* app;
 
     LayerHeight layersCurrentMaxHeight = 0;
-    std::unordered_map<Layer, LayerInfo> layerInfos;
-    std::unordered_map<Layer, std::unordered_set<Tile>> layerTiles;
-    std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>> layerTilePos;
-    std::unordered_set<Layer> layerToDelete;
-    std::unordered_set<Layer> layersModified;
+    eastl::unordered_map<Layer, LayerInfo> layerInfos;
+    eastl::unordered_map<Layer, eastl::unordered_set<Tile>> layerTiles;
+    eastl::unordered_map<Layer, eastl::unordered_map<glm::ivec2, Tile>> layerTilePos;
+    eastl::unordered_set<Layer> layerToDelete;
+    eastl::unordered_set<Layer> layersModified;
 
     // eastl::unordered_map<Layer, LayerInfo> layersInfo; // store data such as height, name, opacity, blendMode, etc...
     // eastl::vector<Layer> layersReusable;               // layers that are available before increasing layerLastIssued;
@@ -107,17 +107,17 @@ public:
     Layer strokeLayer = 0;
 
     Layer layerLastAssigned = 0;
-    std::vector<Layer> layersUnassigned;
+    eastl::vector<Layer> layersUnassigned;
 
     // Move to a Tile Structs
-    std::unordered_map<Tile, TileCoord> tileInfos;
+    eastl::unordered_map<Tile, TileCoord> tileInfos;
     Tile tileLastAssigned = 0;
-    std::vector<Tile> tilesUnassigned;
-    std::unordered_set<Tile> tileToUnload;
-    std::unordered_set<Tile> tileToDelete;
-    std::unordered_map<Layer, std::unordered_set<glm::ivec2>> layerTilesSaved;
-    std::unordered_map<Layer, std::unordered_set<Tile>> layerTilesModified;
-    std::unordered_map<Layer, std::unordered_set<Tile>> allTileModified;
+    eastl::vector<Tile> tilesUnassigned;
+    eastl::unordered_set<Tile> tileToUnload;
+    eastl::unordered_set<Tile> tileToDelete;
+    eastl::unordered_map<Layer, eastl::unordered_set<glm::ivec2>> layerTilesSaved;
+    eastl::unordered_map<Layer, eastl::unordered_set<Tile>> layerTilesModified;
+    eastl::unordered_map<Layer, eastl::unordered_set<Tile>> allTileModified;
 
     std::string filename;
 
@@ -134,10 +134,10 @@ public:
         Layer layer;
         Tile tile;
         TileReadState state;
-        std::vector<std::uint8_t> encodedTexture;
-        std::vector<std::uint8_t> rawTexture;
+        eastl::vector<std::uint8_t> encodedTexture;
+        eastl::vector<std::uint8_t> rawTexture;
     };
-    std::unordered_map<Tile, TileReadStatus> tile_read_queue;
+    eastl::unordered_map<Tile, TileReadStatus> tile_read_queue;
     void UpdateTileLoading();
 
     enum class TileWriteState : std::uint8_t {
@@ -153,10 +153,10 @@ public:
         Tile tile;
         TileWriteState state;
         glm::ivec2 position;
-        std::vector<std::uint8_t> encodedTexture;
-        std::vector<std::uint8_t> rawTexture;
+        eastl::vector<std::uint8_t> encodedTexture;
+        eastl::vector<std::uint8_t> rawTexture;
     };
-    std::unordered_map<Tile, TileWriteStatus> tile_write_queue;
+    eastl::unordered_map<Tile, TileWriteStatus> tile_write_queue;
     void UpdateTileUnloading();
 
     struct StrokePoint {
@@ -169,15 +169,15 @@ public:
         float _pad1;
         float _pad2;
     };
-    std::vector<StrokePoint> stroke_points;
-    std::unordered_set<Tile> stroke_tile_affected;
+    eastl::vector<StrokePoint> stroke_points;
+    eastl::unordered_set<Tile> stroke_tile_affected;
     eastl::hash_set<Tile> allTileStrokeAffected;
     StrokePoint previous_point = {};
     std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
 
-    std::vector<Color> DownloadCanvasTexture(glm::ivec2& size);
-    bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
-    std::vector<Color> canvasTexture_;
+    eastl::vector<Color> DownloadCanvasTexture(glm::ivec2& size);
+    bool SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
+    eastl::vector<Color> canvasTexture_;
     glm::ivec2 canvasTextureSize_;
 
     // TODO: Merge brush and eraser in a single struct with a erase flag

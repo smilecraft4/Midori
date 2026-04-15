@@ -43,7 +43,7 @@ public:
     void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "");
 
     SDL_Window* window = nullptr;
-    std::vector<std::string> args;
+    eastl::vector<std::string> args;
 
     bool saving = false;
     bool should_quit = false;
