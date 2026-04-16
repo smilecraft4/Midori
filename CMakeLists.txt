@@ -2,10 +2,12 @@
 
 project(Midori)
 
+
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -33,8 +35,7 @@ add_library(midori_lib
   "src/commands.cpp"
   "src/ui.cpp"
 )
-# target_compile_definitions(midori_lib PUBLIC $<$<CONFIG:Debug>:TRACY_ENABLE>)
-# target_compile_definitions(midori_lib PRIVATE TRACY_ENABLE)
+
 target_link_libraries(midori_lib PUBLIC SDL3::SDL3 Tracy::TracyClient glm::glm freetype harfbuzz EASTL)
 target_include_directories(midori_lib PUBLIC "deps/imgui/")
 target_include_directories(midori_lib PUBLIC "deps/nlohmann/")
@@ -50,31 +51,15 @@ target_sources(midori_lib PRIVATE
 )
 
 # Executable
-add_executable(midori WIN32 "src/main.cpp" "data/resource.rc")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")  
+    add_executable(midori WIN32 "src/main.cpp" "data/resource.rc")
+    add_subdirectory(data/shaders/dxil)
+    add_dependencies(midori midori_shaders_dxil)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(midori "src/main.cpp")
+    add_subdirectory(data/shaders/spirv)
+    add_dependencies(midori midori_shaders_spirv)
+endif()
+
 target_link_libraries(midori PRIVATE midori_lib)
-
-add_subdirectory(data/shaders/dxil)
-add_subdirectory(data/shaders/spirv)
-add_dependencies(midori midori_shaders_spirv midori_shaders_dxil)
-
-# Installer
-# TODO
-
-# Tests
-# enable_testing()
-# add_subdirectory(deps/googletest)
-# set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-# add_executable(midori_test
-#   "test/midori_ring_array_test.cpp"
-#   "test/midori_history_test.cpp"
-# )
-# target_link_libraries(midori_test PRIVATE midori_lib GTest::gtest_main)
-# include(GoogleTest)
-# gtest_discover_tests(midori_test)
-
-# Benchmark
-# add_subdirectory(deps/benchmark)
-# add_executable(midori_benchmark
-#   "benchmark/midori_benchmark.cpp"
-# )
-# target_link_libraries(midori_benchmark PRIVATE midori_lib benchmark::benchmark_main)

@@ -32,7 +32,13 @@ bool Renderer::Init() {
     constexpr bool debugMode = true;
 #endif // NDEBUG
 
-    device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL, debugMode, nullptr);
+#ifdef WIN32
+    constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL;
+#else
+    constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV; 
+#endif
+
+    device = SDL_CreateGPUDevice(supportedFormats, debugMode, nullptr);
     if (device == nullptr) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create gpu device: %s", SDL_GetError());
         return false;
