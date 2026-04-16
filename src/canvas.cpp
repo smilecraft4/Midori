@@ -1323,9 +1323,6 @@ void Canvas::StartEraserStroke(StrokePoint point) {
 
     const auto tilesPos = GetTilePosAffectedByStrokePoint(point);
 
-    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
-    SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
-
     // TODO: find a better algorithm when erasing on layers. Right now the opacity of the erase brush does not work.
     // TODO: find a way to duplicate the layer this early and instead use a temporary internal layer as the
     // modification source
@@ -1341,11 +1338,6 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     }
 
     currentTileModificationCommand->SavePreviousTilesTexture(tileTexturesToSave);
-
-    SDL_EndGPUCopyPass(copyPass);
-    auto* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-    SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
-    SDL_ReleaseGPUFence(app->renderer.device, fence);
 
     // stroke_points.push_back(point);
     stroke_points.clear();
@@ -1379,6 +1371,7 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
     ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debug_color.r, debug_color.g, debug_color.b);
 
     eastl::hash_set<Tile> tileTexturesToSave;
+
     const auto t_step = eraserOptions.spacing / distance;
     float t = t_step;
     while (t < 1.0f) {
@@ -1400,23 +1393,17 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
 
         const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint);
 
-        SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(app->renderer.device);
-        SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
-
         for (const auto& tile_pos : tilesPos) {
             Tile tile = GetLoadedTileAt(selectedLayer, tile_pos);
             if (tile != TILE_INVALID) {
                 stroke_tile_affected.insert(tile);
                 layerTilesModified[selectedLayer].insert(tile);
-                allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tile_pos));
-                tileTexturesToSave.insert(tile);
+                if(!allTileStrokeAffected.contains(tile)) {
+                    allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tile_pos));
+                    tileTexturesToSave.insert(tile);
+                }
             }
         }
-
-        SDL_EndGPUCopyPass(copyPass);
-        auto* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-        SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
-        SDL_ReleaseGPUFence(app->renderer.device, fence);
     }
 
     currentTileModificationCommand->SavePreviousTilesTexture(tileTexturesToSave);
