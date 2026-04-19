@@ -7,14 +7,8 @@
 #include <EASTL/unordered_set.h>
 #include <SDL3/SDL_gpu.h>
 #include <cstdint>
-#include <expected>
-#include <filesystem>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
-#include <optional>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 
@@ -99,8 +93,9 @@ public:
     eastl::unordered_set<Layer> layersModified;
 
     // eastl::unordered_map<Layer, LayerInfo> layersInfo; // store data such as height, name, opacity, blendMode, etc...
-    // eastl::vector<Layer> layersReusable;               // layers that are available before increasing layerLastIssued;
-    eastl::vector<Layer> layersHeightSorted;           // layer sorted by rendering order
+    // eastl::vector<Layer> layersReusable;               // layers that are available before increasing
+    // layerLastIssued;
+    eastl::vector<Layer> layersHeightSorted; // layer sorted by rendering order
     // std::atomic<Layer> layerLastIssued;                // last layer issued, check layersReusable before
 
     Layer selectedLayer = 0;
@@ -175,8 +170,11 @@ public:
     StrokePoint previous_point = {};
     std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
 
-    eastl::vector<Color> DownloadCanvasTexture(glm::ivec2& size);
-    bool SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
+    eastl::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
+
+    // Can this be turned into a free function ?
+    static bool SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
+
     eastl::vector<Color> canvasTexture_;
     glm::ivec2 canvasTextureSize_;
 

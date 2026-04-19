@@ -3,11 +3,8 @@
 #include "layers.h"
 #include "tiles.h"
 #include <cstdint>
-#include <optional>
-#include <span>
 #include <EASTL/unordered_map.h>
 #include <EASTL/unordered_set.h>
-#include <vector>
 #include <SDL3/SDL_gpu.h>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -152,13 +149,5 @@ class Renderer {
     std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
 
     SDL_GPUShaderFormat shaderFormat;
-    // TODO: use headers instead dxc -Fh
-    std::string layerVertFilename;
-    std::string layerFragFilename;
-    std::string tileVertFilename;
-    std::string tileFragFilename;
-    std::string eraseCompFilename;
-    std::string paintCompFilename;
-    std::string mergeCompFilename;
 };
 }  // namespace Midori

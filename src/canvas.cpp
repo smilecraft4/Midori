@@ -8,12 +8,9 @@
 #include <format>
 #include <imgui.h>
 #include <map>
-#include <numbers>
 #include <string>
 #include <tracy/Tracy.hpp>
-#include <unordered_set>
 #include <utility>
-#include <vector>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 #include <json.hpp>
@@ -38,15 +35,15 @@ SDL_EnumerationResult findLayersCallback(void* userdata, const char* dirname, co
         char* buf = (char*)SDL_LoadFile(path.c_str(), &size);
         SDL_assert(buf && size);
 
-        auto layerJson = nlohmann::json::parse(buf);
-        const std::string name = layerJson.at("name");
-        const uint8_t depth = layerJson.at("height");
+        const auto layerJson = nlohmann::json::parse(buf);
 
         LayerInfo layerInfo{};
         layerInfo.id = layerJson.at("id");
         layerInfo.opacity = layerJson.at("opacity");
         layerInfo.locked = layerJson.at("locked");
         layerInfo.hidden = layerJson.at("hidden");
+        layerInfo.name = layerJson.at("name");
+        layerInfo.height = layerJson.at("height");
         const auto layer = canvas->CreateLayer(layerInfo);
         SDL_assert(layer != LAYER_INVALID);
 
@@ -360,7 +357,7 @@ bool Canvas::SaveLayer(Layer layer) {
     return true;
 }
 
-Layer Canvas::DuplicateLayer(Layer layer, bool internal) {
+Layer Canvas::DuplicateLayer(Layer layer, bool temporary) {
     assert(layerInfos.contains(layer));
 
     Layer newLayer = LAYER_INVALID;
@@ -368,11 +365,11 @@ Layer Canvas::DuplicateLayer(Layer layer, bool internal) {
         auto newLayerInfo = layerInfos[layer];
         newLayerInfo.id = LAYER_INVALID;
         newLayerInfo.height++;
-        newLayerInfo.internal = internal;
+        newLayerInfo.internal = temporary;
         newLayer = CreateLayer(newLayerInfo);
     }
 
-    if (!internal) {
+    if (!temporary) {
         // Duplicate save folder for layers
         std::string layerPath = std::format("{}/{}", filename, layerInfos[layer].id);
         std::string newLayerPath = std::format("{}/{}", filename, layerInfos[newLayer].id);
@@ -623,12 +620,12 @@ void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos) {
         // SDL_Log("%.2f, %.2f", viewCursorDelta.x, viewCursorDelta.y);
         viewport.Translate(viewCursorDelta);
     } else if (viewRotating) {
-        const auto startAngle = std::atan2(viewCursorStart.x - static_cast<float>(app->window_size.x) / 2.0f,
-                                           viewCursorStart.y - static_cast<float>(app->window_size.y) / 2.0f);
-        const auto previousAngle = std::atan2(viewCursorPrevious.x - static_cast<float>(app->window_size.x) / 2.0f,
-                                              viewCursorPrevious.y - static_cast<float>(app->window_size.y) / 2.0f);
-        const auto currentAngle = std::atan2(cursor_pos.x - static_cast<float>(app->window_size.x) / 2.0f,
-                                             cursor_pos.y - static_cast<float>(app->window_size.y) / 2.0f);
+        const auto startAngle = std::atan2(viewCursorStart.x - (static_cast<float>(app->window_size.x) / 2.0f),
+                                           viewCursorStart.y - (static_cast<float>(app->window_size.y) / 2.0f));
+        const auto previousAngle = std::atan2(viewCursorPrevious.x - (static_cast<float>(app->window_size.x) / 2.0f),
+                                              viewCursorPrevious.y - (static_cast<float>(app->window_size.y) / 2.0f));
+        const auto currentAngle = std::atan2(cursor_pos.x - (static_cast<float>(app->window_size.x) / 2.0f),
+                                             cursor_pos.y - (static_cast<float>(app->window_size.y) / 2.0f));
         const auto angleDelta = (previousAngle - startAngle) - (currentAngle - startAngle);
         viewport.Rotate(angleDelta);
     } else if (viewZooming) {
@@ -1200,7 +1197,7 @@ void Canvas::ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode) {
     }
 }
 
-eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
+eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) const {
     ZoneScoped;
 
     SDL_assert(app->window_size.x > 0);
@@ -1211,7 +1208,7 @@ eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
     size.y = app->window_size.y;
 
     eastl::vector<Color> canvasTexture(static_cast<std::size_t>(app->window_size.x) *
-                                     static_cast<std::size_t>(app->window_size.y));
+                                       static_cast<std::size_t>(app->window_size.y));
 
     const SDL_GPUTransferBufferCreateInfo transferBufferCreateInfo = {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
@@ -1249,7 +1246,7 @@ eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
     SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
     SDL_ReleaseGPUFence(app->renderer.device, fence);
 
-    Color* colors = static_cast<Color*>(SDL_MapGPUTransferBuffer(app->renderer.device, transferBuffer, false));
+    const auto* colors = static_cast<Color*>(SDL_MapGPUTransferBuffer(app->renderer.device, transferBuffer, false));
 
     std::memcpy(canvasTexture.data(), colors, canvasTexture.size() * sizeof(Color));
 
@@ -1262,31 +1259,23 @@ eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) {
 bool Canvas::SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color) {
     SDL_assert(textureSize.x > 0);
     SDL_assert(textureSize.y > 0);
-    SDL_assert(texture.size() == textureSize.x * textureSize.y);
+    SDL_assert(texture.size() == static_cast<std::size_t>(textureSize.x) * textureSize.y &&
+               "SampleTexture is of wrong dimensions");
 
-    if (std::floor(pos.x) < 0.0f || std::ceil(pos.x) >= textureSize.x) {
+    const auto rx = static_cast<int>(std::round(pos.x));
+    const auto ry = static_cast<int>(std::round(pos.y));
+
+    if (rx < 0 || rx >= textureSize.x) {
         return false;
     }
-    if (std::floor(pos.y) < 0.0f || std::ceil(pos.y) >= textureSize.y) {
+    if (ry < 0 || ry >= textureSize.y) {
         return false;
     }
 
-    SDL_assert(static_cast<std::size_t>(std::floor(pos.x)) >= 0);
-    SDL_assert(static_cast<std::size_t>(std::floor(pos.y)) >= 0);
-    SDL_assert(static_cast<std::size_t>(std::ceil(pos.x)) <= textureSize.x);
-    SDL_assert(static_cast<std::size_t>(std::ceil(pos.y)) <= textureSize.y);
-
-    std::size_t index =
-        static_cast<std::size_t>(std::round(pos.x)) + static_cast<std::size_t>(std::round(pos.y)) * textureSize.x;
-    SDL_assert(index < texture.size());
+    const std::size_t index = static_cast<std::size_t>(rx) + (static_cast<std::size_t>(ry) * textureSize.x);
+    SDL_assert(index < texture.size() && "Sample out of bound");
 
     color = texture[index];
-
-    // if (color.a > 0) {
-    //     color.r /= color.a;
-    //     color.g /= color.a;
-    //     color.b /= color.a;
-    // }
     return true;
 }
 
@@ -1398,7 +1387,7 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
             if (tile != TILE_INVALID) {
                 stroke_tile_affected.insert(tile);
                 layerTilesModified[selectedLayer].insert(tile);
-                if(!allTileStrokeAffected.contains(tile)) {
+                if (!allTileStrokeAffected.contains(tile)) {
                     allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tile_pos));
                     tileTexturesToSave.insert(tile);
                 }

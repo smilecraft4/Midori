@@ -6,8 +6,6 @@
 #include <format>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
-#include <numbers>
-#include <random>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
@@ -57,9 +55,9 @@ bool App::Init() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-#ifdef WIN32
+#ifdef MIDORI_WINDOWS
     io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/Segoeui.ttf", 16.0f);
-#else
+#elifdef MIDORI_LINUX
     io.Fonts->AddFontFromFileTTF("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 16.0f);
 #endif
 
@@ -83,7 +81,10 @@ bool App::Init() {
     return true;
 }
 
-static const SDL_DialogFileFilter filters[] = {{"Midori files (.mido)", "mido"}, {"All files", "*"}};
+static const SDL_DialogFileFilter filters[] = {
+    {.name = "Midori files (.mido)", .pattern = "mido"},
+    {.name = "All files", .pattern = "*"},
+};
 
 bool App::Update() {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -181,16 +182,13 @@ bool App::Update() {
                     ImGui::Checkbox("view loaded tiles", &ui_debug_culling);
 
                     size_t tileModified{};
-                    size_t tileSaved{};
                     for (const auto& [la, infos] : canvas.layerInfos) {
                         tileModified += canvas.layerTilesModified.at(la).size();
-                        // tileSaved += canvas.layerTilesSaved.at(layer).size();
                     }
 
                     ImGui::LabelText("tile loaded", "%zu", canvas.tileInfos.size());
                     ImGui::LabelText("tile textures", "%zu", renderer.tile_textures.size());
                     ImGui::LabelText("tile modified", "%zu", tileModified);
-                    ImGui::LabelText("tile saved", "%zu", 0);
                 }
                 ImGui::End();
 
@@ -388,7 +386,7 @@ bool App::Update() {
                             canvas.eraserOptionsModified = true;
                         }
                         ImGui::Separator();
-                        ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
+                        ImGui::LabelText("Stroke num", "%zu", canvas.stroke_points.size());
                         ImGui::Checkbox("Using pen", &pen_in_range);
                         ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
                         ImGui::LabelText("Pressure", "%.2f", pen_pressure);
@@ -504,7 +502,7 @@ bool App::Update() {
                             canvas.brushOptionsModified = true;
                         }
                         ImGui::Separator();
-                        ImGui::LabelText("Stroke num", "%llu", canvas.stroke_points.size());
+                        ImGui::LabelText("Stroke num", "%zu", canvas.stroke_points.size());
                         ImGui::Checkbox("Using pen", &pen_in_range);
                         ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
                         ImGui::LabelText("Pressure", "%.2f", pen_pressure);
@@ -513,16 +511,16 @@ bool App::Update() {
                 ImGui::End();
 
                 if (ImGui::Begin("Canvas History")) {
-                    if (!canvas.canvasCommands.Empty()) {
+                    if (canvas.canvasCommands.Empty() == 0u) {
                         for (int pos = canvas.canvasCommands.Count() - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.canvasCommands.Get(pos);
-                             const auto name = command->Name();
+                            const auto name = command->Name();
                             if ((pos + 1) < canvas.canvasCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
+                                ImGui::TextColored(ImColor(0, 0, 0), "[%d]: %s", pos, name.c_str());
                             } else if ((pos + 1) == canvas.canvasCommands.position) {
-                                ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
+                                ImGui::TextColored(ImColor(0, 128, 0), "[%d]: %s", pos, name.c_str());
                             } else if ((pos + 1) > canvas.canvasCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 128), "[%llu]: %s", pos, name.c_str());
+                                ImGui::TextColored(ImColor(0, 0, 128), "[%d]: %s", pos, name.c_str());
                             }
                         }
                     } else {
@@ -531,16 +529,16 @@ bool App::Update() {
                 }
                 ImGui::End();
                 if (ImGui::Begin("View History")) {
-                    if (!canvas.viewCommands.Empty()) {
+                    if (canvas.viewCommands.Empty() == 0u) {
                         for (int pos = canvas.viewCommands.Count() - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.viewCommands.Get(pos);
-                             const auto name = command->Name();
+                            const auto name = command->Name();
                             if ((pos + 1) < canvas.viewCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 0), "[%llu]: %s", pos, name.c_str());
+                                ImGui::TextColored(ImColor(0, 0, 0), "[%d]: %s", pos, name.c_str());
                             } else if ((pos + 1) == canvas.viewCommands.position) {
-                                ImGui::TextColored(ImColor(0, 128, 0), "[%llu]: %s", pos, name.c_str());
+                                ImGui::TextColored(ImColor(0, 128, 0), "[%d]: %s", pos, name.c_str());
                             } else if ((pos + 1) > canvas.viewCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 128), "[%llu]: %s", pos, name.c_str());
+                                ImGui::TextColored(ImColor(0, 0, 128), "[%d]: %s", pos, name.c_str());
                             }
                         }
                     } else {
@@ -670,8 +668,8 @@ void App::CursorMove(glm::vec2 new_pos) {
 
         Color color;
         auto samplePos = new_pos;
-        samplePos.y = window_size.y - new_pos.y;
-        canvas.SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
+        samplePos.y = static_cast<float>(window_size.y) - new_pos.y;
+        Midori::Canvas::SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
         sampledColor.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
         sampledColor.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
         sampledColor.b = static_cast<float>(color.b) / static_cast<float>(UINT8_MAX);
@@ -818,8 +816,8 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
             canvas.canvasTexture_ = canvas.DownloadCanvasTexture(canvas.canvasTextureSize_);
             Color color;
             auto samplePos = cursor_current_pos;
-            samplePos.y = window_size.y - cursor_current_pos.y;
-            canvas.SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
+            samplePos.y = static_cast<float>(window_size.y) - cursor_current_pos.y;
+            Midori::Canvas::SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
             sampledColor.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
             sampledColor.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
             sampledColor.b = static_cast<float>(color.b) / static_cast<float>(UINT8_MAX);
@@ -872,6 +870,7 @@ void App::Save() {
         canvas.SaveEraser();
     }
 
+    // TODO: Save the selected layer
     for (const auto& layer : layersToSave) {
         if (canvas.layerInfos[layer].internal) {
             continue;
@@ -923,14 +922,14 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     canvas.ViewUpdateState(cursor_current_pos);
 }
 
-void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) {
+void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) const {
     const auto tilePositions = canvas.viewport.VisibleTiles();
     for (const auto& tilePosition : tilePositions) {
         DrawTileDebug(tilePosition, drawList, IM_COL32(255, 0, 0, 128));
     }
 }
 
-void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) {
+void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) const {
     ImVec2 points[5]{};
     ImVec2 center;
     glm::vec2 offsets[5] = {
@@ -941,13 +940,13 @@ void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const s
         {1.0f, 1.0f},
     };
     for (size_t i = 0; i < 5; i++) {
-        glm::vec4 p = canvas.viewport.ViewMatrix() *
-                      glm::vec4(static_cast<glm::vec2>(pos) * static_cast<float>(TILE_WIDTH, TILE_HEIGHT) + offsets[i],
-                                0.0f, 1.0f);
+        glm::vec4 p =
+            canvas.viewport.ViewMatrix() *
+            glm::vec4(static_cast<glm::vec2>(pos) * glm::vec2(TILE_WIDTH, TILE_HEIGHT) + offsets[i], 0.0f, 1.0f);
 
         points[i] = ImVec2{
-            static_cast<float>(window_size.x) / 2.0f + p.x,
-            static_cast<float>(window_size.y) / 2.0f + p.y,
+            (static_cast<float>(window_size.x) / 2.0f) + p.x,
+            (static_cast<float>(window_size.y) / 2.0f) + p.y,
         };
         center.x += points[i].x / 5.0f;
         center.y += points[i].y / 5.0f;

@@ -1,5 +1,6 @@
 ﻿#include "renderer.h"
 
+#include "SDL3/SDL_stdinc.h"
 #include "app.h"
 #include "canvas.h"
 #include "layers.h"
@@ -16,7 +17,24 @@
 #include <imgui.h>
 #include <qoi.h>
 #include <tracy/Tracy.hpp>
-#include <vector>
+
+#ifdef MIDORI_WINDOWS
+#include "shaders/dxil/erase.cs.h"
+#include "shaders/dxil/layer.ps.h"
+#include "shaders/dxil/layer.vs.h"
+#include "shaders/dxil/merge.cs.h"
+#include "shaders/dxil/paint.cs.h"
+#include "shaders/dxil/tile.ps.h"
+#include "shaders/dxil/tile.vs.h"
+#elifdef MIDORI_LINUX
+#include "shaders/spirv/erase.comp.h"
+#include "shaders/spirv/layer.frag.h"
+#include "shaders/spirv/layer.vert.h"
+#include "shaders/spirv/merge.comp.h"
+#include "shaders/spirv/paint.comp.h"
+#include "shaders/spirv/tile.frag.h"
+#include "shaders/spirv/tile.vert.h"
+#endif
 
 namespace Midori {
 
@@ -32,10 +50,12 @@ bool Renderer::Init() {
     constexpr bool debugMode = true;
 #endif // NDEBUG
 
-#ifdef WIN32
+#ifdef MIDORI_WINDOWS
     constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL;
+#elifdef MIDORI_LINUX
+    constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV;
 #else
-    constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV; 
+    static_assert(false, "Unsupported platform");
 #endif
 
     device = SDL_CreateGPUDevice(supportedFormats, debugMode, nullptr);
@@ -48,23 +68,9 @@ bool Renderer::Init() {
     if (strcmp(deviceDriver, "direct3d12") == 0) {
         SDL_Log("Backend: %s", deviceDriver);
         shaderFormat = SDL_GPU_SHADERFORMAT_DXIL;
-        layerVertFilename = "./data/shaders/dxil/layer.vs.cso";
-        layerFragFilename = "./data/shaders/dxil/layer.ps.cso";
-        tileVertFilename = "./data/shaders/dxil/tile.vs.cso";
-        tileFragFilename = "./data/shaders/dxil/tile.ps.cso";
-        eraseCompFilename = "./data/shaders/dxil/erase.cs.cso";
-        paintCompFilename = "./data/shaders/dxil/paint.cs.cso";
-        mergeCompFilename = "./data/shaders/dxil/merge.cs.cso";
     } else if (strcmp(deviceDriver, "vulkan") == 0) {
         SDL_Log("Backend: %s", deviceDriver);
         shaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
-        layerVertFilename = "./data/shaders/spirv/layer.vert.spv";
-        layerFragFilename = "./data/shaders/spirv/layer.frag.spv";
-        tileVertFilename = "./data/shaders/spirv/tile.vert.spv";
-        tileFragFilename = "./data/shaders/spirv/tile.frag.spv";
-        eraseCompFilename = "./data/shaders/spirv/erase.comp.spv";
-        paintCompFilename = "./data/shaders/spirv/paint.comp.spv";
-        mergeCompFilename = "./data/shaders/spirv/merge.comp.spv";
     }
 
     if (!SDL_ClaimWindowForGPUDevice(device, app->window)) {
@@ -104,16 +110,11 @@ bool Renderer::Init() {
 
 bool Renderer::InitLayers() {
     ZoneScoped;
-    size_t vertex_code_size = 0;
-    auto* vertex_code = (Uint8*)SDL_LoadFile(layerVertFilename.c_str(), &vertex_code_size);
-    if (vertex_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", layerVertFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
     const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
-        .code_size = vertex_code_size,
-        .code = vertex_code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_layer_vert),
+        .code = reinterpret_cast<const Uint8*>(shader_layer_vert),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_VERTEX,
@@ -127,16 +128,11 @@ bool Renderer::InitLayers() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create layer vertex shader: %s", SDL_GetError());
     }
 
-    size_t fragment_code_size = 0;
-    auto* fragment_code = (Uint8*)SDL_LoadFile(layerFragFilename.c_str(), &fragment_code_size);
-    if (fragment_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", layerFragFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
     const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
-        .code_size = fragment_code_size,
-        .code = fragment_code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_layer_frag),
+        .code = reinterpret_cast<const Uint8*>(shader_layer_frag),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -198,8 +194,8 @@ bool Renderer::InitLayers() {
         .depth_stencil_state =
             {
                 .compare_op = SDL_GPU_COMPAREOP_INVALID,
-                .back_stencil_state = {SDL_GPU_STENCILOP_INVALID},
-                .front_stencil_state = {SDL_GPU_STENCILOP_INVALID},
+                .back_stencil_state = {.fail_op = SDL_GPU_STENCILOP_INVALID},
+                .front_stencil_state = {.fail_op = SDL_GPU_STENCILOP_INVALID},
                 .compare_mask = 0,
                 .write_mask = 0,
                 .enable_depth_test = false,
@@ -264,16 +260,11 @@ bool Renderer::InitLayers() {
 
 bool Renderer::InitTiles() {
     ZoneScoped;
-    size_t vertex_code_size = 0;
-    auto* vertex_code = (Uint8*)SDL_LoadFile(tileVertFilename.c_str(), &vertex_code_size);
-    if (vertex_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", tileVertFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
     const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
-        .code_size = vertex_code_size,
-        .code = vertex_code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_tile_vert),
+        .code = reinterpret_cast<const Uint8*>(shader_tile_vert),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_VERTEX,
@@ -286,16 +277,12 @@ bool Renderer::InitTiles() {
     if (tile_vertex_shader == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tile vertex shader: %s", SDL_GetError());
     }
-    size_t fragment_code_size = 0;
-    auto* fragment_code = (Uint8*)SDL_LoadFile(tileFragFilename.c_str(), &fragment_code_size);
-    if (fragment_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", tileFragFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
+
     const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
-        .code_size = fragment_code_size,
-        .code = fragment_code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_tile_frag),
+        .code = reinterpret_cast<const Uint8*>(shader_tile_frag),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -358,8 +345,8 @@ bool Renderer::InitTiles() {
         .depth_stencil_state =
             {
                 .compare_op = SDL_GPU_COMPAREOP_INVALID,
-                .back_stencil_state = {SDL_GPU_STENCILOP_INVALID},
-                .front_stencil_state = {SDL_GPU_STENCILOP_INVALID},
+                .back_stencil_state = {.fail_op = SDL_GPU_STENCILOP_INVALID},
+                .front_stencil_state = {.fail_op = SDL_GPU_STENCILOP_INVALID},
                 .compare_mask = 0,
                 .write_mask = 0,
                 .enable_depth_test = false,
@@ -459,16 +446,11 @@ bool Renderer::InitTiles() {
 }
 
 bool Renderer::InitMerge() {
-    size_t code_size = 0;
-    auto* code = (Uint8*)SDL_LoadFile(mergeCompFilename.c_str(), &code_size);
-    if (code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", mergeCompFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
     const SDL_GPUComputePipelineCreateInfo create_info = {
-        .code_size = code_size,
-        .code = code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_merge_comp),
+        .code = reinterpret_cast<const Uint8*>(shader_merge_comp),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .num_samplers = 1,
@@ -491,16 +473,11 @@ bool Renderer::InitMerge() {
 }
 
 bool Renderer::InitPaint() {
-    size_t paint_code_size = 0;
-    auto* paint_code = (Uint8*)SDL_LoadFile(paintCompFilename.c_str(), &paint_code_size);
-    if (paint_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", paintCompFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
     const SDL_GPUComputePipelineCreateInfo paint_create_info = {
-        .code_size = paint_code_size,
-        .code = paint_code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_paint_comp),
+        .code = reinterpret_cast<const Uint8*>(shader_paint_comp),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .num_samplers = 1, // alpha brush
@@ -518,18 +495,12 @@ bool Renderer::InitPaint() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize paint compute pipeline: %s", SDL_GetError());
         return false;
     }
-    SDL_free(paint_code);
 
-    size_t erase_code_size = 0;
-    auto* erase_code = (Uint8*)SDL_LoadFile(eraseCompFilename.c_str(), &erase_code_size);
-    if (erase_code_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open file \"%s\": %s", eraseCompFilename.c_str(),
-                     SDL_GetError());
-        return false;
-    }
     const SDL_GPUComputePipelineCreateInfo erase_create_info = {
-        .code_size = erase_code_size,
-        .code = erase_code,
+#ifdef MIDORI_LINUX
+        .code_size = sizeof(shader_erase_comp),
+        .code = reinterpret_cast<const Uint8*>(shader_erase_comp),
+#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .num_samplers = 1, // alpha brush
@@ -547,7 +518,6 @@ bool Renderer::InitPaint() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize erase compute pipeline: %s", SDL_GetError());
         return false;
     }
-    SDL_free(erase_code);
 
     const SDL_GPUBufferCreateInfo buffer_create_info = {
         .usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,
@@ -1010,7 +980,7 @@ bool Renderer::Render() {
                 // TODO: only redraw changed & visible tiles
                 const SDL_GPUColorTargetInfo target_info = {
                     .texture = layer_textures[layer_info.id],
-                    .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f},
+                    .clear_color = SDL_FColor{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 0.0f},
                     .load_op = SDL_GPU_LOADOP_CLEAR,
                     .store_op = SDL_GPU_STOREOP_STORE,
                 };
@@ -1053,7 +1023,7 @@ bool Renderer::Render() {
 
             const SDL_GPUColorTargetInfo target_info = {
                 .texture = canvas_texture,
-                .clear_color = SDL_FColor{rgb.r, rgb.g, rgb.b, app->bg_color.a},
+                .clear_color = SDL_FColor{.r = rgb.r, .g = rgb.g, .b = rgb.b, .a = app->bg_color.a},
                 .load_op = SDL_GPU_LOADOP_CLEAR,
                 .store_op = SDL_GPU_STOREOP_STORE,
             };
@@ -1114,7 +1084,7 @@ bool Renderer::Render() {
             ZoneScopedN("Render canvas texture");
             const SDL_GPUColorTargetInfo target_info = {
                 .texture = swapchain_texture,
-                .clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f},
+                .clear_color = SDL_FColor{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f},
                 .load_op = SDL_GPU_LOADOP_CLEAR,
                 .store_op = SDL_GPU_STOREOP_STORE,
             };

@@ -7,9 +7,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <imgui.h>
-#include <random>
 #include <string>
-#include <vector>
 
 namespace Midori {
 
@@ -39,8 +37,9 @@ public:
     void KeyPress(SDL_Keycode key, SDL_Keymod mods);
     void KeyRelease(SDL_Keycode key, SDL_Keymod mods);
 
-    void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList);
-    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "");
+    // TODO: this should not be there but somewhere else
+    void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) const;
+    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "") const;
 
     SDL_Window* window = nullptr;
     eastl::vector<std::string> args;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Midori
+Comment=Digital painting application
+Exec=midori
+Icon=midori
+Type=Application
+Categories=Graphics;
+StartupNotify=true
