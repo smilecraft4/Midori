@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <qoi.h>

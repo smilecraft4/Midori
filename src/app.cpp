@@ -1,6 +1,7 @@
 ﻿#include "app.h"
 
 #include <SDL3/SDL_log.h>
+#include <algorithm>
 #include <backends/imgui_impl_sdl3.h>
 #include <backends/imgui_impl_sdlgpu3.h>
 #include <format>
