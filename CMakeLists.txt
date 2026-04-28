@@ -2,10 +2,7 @@
 
 project(Midori VERSION 0.1.0)
 
-include(GNUInstallDirs)
-
-
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.1)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -88,6 +85,7 @@ target_sources(midori PRIVATE
 
 # Install
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(GNUInstallDirs)
     install(TARGETS midori RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     install(FILES data/midori.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
     install(FILES data/icon.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps RENAME midori.png)

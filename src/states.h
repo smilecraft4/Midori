@@ -2,6 +2,7 @@
 
 #include <EASTL/stack.h>
 #include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_events.h>
 #include <glm/vec2.hpp>
 #include <memory>
 
@@ -11,19 +12,13 @@ struct App;
 struct StateManager;
 
 struct IState {
-    explicit IState(StateManager& sm, App& app);
+    explicit IState(StateManager& sm);
     virtual ~IState() = default;
 
-    virtual void OnCursorMove(glm::vec2 pos) {}
-    virtual void OnCursorPress(Uint8 button) {}
-    virtual void OnCursorRelease(Uint8 button) {}
-    virtual void OnKeyPress(SDL_Keycode key, SDL_Keymod mods) {}
-    virtual void OnKeyRelease(SDL_Keycode key, SDL_Keymod mods) {}
-    virtual void OnEvent() {}
+    virtual void OnEvent(const SDL_Event* event);
 
 protected:
     StateManager& sm_;
-    App& app_;
 };
 
 struct StateManager {
@@ -34,26 +29,17 @@ struct StateManager {
     void Push(std::unique_ptr<IState> state);
     void Pop();
 
-    void OnCursorMove(glm::vec2 pos);
-    void OnCursorPress(Uint8 button);
-    void OnCursorRelease(Uint8 button);
-    void OnKeyPress(SDL_Keycode key, SDL_Keymod mods);
-    void OnKeyRelease(SDL_Keycode key, SDL_Keymod mods);
-    void OnEvent();
+    void OnEvent(const SDL_Event* event);
 
 private:
     App& app_;
-    eastl::stack<std::unique_ptr<IState>> states_;
+    eastl::vector<std::unique_ptr<IState>> states_;
 };
 
 struct NavigateState : IState {
     explicit NavigateState(StateManager& sm, App& app);
 
-    void OnCursorMove(glm::vec2 pos) override;
-    void OnCursorPress(Uint8 button) override;
-    void OnCursorRelease(Uint8 button) override;
-    void OnKeyPress(SDL_Keycode key, SDL_Keymod mods) override;
-    void OnKeyRelease(SDL_Keycode key, SDL_Keymod mods) override;
+    void OnEvent(const SDL_Event* event) override;
 
     bool panning = false;
     bool rotating = false;
@@ -63,32 +49,25 @@ struct NavigateState : IState {
 struct PaintState : IState {
     explicit PaintState(StateManager& sm, App& app);
 
-    void OnCursorMove(glm::vec2 pos) override;
-    void OnCursorRelease(Uint8 button) override;
-    void OnKeyPress(SDL_Keycode key, SDL_Keymod mods) override;
+    void OnEvent(const SDL_Event* event) override;
 };
 
 struct EraseState : IState {
     explicit EraseState(StateManager& sm, App& app);
 
-    void OnCursorMove(glm::vec2 pos) override;
-    void OnCursorRelease(Uint8 button) override;
-    void OnKeyPress(SDL_Keycode key, SDL_Keymod mods) override;
+    void OnEvent(const SDL_Event* event) override;
 };
 
 struct SelectState : IState {
     explicit SelectState(StateManager& sm, App& app);
 
-    void OnCursorMove(glm::vec2 pos) override;
-    void OnCursorPress(Uint8 button) override;
-    void OnKeyRelease(SDL_Keycode key, SDL_Keymod mods) override;
-    void OnEvent() override;
+    void OnEvent(const SDL_Event* event) override;
 };
 
 struct TransformState : IState {
     explicit TransformState(StateManager& sm, App& app);
 
-    void OnEvent() override;
+    void OnEvent(const SDL_Event* event) override;
 };
 
 } // namespace Midori
