@@ -19,15 +19,15 @@
 #include <qoi.h>
 #include <tracy/Tracy.hpp>
 
-#ifdef MIDORI_WINDOWS
-#include "shaders/dxil/erase.cs.h"
-#include "shaders/dxil/layer.ps.h"
-#include "shaders/dxil/layer.vs.h"
-#include "shaders/dxil/merge.cs.h"
-#include "shaders/dxil/paint.cs.h"
-#include "shaders/dxil/tile.ps.h"
-#include "shaders/dxil/tile.vs.h"
-#elifdef MIDORI_LINUX
+// #if defined(MIDORI_WINDOWS)
+// #include "shaders/dxil/erase.cs.h"
+// #include "shaders/dxil/layer.ps.h"
+// #include "shaders/dxil/layer.vs.h"
+// #include "shaders/dxil/merge.cs.h"
+// #include "shaders/dxil/paint.cs.h"
+// #include "shaders/dxil/tile.ps.h"
+// #include "shaders/dxil/tile.vs.h"
+// #elif defined(MIDORI_LINUX)
 #include "shaders/spirv/erase.comp.h"
 #include "shaders/spirv/layer.frag.h"
 #include "shaders/spirv/layer.vert.h"
@@ -35,7 +35,7 @@
 #include "shaders/spirv/paint.comp.h"
 #include "shaders/spirv/tile.frag.h"
 #include "shaders/spirv/tile.vert.h"
-#endif
+// #endif
 
 namespace Midori {
 
@@ -51,9 +51,9 @@ bool Renderer::Init() {
     constexpr bool debugMode = true;
 #endif // NDEBUG
 
-#ifdef MIDORI_WINDOWS
-    constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL;
-#elifdef MIDORI_LINUX
+#if defined(MIDORI_WINDOWS)
+    constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV;
+#elif defined(MIDORI_LINUX)
     constexpr SDL_GPUShaderFormat supportedFormats = SDL_GPU_SHADERFORMAT_SPIRV;
 #else
     static_assert(false, "Unsupported platform");
@@ -112,10 +112,8 @@ bool Renderer::Init() {
 bool Renderer::InitLayers() {
     ZoneScoped;
     const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_layer_vert),
         .code = reinterpret_cast<const Uint8*>(shader_layer_vert),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_VERTEX,
@@ -130,10 +128,8 @@ bool Renderer::InitLayers() {
     }
 
     const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_layer_frag),
         .code = reinterpret_cast<const Uint8*>(shader_layer_frag),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -262,10 +258,8 @@ bool Renderer::InitLayers() {
 bool Renderer::InitTiles() {
     ZoneScoped;
     const SDL_GPUShaderCreateInfo vertex_shader_create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_tile_vert),
         .code = reinterpret_cast<const Uint8*>(shader_tile_vert),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_VERTEX,
@@ -280,10 +274,8 @@ bool Renderer::InitTiles() {
     }
 
     const SDL_GPUShaderCreateInfo fragment_shader_create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_tile_frag),
         .code = reinterpret_cast<const Uint8*>(shader_tile_frag),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -448,10 +440,8 @@ bool Renderer::InitTiles() {
 
 bool Renderer::InitMerge() {
     const SDL_GPUComputePipelineCreateInfo create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_merge_comp),
         .code = reinterpret_cast<const Uint8*>(shader_merge_comp),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .num_samplers = 1,
@@ -475,10 +465,8 @@ bool Renderer::InitMerge() {
 
 bool Renderer::InitPaint() {
     const SDL_GPUComputePipelineCreateInfo paint_create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_paint_comp),
         .code = reinterpret_cast<const Uint8*>(shader_paint_comp),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .num_samplers = 1, // alpha brush
@@ -498,10 +486,8 @@ bool Renderer::InitPaint() {
     }
 
     const SDL_GPUComputePipelineCreateInfo erase_create_info = {
-#ifdef MIDORI_LINUX
         .code_size = sizeof(shader_erase_comp),
         .code = reinterpret_cast<const Uint8*>(shader_erase_comp),
-#endif
         .entrypoint = "main",
         .format = shaderFormat,
         .num_samplers = 1, // alpha brush
