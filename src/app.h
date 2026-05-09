@@ -2,8 +2,10 @@
 
 #include "canvas.h"
 #include "renderer.h"
+#include "states.h"
 #include "ui.h"
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_events.h>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <imgui.h>
@@ -21,16 +23,27 @@ public:
     App(int argc, char* argv[]);
     ~App() = default;
 
-    bool Init();
-    bool Update();
-    bool Resize(int width, int height);
+    bool OnEvent(const SDL_Event* event);
+
+    // TODO consildate the quit sequence
     void ShouldQuit();
     bool CanQuit();
-    void Quit();
     void Save();
-
     void Fullscreen(bool enable);
 
+    // Event responses
+    void Quit();
+    bool Init();
+
+    /**
+     * @brief Sync multithreaded operations, Render needed window, Fetch semaphores and fences from the gpu, etc...
+     *
+     * @return true
+     * @return false
+     */
+    void Update();
+
+    bool Resize(int width, int height);
     void CursorMove(glm::vec2 new_pos);
     void CursorPress(Uint8 button);
     void CursorRelease(Uint8 button);
@@ -55,6 +68,7 @@ public:
     bool colorPicker = false;
     glm::vec4 sampledColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
+    StateManager stateManager;
     Renderer renderer;
     Canvas canvas;
     UI ui;

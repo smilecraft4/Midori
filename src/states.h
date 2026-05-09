@@ -1,28 +1,39 @@
 #pragma once
 
 #include <EASTL/stack.h>
-#include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keycode.h>
 #include <glm/vec2.hpp>
 #include <memory>
+#include <string>
 
 namespace Midori {
 
 struct App;
 struct StateManager;
 
+enum class State : std::uint8_t {
+    App,
+    Navigate,
+    Paint,
+    Erase,
+    Select,
+    Transform,
+};
+
 struct IState {
-    explicit IState(StateManager& sm);
+    explicit IState(App* app);
     virtual ~IState() = default;
 
-    virtual void OnEvent(const SDL_Event* event);
+    virtual bool OnEvent(const SDL_Event* event) = 0;
+    virtual std::string Name() const = 0;
+    virtual void DrawUI() const = 0;
 
-protected:
-    StateManager& sm_;
+    App* app_;
 };
 
 struct StateManager {
-    explicit StateManager(App& app);
+    explicit StateManager(App* app);
     ~StateManager();
 
     void Switch(std::unique_ptr<IState> state);
@@ -31,43 +42,39 @@ struct StateManager {
 
     void OnEvent(const SDL_Event* event);
 
-private:
-    App& app_;
+    App* app_;
     eastl::vector<std::unique_ptr<IState>> states_;
 };
 
+struct AppState : IState {
+    explicit AppState(App* app);
+    ~AppState();
+
+    bool OnEvent(const SDL_Event* event) override;
+    std::string Name() const override;
+    void DrawUI() const override;
+};
+
 struct NavigateState : IState {
-    explicit NavigateState(StateManager& sm, App& app);
+    explicit NavigateState(App* app);
+    ~NavigateState();
 
-    void OnEvent(const SDL_Event* event) override;
+    bool OnEvent(const SDL_Event* event) override;
+    std::string Name() const override;
+    void DrawUI() const override;
 
-    bool panning = false;
-    bool rotating = false;
-    bool zooming = false;
-};
+    enum class Mode : std::uint8_t {
+        Pan,
+        Rotate,
+        Zoom,
+    } mode{Mode::Pan};
 
-struct PaintState : IState {
-    explicit PaintState(StateManager& sm, App& app);
-
-    void OnEvent(const SDL_Event* event) override;
-};
-
-struct EraseState : IState {
-    explicit EraseState(StateManager& sm, App& app);
-
-    void OnEvent(const SDL_Event* event) override;
-};
-
-struct SelectState : IState {
-    explicit SelectState(StateManager& sm, App& app);
-
-    void OnEvent(const SDL_Event* event) override;
-};
-
-struct TransformState : IState {
-    explicit TransformState(StateManager& sm, App& app);
-
-    void OnEvent(const SDL_Event* event) override;
+    glm::vec2 startPos{0.0f};
+    glm::vec2 previousPos{0.0f};
+    bool clicking{false};
+    bool space{false};
+    bool ctrl{false};
+    bool shift{false};
 };
 
 } // namespace Midori

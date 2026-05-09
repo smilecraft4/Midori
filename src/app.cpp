@@ -11,12 +11,20 @@
 
 namespace Midori {
 
-App::App(int argc, char* argv[]) : renderer(this), canvas(this), ui(*this) {
+App::App(int argc, char* argv[]) : renderer(this), canvas(this), ui(*this), stateManager(this) {
     ZoneScoped;
     args.resize(argc);
     for (size_t i = 0; i < args.size(); i++) {
         args[i] = std::string(argv[i]);
     }
+
+    stateManager.Push(std::make_unique<AppState>(this));
+}
+
+bool App::OnEvent(const SDL_Event* event) {
+    stateManager.OnEvent(event);
+
+    return true;
 }
 
 bool App::Init() {
@@ -56,9 +64,9 @@ bool App::Init() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-#ifdef MIDORI_WINDOWS
+#if defined(MIDORI_WINDOWS)
     io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/Segoeui.ttf", 16.0f);
-#elifdef MIDORI_LINUX
+#elif defined(MIDORI_LINUX)
     io.Fonts->AddFontFromFileTTF("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 16.0f);
 #endif
 
@@ -87,7 +95,7 @@ static const SDL_DialogFileFilter filters[] = {
     {.name = "All files", .pattern = "*"},
 };
 
-bool App::Update() {
+void App::Update() {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     if (window_size.x > 0 && window_size.y > 0 && !hidden) {
@@ -105,6 +113,27 @@ bool App::Update() {
             ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
 
             // DebugTileCulling(glm::vec2(window_size) / 2.0f, draw_list);
+
+            if (ImGui::Begin("Debug")) {
+                int depth = 0;
+                for (int i = 0; i < stateManager.states_.size(); i++) {
+                    if (i < stateManager.states_.size() - 1) {
+                        if (!ImGui::TreeNodeEx(stateManager.states_[i]->Name().c_str(),
+                                               ImGuiTreeNodeFlags_DefaultOpen)) {
+                            stateManager.states_[i]->DrawUI();
+                            break;
+                        }
+                    } else {
+                        ImGui::TreeNodeEx(stateManager.states_[i]->Name().c_str(), ImGuiTreeNodeFlags_Leaf);
+                        stateManager.states_[i]->DrawUI();
+                    }
+                    depth++;
+                }
+                for (int i = 0; i < depth; i++) {
+                    ImGui::TreePop();
+                }
+            }
+            ImGui::End();
 
             if (ui_debug_culling && layer > 0) {
                 for (const auto& [pos, tile] : canvas.layerTilePos[layer]) {
@@ -566,12 +595,8 @@ bool App::Update() {
     }
 
     canvas.Update();
-
     renderer.Render();
-
     canvas.DeleteUpdate();
-
-    return true;
 }
 
 bool App::Resize(const int width, const int height) {
@@ -641,6 +666,7 @@ void App::Quit() {
     window = nullptr;
 }
 
+/*
 void App::CursorMove(glm::vec2 new_pos) {
     // new_pos = canvas.viewport.ScreenToCanvas(new_pos, window_size);
 
@@ -683,7 +709,7 @@ void App::CursorMove(glm::vec2 new_pos) {
             canvas.currentViewportChangeCommand->SetPreviousViewport(canvas.viewport);
         }
 
-        canvas.ViewUpdateCursor(cursor_current_pos);
+        // canvas.ViewUpdateCursor(cursor_current_pos);
 
         if (canvas.stroke_started) {
             if (canvas.brushMode) {
@@ -710,6 +736,8 @@ void App::CursorMove(glm::vec2 new_pos) {
 
     cursor_delta_pos = glm::vec2(0.0f);
 }
+
+
 void App::CursorPress(Uint8 button) {
     if (button == SDL_BUTTON_LEFT) {
         cursor_left_pressed = true;
@@ -771,8 +799,10 @@ void App::CursorRelease(Uint8 button) {
     }
 }
 
+
 // Need to detect when a mods is disengaged
 void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
+    // TODO Move to the correct IState
     (void)mods;
     if (key == SDLK_SPACE) {
         space_pressed = true;
@@ -854,40 +884,9 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         }
     }
 
-    canvas.ViewUpdateState(cursor_current_pos);
+    // canvas.ViewUpdateState(cursor_current_pos);
 }
 
-void App::Save() {
-    if (saving) {
-        return;
-    }
-    saving = true;
-
-    const eastl::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
-    if (canvas.brushOptionsModified) {
-        canvas.SaveBrush();
-    }
-    if (canvas.eraserOptionsModified) {
-        canvas.SaveEraser();
-    }
-
-    // TODO: Save the selected layer
-    for (const auto& layer : layersToSave) {
-        if (canvas.layerInfos[layer].internal) {
-            continue;
-        }
-
-        canvas.SaveLayer(layer);
-    }
-
-    for (const auto& layer : canvas.Layers()) {
-        for (const auto& tile : canvas.LayerTiles(layer)) {
-            canvas.QueueSaveTile(layer, tile);
-        }
-    }
-
-    saving = false;
-}
 
 void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
     (void)mods;
@@ -920,7 +919,39 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
         return;
     }
 
-    canvas.ViewUpdateState(cursor_current_pos);
+    // canvas.ViewUpdateState(cursor_current_pos);
+}*/
+
+void App::Save() {
+    if (saving) {
+        return;
+    }
+    saving = true;
+
+    const eastl::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    if (canvas.brushOptionsModified) {
+        canvas.SaveBrush();
+    }
+    if (canvas.eraserOptionsModified) {
+        canvas.SaveEraser();
+    }
+
+    // TODO: Save the selected layer
+    for (const auto& layer : layersToSave) {
+        if (canvas.layerInfos[layer].internal) {
+            continue;
+        }
+
+        canvas.SaveLayer(layer);
+    }
+
+    for (const auto& layer : canvas.Layers()) {
+        for (const auto& tile : canvas.LayerTiles(layer)) {
+            canvas.QueueSaveTile(layer, tile);
+        }
+    }
+
+    saving = false;
 }
 
 void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) const {
