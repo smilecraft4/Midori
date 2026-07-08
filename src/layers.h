@@ -1,8 +1,6 @@
 #pragma once
 
 #include "colors.h"
-#include <EASTL/unordered_map.h>
-#include <EASTL/vector.h>
 #include <string>
 
 namespace Midori {

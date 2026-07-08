@@ -1,11 +1,11 @@
 #pragma once
 
-#include <EASTL/stack.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_keycode.h>
 #include <glm/vec2.hpp>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Midori {
 
@@ -25,11 +25,11 @@ struct IState {
     explicit IState(App* app);
     virtual ~IState() = default;
 
+    [[nodiscard]] virtual std::string Name() const = 0;
     virtual bool OnEvent(const SDL_Event* event) = 0;
-    virtual std::string Name() const = 0;
     virtual void DrawUI() const = 0;
 
-    App* app_;
+    App* app;
 };
 
 struct StateManager {
@@ -42,8 +42,8 @@ struct StateManager {
 
     void OnEvent(const SDL_Event* event);
 
-    App* app_;
-    eastl::vector<std::unique_ptr<IState>> states_;
+    App* app;
+    std::vector<std::unique_ptr<IState>> states;
 };
 
 struct AppState : IState {

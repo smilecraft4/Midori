@@ -4,8 +4,6 @@
 #include <glm/vec2.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
-#include <EASTL/hash_map.h>
-#include <EASTL/hash_set.h>
 
 namespace Midori {
 
@@ -22,29 +20,17 @@ struct TileCoord {
     Layer layer;
     glm::ivec2 pos;
 
-    bool operator==(const TileCoord& other) const {
-        return layer == other.layer && pos == other.pos;
-    }
+    bool operator==(const TileCoord& other) const { return layer == other.layer && pos == other.pos; }
 };
-
 
 } // namespace Midori
 
-namespace eastl {
-    template <>
-    struct hash<glm::ivec2> {
-        size_t operator()(const glm::ivec2& v) const {
-            return std::hash<glm::ivec2>{}(v);
-        }
-    };
-
-    template <>
-    struct hash<Midori::TileCoord> {
-        size_t operator()(const Midori::TileCoord& tc) const {
-            // this may create hash too big for what is trully needed
-            size_t h1 = eastl::hash<Midori::Layer>{}(tc.layer);
-            size_t h2 = eastl::hash<glm::ivec2>{}(tc.pos);
-            return h1 ^ (h2 * 2654435761u);
-        }
-    };
-}
+template<>
+struct std::hash<Midori::TileCoord> {
+    size_t operator()(const Midori::TileCoord& tc) const {
+        // this may create hash too big for what is trully needed
+        size_t h1 = std::hash<Midori::Layer>{}(tc.layer);
+        size_t h2 = std::hash<glm::ivec2>{}(tc.pos);
+        return h1 ^ (h2 * 2654435761u);
+    }
+};

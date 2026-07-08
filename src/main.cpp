@@ -5,7 +5,6 @@
 #include <tracy/Tracy.hpp>
 
 #include "app.h"
-#include "memory.h"
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
     // SDL_SetMemoryFunctions(Midori::Malloc, Midori::Calloc, Midori::Realloc, Midori::Free);
@@ -28,7 +27,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
     app->Update();
 
-    if (app->CanQuit() && app->should_quit) {
+    if (app->CanQuit() && app->shouldQuit) {
         FrameMarkEnd(nullptr);
         return SDL_APP_SUCCESS;
     }

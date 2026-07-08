@@ -2,25 +2,27 @@
 
 #include "layers.h"
 #include "tiles.h"
-#include <cstdint>
-#include <EASTL/unordered_map.h>
-#include <EASTL/unordered_set.h>
+
 #include <SDL3/SDL_gpu.h>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
+#include <cstdint>
+#include <unordered_set>
+#include <unordered_map>
+#include <vector>
 
 namespace Midori {
 
 class App;
 
 class Renderer {
-   public:
-    Renderer(const Renderer &) = delete;
-    Renderer(Renderer &&) = delete;
-    Renderer &operator=(const Renderer &) = delete;
-    Renderer &operator=(Renderer &&) = delete;
+public:
+    Renderer(const Renderer&) = delete;
+    Renderer(Renderer&&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+    Renderer& operator=(Renderer&&) = delete;
 
-    Renderer(App *app);
+    Renderer(App* app);
     ~Renderer() = default;
 
     bool Init();
@@ -43,111 +45,110 @@ class Renderer {
         Unknwon,
     };
 
-
     TileTextureError CreateTileTexture(Tile tile);
-    TileTextureError UploadTileTexture(Tile tile, const eastl::vector<uint8_t>& pixels);
+    TileTextureError UploadTileTexture(Tile tile, const std::vector<uint8_t>& pixels);
 
     void ReleaseTileTexture(Tile tile);
-    bool MergeTileTextures(Tile over_tile, Tile below_tile);
+    bool MergeTileTextures(Tile overTile, Tile belowTile);
 
-    App *app;
+    App* app;
 
-    eastl::unordered_set<Tile> tile_to_draw;
-    eastl::unordered_set<Layer> layer_to_draw;
+    std::unordered_set<Tile> tileToDraw;
+    std::unordered_set<Layer> layerToDraw;
 
     // Common data
-    SDL_GPUDevice *device = nullptr;
-    SDL_GPUTextureFormat texture_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-    SDL_GPUTexture *canvas_texture = nullptr;
-    eastl::vector<SDL_GPUTexture *> textures_to_delete;
+    SDL_GPUDevice* device = nullptr;
+    SDL_GPUTextureFormat textureFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    SDL_GPUTextureFormat swapchainFormat = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    SDL_GPUTexture* canvasTexture = nullptr;
+    std::vector<SDL_GPUTexture*> texturesToDelete;
 
     struct ViewportRenderData {
         glm::mat4 projection = glm::mat4(1.0f);
         glm::mat4 view = glm::mat4(1.0f);
-    } viewport_render_data;
-    bool view_changed = false;
+    } viewportRenderData;
+    bool viewChanged = false;
 
     // Layer data
     struct LayerRenderData {
         float opacity = 1.0f;
-        std::uint32_t blend_mode = (uint32_t)BlendMode::Alpha;
-    } layer_render_data;
+        std::uint32_t blendMode = (uint32_t)BlendMode::Alpha;
+    } layerRenderData;
 
-    SDL_GPUShader *layer_vertex_shader = nullptr;
-    SDL_GPUShader *layer_fragment_shader = nullptr;
-    SDL_GPUGraphicsPipeline *layer_graphics_pipeline = nullptr;
-    SDL_GPUSampler *layer_sampler = nullptr;
-    eastl::unordered_map<Layer, SDL_GPUTexture *> layer_textures;
-    size_t last_layer_rendered_num = 0;
+    SDL_GPUShader* layerVertexShader = nullptr;
+    SDL_GPUShader* layerFragmentShader = nullptr;
+    SDL_GPUGraphicsPipeline* layerGraphicsPipeline = nullptr;
+    SDL_GPUSampler* layerSampler = nullptr;
+    std::unordered_map<Layer, SDL_GPUTexture*> layerTextures;
+    size_t lastLayerRenderedNum = 0;
 
     // Tile data
     struct TileRenderData {
         glm::vec2 position = glm::vec2(0.0f, 0.0f);
         glm::vec2 size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
-    } tile_render_data;
+    } tileRenderData;
 
-    SDL_GPUShader *tile_vertex_shader = nullptr;
-    SDL_GPUShader *tile_fragment_shader = nullptr;
-    SDL_GPUGraphicsPipeline *tile_graphics_pipeline = nullptr;
-    SDL_GPUSampler *tile_sampler = nullptr;
-    eastl::unordered_map<Tile, SDL_GPUTexture *> tile_textures;
-    eastl::unordered_set<Tile> tile_texture_uninitialized;
-    size_t last_rendered_tiles_num = 0;
+    SDL_GPUShader* tileVertexShader = nullptr;
+    SDL_GPUShader* tileFragmentShader = nullptr;
+    SDL_GPUGraphicsPipeline* tileGraphicsPipeline = nullptr;
+    SDL_GPUSampler* tileSampler = nullptr;
+    std::unordered_map<Tile, SDL_GPUTexture*> tileTextures;
+    std::unordered_set<Tile> tileTextureUninitialized;
+    size_t lastRenderedTilesNum = 0;
 
     // Tile upload
     static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 32;
-    SDL_GPUTransferBuffer *tile_upload_buffer = nullptr;
-    SDL_GPUTransferBuffer *tile_blank_texture_buffer = nullptr;
-    uint8_t *tile_upload_buffer_ptr = nullptr;
-    eastl::unordered_map<Tile, size_t> allocated_tile_upload_offset;
-    eastl::vector<size_t> free_tile_upload_offset;
+    SDL_GPUTransferBuffer* tileUploadBuffer = nullptr;
+    SDL_GPUTransferBuffer* tileBlankTextureBuffer = nullptr;
+    uint8_t* tileUploadBufferPtr = nullptr;
+    std::unordered_map<Tile, size_t> allocatedTileUploadOffset;
+    std::vector<size_t> freeTileUploadOffset;
 
     // Tile download
 
     bool DownloadTileTexture(Tile tile);
     bool IsTileTextureDownloaded(Tile tile) const;
-    bool CopyTileTextureDownloaded(Tile tile, eastl::vector<uint8_t> &tile_texture);
-    SDL_GPUTexture *DuplicateTileTexture(SDL_GPUCopyPass *copyPass, SDL_GPUTexture *tileTexture) const;
+    bool CopyTileTextureDownloaded(Tile tile, std::vector<uint8_t>& tileTexture);
+    SDL_GPUTexture* DuplicateTileTexture(SDL_GPUCopyPass* copyPass, SDL_GPUTexture* tileTexture) const;
 
     static constexpr size_t TILE_MAX_DOWNLOAD_TRANSFER = 32;
-    SDL_GPUTransferBuffer *tile_download_buffer = nullptr;
-    uint8_t *tile_download_buffer_ptr = nullptr;
-    eastl::unordered_map<Tile, size_t> allocated_tile_download_offset;
-    eastl::unordered_set<Tile> tile_downloaded;
-    eastl::vector<size_t> free_tile_download_offset;
-    SDL_GPUFence *tile_download_fence = nullptr;  // TODO: Use multiple fences
+    SDL_GPUTransferBuffer* tileDownloadBuffer = nullptr;
+    uint8_t* tileDownloadBufferPtr = nullptr;
+    std::unordered_map<Tile, size_t> allocatedTileDownloadOffset;
+    std::unordered_set<Tile> tileDownloaded;
+    std::vector<size_t> freeTileDownloadOffset;
+    SDL_GPUFence* tileDownloadFence = nullptr; // TODO: Use multiple fences
 
     // OPERATIONS
 
     // Texture merging
     bool InitMerge();
     struct MergeRenderData {
-        std::uint32_t src_blend_mode;
-        float src_opacity;
-        glm::ivec2 src_pos;
-        glm::ivec2 src_size;
+        std::uint32_t srcBlendMode;
+        float srcOpacity;
+        glm::ivec2 srcPos;
+        glm::ivec2 srcSize;
 
-        std::uint32_t dst_blend_mode;
-        float dst_opacity;
-        glm::ivec2 dst_pos;
-        glm::ivec2 dst_size;
+        std::uint32_t dstBlendMode;
+        float dstOpacity;
+        glm::ivec2 dstPos;
+        glm::ivec2 dstSize;
     };
-    SDL_GPUComputePipeline *merge_compute_pipeline = nullptr;
+    SDL_GPUComputePipeline* mergeComputePipeline = nullptr;
 
     bool InitPaint();
     struct StrokeRenderData {
-        std::uint32_t points_num = 0;
+        std::uint32_t pointsNum = 0;
     };
     static constexpr size_t MAX_PAINT_STROKE_POINTS = 2048;
-    SDL_GPUBuffer *paint_stroke_point_buffer = nullptr;
-    SDL_GPUComputePipeline *paint_compute_pipeline = nullptr;
-    SDL_GPUComputePipeline *erase_compute_pipeline = nullptr;
-    SDL_GPUTransferBuffer *paint_stroke_point_transfer_buffer = nullptr;
-    SDL_GPUTexture *brush_texture = nullptr;
-    SDL_GPUSampler *brush_sampler = nullptr;
-    std::uint8_t *paint_stroke_point_transfer_buffer_ptr = nullptr;
+    SDL_GPUBuffer* paintStrokePointBuffer = nullptr;
+    SDL_GPUComputePipeline* paintComputePipeline = nullptr;
+    SDL_GPUComputePipeline* eraseComputePipeline = nullptr;
+    SDL_GPUTransferBuffer* paintStrokePointTransferBuffer = nullptr;
+    SDL_GPUTexture* brushTexture = nullptr;
+    SDL_GPUSampler* brushSampler = nullptr;
+    std::uint8_t* paintStrokePointTransferBufferPtr = nullptr;
 
     SDL_GPUShaderFormat shaderFormat;
 };
-}  // namespace Midori
+} // namespace Midori

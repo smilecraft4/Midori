@@ -2,14 +2,11 @@
 
 project(Midori VERSION 0.1.0)
 
-set(CMAKE_POLICY_VERSION_MINIMUM 3.1)
-
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -24,11 +21,6 @@ endif()
 add_subdirectory(deps/SDL EXCLUDE_FROM_ALL)
 add_subdirectory(deps/glm EXCLUDE_FROM_ALL)
 add_subdirectory(deps/tracy EXCLUDE_FROM_ALL)
-add_subdirectory(deps/freetype EXCLUDE_FROM_ALL)
-add_subdirectory(deps/harfbuzz EXCLUDE_FROM_ALL)
-add_subdirectory(deps/EASTL EXCLUDE_FROM_ALL)
-
-
 
 # Executable
 
@@ -56,25 +48,22 @@ target_sources(midori PRIVATE
   "src/viewport.cpp"
   "src/commands.cpp"
   "src/states.cpp"
-  "src/ui.cpp"
 )
 
 target_link_libraries(midori PRIVATE 
     SDL3::SDL3 
     Tracy::TracyClient 
-    glm::glm 
-    freetype 
-    harfbuzz 
-    EASTL
+    glm::glm
 )
 target_include_directories(midori PRIVATE 
     "deps/imgui/" 
-    "deps/nlohmann/" 
-    "deps/qoi/" 
-    "deps/utf8/"
+    "deps/nlohmann/"
     "${CMAKE_BINARY_DIR}/generated"
 )
 target_sources(midori PRIVATE
+  "deps/liblmdb/mdb.c"
+  "deps/liblmdb/midl.c"
+  "deps/lz4/lz4.c"
   "deps/imgui/imgui.cpp"
   "deps/imgui/imgui_draw.cpp"
   "deps/imgui/imgui_widgets.cpp"

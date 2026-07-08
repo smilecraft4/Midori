@@ -1,38 +1,86 @@
 ﻿---
 Language: Cpp
 BasedOnStyle: LLVM
+Standard: c++20
 
-# Indentation
+# ── Indentation ───────────────────────────────────────────────────────────────
 IndentWidth: 4
 TabWidth: 4
 UseTab: Never
 ContinuationIndentWidth: 4
+IndentCaseLabels: true
+NamespaceIndentation: None
+LambdaBodyIndentation: Signature
 
-# Braces: opening on same line (K&R style)
+# ── Braces ────────────────────────────────────────────────────────────────────
 BreakBeforeBraces: Attach
+InsertBraces: true          # Enforce braces on single-line if/for/while bodies
 
-# Spacing
-SpaceBeforeParens: ControlStatements
-SpaceInEmptyParentheses: false
-SpaceAfterCStyleCast: false
-SpacesInParentheses: false
-SpacesInSquareBrackets: false
-
-# Column limit (0 = no limit)
-ColumnLimit: 120
-
-# Access modifiers (public/private) indented relative to struct/class
-AccessModifierOffset: -4
-
-# Keep short functions/blocks on one line? No — always expand
-AllowShortFunctionsOnASingleLine: None
-AllowShortBlocksOnASingleLine: Never
-AllowShortIfStatementsOnASingleLine: Never
+# ── Short constructs ──────────────────────────────────────────────────────────
+AllowShortFunctionsOnASingleLine: Inline   # Only for in-class definitions
+AllowShortLambdasOnASingleLine: Inline
+AllowShortBlocksOnASingleLine: Empty       # {} only
+AllowShortIfStatementsOnASingleLine: Never # Conflicts with InsertBraces intent
 AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
 
-# Alignment
+# ── Line length & breaking ────────────────────────────────────────────────────
+ColumnLimit: 120
+BreakBeforeBinaryOperators: NonAssignment  # Operator leads the next line
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+BreakStringLiterals: true
+BreakTemplateDeclarations: Yes
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+PackConstructorInitializers: NextLine      # Initialiser list on its own line(s)
+
+# ── Alignment ─────────────────────────────────────────────────────────────────
 AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
+AlignConsecutiveMacros: AcrossEmptyLines
+AlignAfterOpenBracket: Align
+AlignOperands: AlignAfterOperator
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 1
 
-# Pointer alignment
+# ── Pointers & references ─────────────────────────────────────────────────────
 PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceAroundPointerQualifiers: Default
+
+# ── Spacing ───────────────────────────────────────────────────────────────────
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceInEmptyParentheses: false
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceBeforeSquareBrackets: false
+SpacesInAngles: Never
+SpaceBeforeCpp11BracedList: false
+SpacesInContainerLiterals: false
+
+# ── Access modifiers ──────────────────────────────────────────────────────────
+AccessModifierOffset: -4
+EmptyLineBeforeAccessModifier: LogicalBlock
+EmptyLineAfterAccessModifier: Never
+
+SortIncludes: Never 
+
+# ── Trailing commas & semicolons ──────────────────────────────────────────────
+InsertTrailingCommas: None   # Not applicable in C++; keep explicit
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+Cpp11BracedListStyle: true
+FixNamespaceComments: true
+ReflowComments: true
+RemoveSemicolon: true        # Removes stray ; after function definitions
+SeparateDefinitionBlocks: Leave
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+CompactNamespaces: false

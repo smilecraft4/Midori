@@ -3,14 +3,15 @@
 #include "colors.h"
 #include "commands.h"
 #include "viewport.h"
-#include <EASTL/unordered_map.h>
-#include <EASTL/unordered_set.h>
+
 #include <SDL3/SDL_gpu.h>
-#include <cstdint>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
+#include <unordered_map>
+#include <unordered_set>
+#include <cstdint>
 
 namespace Midori {
 
@@ -20,16 +21,6 @@ class Canvas {
     // TODO: Use better state management (Finite State Machine or Hierarchical State Machine)
 
 public:
-    // struct View {
-    //     glm::vec2 pan = glm::vec2(0.0f, 0.0f);
-    //     glm::vec2 zoomAmount = glm::vec2(1.0f, 1.0f);
-    //     glm::vec2 zoomOrigin = glm::vec2(0.0f, 0.0f);
-    //     float rotation = 0.0f;
-    //     glm::vec2 rotateStart = glm::vec2(1.0f, 0.0f);
-    //     bool flippedH = false;
-    //     bool flippedV = false;
-    // };
-
     Canvas(const Canvas&) = delete;
     Canvas(Canvas&&) = delete;
     Canvas& operator=(const Canvas&) = delete;
@@ -48,8 +39,8 @@ public:
     bool Open();
 
     // Viewport Stuff
-    void ViewUpdateState(glm::vec2 cursor_pos);
-    void ViewUpdateCursor(glm::vec2 cursor_pos);
+    void ViewUpdateState(glm::vec2 cursorPos);
+    void ViewUpdateCursor(glm::vec2 cursorPos);
     bool viewZooming = false;
     bool viewPanning = false;
     bool viewRotating = false;
@@ -61,14 +52,14 @@ public:
 
     [[nodiscard]] bool HasLayer(Layer layer) const;
     [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
-    [[nodiscard]] eastl::vector<Layer> Layers() const;
-    [[nodiscard]] eastl::vector<Tile> LayerTiles(Layer layer) const;
+    [[nodiscard]] std::vector<Layer> Layers() const;
+    [[nodiscard]] std::vector<Tile> LayerTiles(Layer layer) const;
 
     Layer CreateLayer(LayerInfo layerInfo);
     void DeleteLayer(Layer layer);
     bool SaveLayer(Layer layer);
     Layer DuplicateLayer(Layer layer, bool temporary = false);
-    void MergeLayer(Layer over_layer, Layer below_layer);
+    void MergeLayer(Layer overLayer, Layer belowLayer);
     bool SetLayerHeight(Layer layer, LayerHeight height);
     void CompactLayerHeight();
 
@@ -81,42 +72,36 @@ public:
     Tile CreateTile(Layer layer, glm::ivec2 position);
     bool QueueSaveTile(Layer layer, Tile tile);
     void QueueTileDelete(Layer layer, Tile tile);
-    void MergeTiles(Tile over_tile, Tile below_tile);
+    void MergeTiles(Tile overTile, Tile belowTile);
 
     App* app;
 
     LayerHeight layersCurrentMaxHeight = 0;
-    eastl::unordered_map<Layer, LayerInfo> layerInfos;
-    eastl::unordered_map<Layer, eastl::unordered_set<Tile>> layerTiles;
-    eastl::unordered_map<Layer, eastl::unordered_map<glm::ivec2, Tile>> layerTilePos;
-    eastl::unordered_set<Layer> layerToDelete;
-    eastl::unordered_set<Layer> layersModified;
-
-    // eastl::unordered_map<Layer, LayerInfo> layersInfo; // store data such as height, name, opacity, blendMode, etc...
-    // eastl::vector<Layer> layersReusable;               // layers that are available before increasing
-    // layerLastIssued;
-    eastl::vector<Layer> layersHeightSorted; // layer sorted by rendering order
-    // std::atomic<Layer> layerLastIssued;                // last layer issued, check layersReusable before
+    std::unordered_map<Layer, LayerInfo> layerInfos;
+    std::unordered_map<Layer, std::unordered_set<Tile>> layerTiles;
+    std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>> layerTilePos;
+    std::unordered_set<Layer> layerToDelete;
+    std::unordered_set<Layer> layersModified;
+    std::vector<Layer> layersHeightSorted; // layer sorted by rendering order
 
     Layer selectedLayer = 0;
     Layer strokeLayer = 0;
 
     Layer layerLastAssigned = 0;
-    eastl::vector<Layer> layersUnassigned;
+    std::vector<Layer> layersUnassigned;
 
-    // Move to a Tile Structs
-    eastl::unordered_map<Tile, TileCoord> tileInfos;
+    std::unordered_map<Tile, TileCoord> tileInfos;
     Tile tileLastAssigned = 0;
-    eastl::vector<Tile> tilesUnassigned;
-    eastl::unordered_set<Tile> tileToUnload;
-    eastl::unordered_set<Tile> tileToDelete;
-    eastl::unordered_map<Layer, eastl::unordered_set<glm::ivec2>> layerTilesSaved;
-    eastl::unordered_map<Layer, eastl::unordered_set<Tile>> layerTilesModified;
-    eastl::unordered_map<Layer, eastl::unordered_set<Tile>> allTileModified;
+    std::vector<Tile> tilesUnassigned;
+    std::unordered_set<Tile> tileToUnload;
+    std::unordered_set<Tile> tileToDelete;
+    std::unordered_map<Layer, std::unordered_set<glm::ivec2>> layerTilesSaved;
+    std::unordered_map<Layer, std::unordered_set<Tile>> layerTilesModified;
+    std::unordered_map<Layer, std::unordered_set<Tile>> allTileModified;
 
     std::string filename;
 
-    bool stroke_started = false;
+    bool strokeStarted = false;
 
     enum class TileReadState : std::uint8_t {
         Queued,
@@ -129,10 +114,10 @@ public:
         Layer layer;
         Tile tile;
         TileReadState state;
-        eastl::vector<std::uint8_t> encodedTexture;
-        eastl::vector<std::uint8_t> rawTexture;
+        std::vector<std::uint8_t> encodedTexture;
+        std::vector<std::uint8_t> rawTexture;
     };
-    eastl::unordered_map<Tile, TileReadStatus> tile_read_queue;
+    std::unordered_map<Tile, TileReadStatus> tileReadQueue;
     void UpdateTileLoading();
 
     enum class TileWriteState : std::uint8_t {
@@ -148,10 +133,10 @@ public:
         Tile tile;
         TileWriteState state;
         glm::ivec2 position;
-        eastl::vector<std::uint8_t> encodedTexture;
-        eastl::vector<std::uint8_t> rawTexture;
+        std::vector<std::uint8_t> encodedTexture;
+        std::vector<std::uint8_t> rawTexture;
     };
-    eastl::unordered_map<Tile, TileWriteStatus> tile_write_queue;
+    std::unordered_map<Tile, TileWriteStatus> tileWriteQueue;
     void UpdateTileUnloading();
 
     struct StrokePoint {
@@ -160,23 +145,20 @@ public:
         float radius = 8.0f;
         float flow = 0.5f;
         float hardness = 0.5f;
-        float _pad0;
-        float _pad1;
-        float _pad2;
+        float pad[3];
     };
-    eastl::vector<StrokePoint> stroke_points;
-    eastl::unordered_set<Tile> stroke_tile_affected;
-    eastl::hash_set<Tile> allTileStrokeAffected;
-    StrokePoint previous_point = {};
+    std::vector<StrokePoint> strokePoints;
+    std::unordered_set<Tile> strokeTileAffected;
+    std::unordered_set<Tile> allTileStrokeAffected;
+    StrokePoint previousPoint = {};
     std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
 
-    eastl::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
+    std::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
 
-    // Can this be turned into a free function ?
-    static bool SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
+    static bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
 
-    eastl::vector<Color> canvasTexture_;
-    glm::ivec2 canvasTextureSize_;
+    std::vector<Color> canvasTexture;
+    glm::ivec2 canvasTextureSize;
 
     // TODO: Merge brush and eraser in a single struct with a erase flag
     bool brushMode = true;
@@ -195,7 +177,7 @@ public:
         bool radiusPressure = false;
         glm::vec2 radiusPressureRange = {0.0f, 1.0f};
         float hardness = 0.5f;
-        bool hardness_pressure = false;
+        bool hardnessPressure = false;
         glm::vec2 hardnessPressureRange = {0.0f, 1.0f};
         float spacing = 1.5f;
     } brushOptions;
@@ -219,7 +201,7 @@ public:
         bool radiusPressure = false;
         glm::vec2 radiusPressureRange = {0.0f, 1.0f};
         float hardness = 0.5f;
-        bool hardness_pressure = false;
+        bool hardnessPressure = false;
         glm::vec2 hardnessPressureRange = {0.0f, 1.0f};
         float spacing = 1.5f;
     } eraserOptions;

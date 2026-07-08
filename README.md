@@ -8,17 +8,50 @@
 
 An infinite canvas painting app
 
-## Features
+## Features (WIP)
 
 - Navigation
   - Zoom
   - Rotate
   - Pan
-  - Reset
-  - Snap
+  - Flip X
+  - Flip Y
 - Brush
-- Eraser
-- Pen axis
-  - Position
+  - Flow
+  - Opacity
+  - Color
+  - Hardness
+- Paint/Erase
+- File
+  - Save
+  - SaveAs
+  - New
+  - Open
+- Pen
+  - Sub pixel
   - Pressure
-- Save
+- Layers
+  - BlendModes
+  - Masks
+  - Folders
+- Select
+  - Lasso <-- use the brush as the border mode
+  - Rectangle  <-- use the brush as the border mode
+  - Copy
+  - Cut
+  - Paste
+  - Fill
+  - Only Paint this section
+- Multiple Canvas View
+- Multiple Canvas File
+- Transformation
+  - Rotate
+  - Scale
+- Rulers
+  - Line
+  - Curve
+  - Circle/Oval
+  - Perspective
+  - Symmetry
+- Custom UI
+  - ??

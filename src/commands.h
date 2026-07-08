@@ -3,14 +3,12 @@
 #include "layers.h"
 #include "tiles.h"
 #include "viewport.h"
-#include <EASTL/vector.h>
-#include <EASTL/unordered_map.h>
-#include <EASTL/unordered_set.h>
-#include <EASTL/queue.h>
 #include <SDL3/SDL_render.h>
 #include <SDL3/SDL_assert.h>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace Midori {
 
@@ -27,9 +25,7 @@ struct ICommand {
     [[nodiscard]] virtual std::string Name() const = 0;
     virtual void Execute() = 0;
     virtual void Revert() = 0;
-
 };
-
 
 struct CommandHistory final {
     // CommandHistory(CommandHistory&&) = delete;
@@ -39,22 +35,21 @@ struct CommandHistory final {
 
     CommandHistory(size_t capacity);
     ~CommandHistory();
-    
+
     void Push(std::unique_ptr<ICommand> command);
 
     void Undo();
     void Redo();
     void Clear();
 
-    const ICommand* Get(size_t index) const;
-    size_t Index(size_t pos) const;
-
+    [[nodiscard]] const ICommand* Get(size_t index) const;
+    [[nodiscard]] size_t Index(size_t pos) const;
     [[nodiscard]] size_t Empty() const;
     [[nodiscard]] size_t Count() const;
 
-    eastl::vector<std::unique_ptr<ICommand>> commands;
+    std::vector<std::unique_ptr<ICommand>> commands;
     size_t position{0}; // starts at 1 and end at capacity, 0 means nothing
-    size_t count{0}; // starts at 1 and end at capacity, 0 means no element
+    size_t count{0};    // starts at 1 and end at capacity, 0 means no element
     size_t start{0};
 };
 
@@ -66,20 +61,20 @@ struct TileModificationCommand final : public ICommand {
     void Execute() override;
     void Revert() override;
 
-    void SavePreviousTilesTexture(const eastl::hash_set<Tile>& tiles);
-    void SaveNewTilesTexture(const eastl::hash_set<Tile>& tiles);
+    void SavePreviousTilesTexture(const std::unordered_set<Tile>& tiles);
+    void SaveNewTilesTexture(const std::unordered_set<Tile>& tiles);
 
-    Canvas* canvas_;
-    Layer layer_;
-    eastl::hash_map<TileCoord, SDL_GPUTexture*> previousTileTextures_;
-    eastl::hash_map<TileCoord, SDL_GPUTexture*> newTileTextures_;
+    Canvas* canvas;
+    Layer layer;
+    std::unordered_map<TileCoord, SDL_GPUTexture*> previousTileTextures;
+    std::unordered_map<TileCoord, SDL_GPUTexture*> newTileTextures;
 
 private:
-    void ApplyTilesTexture(const eastl::hash_map<TileCoord, SDL_GPUTexture*>& tileCoordsTexture) const;
+    void ApplyTilesTexture(const std::unordered_map<TileCoord, SDL_GPUTexture*>& tileCoordsTexture) const;
 
     // TODO: Move to the renderer directly
-    eastl::hash_map<TileCoord, SDL_GPUTexture*>
-    DuplicateTileTextures(const eastl::hash_set<Tile>& tiles) const;
+    [[nodiscard]] std::unordered_map<TileCoord, SDL_GPUTexture*>
+    DuplicateTileTextures(const std::unordered_set<Tile>& tiles) const;
 };
 
 struct ViewportChangeCommand final : public ICommand {
@@ -93,9 +88,9 @@ struct ViewportChangeCommand final : public ICommand {
     void SetPreviousViewport(Viewport viewport);
     void SetNewViewport(Viewport viewport);
 
-    Canvas* canvas_;
-    Viewport previousViewport_;
-    Viewport newViewport_;
+    Canvas* canvas;
+    Viewport previousViewport;
+    Viewport newViewport;
 };
 
 /*

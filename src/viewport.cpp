@@ -1,136 +1,137 @@
 ﻿#include "viewport.h"
-
-#include "app.h"
-#include "commands.h"
+#include "tiles.h"
+#include "SDL3/SDL_assert.h"
+#include "glm/ext/matrix_transform.hpp"
 #include <imgui.h>
 #include <numbers>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
-void Viewport::Translate(glm::vec2 amount) {
-    amount *= flip_;
-    glm::vec2 correctedAmount{};
-    correctedAmount.x = amount.x * std::cos(-rotation_) - amount.y * std::sin(-rotation_);
-    correctedAmount.y = amount.x * std::sin(-rotation_) + amount.y * std::cos(-rotation_);
-    correctedAmount /= zoom_;
-    translation_ += correctedAmount;
 
-    viewComputed_ = false;
+void Viewport::Translate(glm::vec2 amount) {
+    amount *= flip;
+    glm::vec2 correctedAmount{};
+    correctedAmount.x = (amount.x * std::cos(-rotation)) - (amount.y * std::sin(-rotation));
+    correctedAmount.y = (amount.x * std::sin(-rotation)) + (amount.y * std::cos(-rotation));
+    correctedAmount /= zoom;
+    translation += correctedAmount;
+
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::SetTranslation(glm::vec2 translation) {
     glm::vec2 correctedTranslation{};
-    correctedTranslation.x = translation.x * std::cos(-rotation_) - translation.y * std::sin(-rotation_);
-    correctedTranslation.y = translation.x * std::sin(-rotation_) + translation.y * std::cos(-rotation_);
-    translation_ = correctedTranslation;
+    correctedTranslation.x = (translation.x * std::cos(-rotation)) - (translation.y * std::sin(-rotation));
+    correctedTranslation.y = (translation.x * std::sin(-rotation)) + (translation.y * std::cos(-rotation));
+    translation = correctedTranslation;
 
-    viewComputed_ = false;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
     origin = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(origin, 0.0f, 1.0f));
 
-    zoomOrigin_ = origin;
-    zoom_ += amount;
-    zoom_.x = std::max(0.25f, std::min(2.5f, zoom_.x));
-    zoom_.y = std::max(0.25f, std::min(2.5f, zoom_.y));
+    zoomOrigin = origin;
+    zoom += amount;
+    zoom.x = std::max(0.25f, std::min(2.5f, zoom.x));
+    zoom.y = std::max(0.25f, std::min(2.5f, zoom.y));
 
-    viewComputed_ = false;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
-    zoomOrigin_ = origin;
-    zoom_ = amount;
-    zoom_.x = std::max(0.01f, std::min(100.0f, zoom_.x));
-    zoom_.y = std::max(0.01f, std::min(100.0f, zoom_.y));
+    zoomOrigin = origin;
+    zoom = amount;
+    zoom.x = std::max(0.01f, std::min(100.0f, zoom.x));
+    zoom.y = std::max(0.01f, std::min(100.0f, zoom.y));
 
-    viewComputed_ = false;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::Rotate(float amount) {
-    amount *= flip_.x;
-    rotation_ += amount;
+    amount *= flip.x;
+    rotation += amount;
 
-    if (rotation_ >= 2.0f * std::numbers::pi_v<float>) {
-        rotation_ -= 2.0f * std::numbers::pi_v<float>;
-    } else if (rotation_ < -2.0f * std::numbers::pi_v<float>) {
-        rotation_ += 2.0f * std::numbers::pi_v<float>;
+    if (rotation >= 2.0f * std::numbers::pi_v<float>) {
+        rotation -= 2.0f * std::numbers::pi_v<float>;
+    } else if (rotation < -2.0f * std::numbers::pi_v<float>) {
+        rotation += 2.0f * std::numbers::pi_v<float>;
     }
 
-    viewComputed_ = false;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::SetRotation(float rotation) {
-    rotation_ = rotation;
-    viewComputed_ = false;
+    rotation = rotation;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::Resize(glm::vec2 viewSize) {
-    viewSize_ = viewSize;
-    viewComputed_ = false;
+    viewSize = viewSize;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::FlipHorizontal() {
-    flip_.x = -flip_.x;
-    viewComputed_ = false;
+    flip.x = -flip.x;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 void Viewport::FlipVertical() {
-    flip_.y = -flip_.y;
-    viewComputed_ = false;
+    flip.y = -flip.y;
+    viewComputed = false;
     ComputeViewMatrix();
 }
 
 glm::vec2 Viewport::Zoom() const {
-    return zoom_;
+    return zoom;
 }
 
 void Viewport::ComputeViewMatrix() {
     ZoneScoped;
-    viewMat_ = glm::mat4(1.0f);
-    viewMat_ = glm::scale(viewMat_, glm::vec3(flip_.x, flip_.y, 1.0f));
-    viewMat_ = glm::scale(viewMat_, glm::vec3(zoom_, 1.0f));
-    viewMat_ = glm::rotate(viewMat_, rotation_, glm::vec3(0.0f, 0.0f, 1.0f));
-    viewMat_ = glm::translate(viewMat_, glm::vec3(glm::floor(translation_), 0.0f)); // Snap to pixels
+    viewMat = glm::mat4(1.0f);
+    viewMat = glm::scale(viewMat, glm::vec3(flip.x, flip.y, 1.0f));
+    viewMat = glm::scale(viewMat, glm::vec3(zoom, 1.0f));
+    viewMat = glm::rotate(viewMat, rotation, glm::vec3(0.0f, 0.0f, 1.0f));
+    viewMat = glm::translate(viewMat, glm::vec3(glm::floor(translation), 0.0f)); // Snap to pixels
 
-    vX = glm::vec2(viewMat_[0]) * static_cast<float>(TILE_WIDTH);
-    vY = glm::vec2(viewMat_[1]) * static_cast<float>(TILE_HEIGHT);
-    vTrans = glm::vec2(viewMat_[3]);
+    vX = glm::vec2(viewMat[0]) * static_cast<float>(TILE_WIDTH);
+    vY = glm::vec2(viewMat[1]) * static_cast<float>(TILE_HEIGHT);
+    vTrans = glm::vec2(viewMat[3]);
 
     // TODO: take into account zoom offset;
 
-    viewMatInv_ = glm::inverse(viewMat_);
+    viewMatInv = glm::inverse(viewMat);
 
-    viewComputed_ = true;
+    viewComputed = true;
 }
 
 glm::mat4 Viewport::ViewMatrix() const {
-    SDL_assert(viewComputed_);
-    return viewMat_;
+    SDL_assert(viewComputed);
+    return viewMat;
 }
 
 glm::mat4 Viewport::InverseViewMatrix() const {
-    SDL_assert(viewComputed_);
-    return viewMatInv_;
+    SDL_assert(viewComputed);
+    return viewMatInv;
 }
 
 glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos) const {
-    SDL_assert(viewComputed_);
-    glm::vec2 pos = screenPos - (viewSize_ / 2.0f);
+    SDL_assert(viewComputed);
+    glm::vec2 pos = screenPos - (viewSize / 2.0f);
     pos = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(pos, 0.0f, 1.0f));
     return pos;
 }
 
 bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
-    SDL_assert(viewComputed_);
+    SDL_assert(viewComputed);
     const glm::vec2 t0 = static_cast<float>(tilePos.x) * vX + static_cast<float>(tilePos.y) * vY + vTrans;
     const std::array<glm::vec2, 4> tCorners = {
         t0,
@@ -139,45 +140,47 @@ bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
         t0 + vX + vY,
     };
 
-    glm::vec2 tMin{tCorners[0]}, tMax{tCorners[0]};
+    glm::vec2 tMin{tCorners[0]};
+    glm::vec2 tMax{tCorners[0]};
     for (int i = 1; i < 4; ++i) {
         tMin = glm::min(tMin, tCorners[i]);
         tMax = glm::max(tMax, tCorners[i]);
     }
 
-    return (tMin.x <= (viewSize_.x / 2.0f) && tMax.x >= (-viewSize_.x / 2.0f)) &&
-           (tMin.y <= (viewSize_.y / 2.0f) && tMax.y >= (-viewSize_.y / 2.0f));
+    return (tMin.x <= (viewSize.x / 2.0f) && tMax.x >= (-viewSize.x / 2.0f))
+        && (tMin.y <= (viewSize.y / 2.0f) && tMax.y >= (-viewSize.y / 2.0f));
 }
 
 std::vector<glm::ivec2> Viewport::VisibleTiles() const {
-    SDL_assert(viewComputed_);
-    constexpr glm::vec2 tSize(TILE_WIDTH, TILE_HEIGHT);
+    SDL_assert(viewComputed);
+    constexpr glm::vec2 T_SIZE(TILE_WIDTH, TILE_HEIGHT);
 
     // Broad pass (AABB in canvas Space)
     const glm::vec2 vCorners[4] = {
-        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(-0.5f, -0.5f), 0.0f, 1.0f)),
-        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(0.5f, -0.5f), 0.0f, 1.0f)),
-        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(-0.5f, 0.5f), 0.0f, 1.0f)),
-        glm::vec2(viewMatInv_ * glm::vec4(viewSize_ * glm::vec2(0.5f, 0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv * glm::vec4(viewSize * glm::vec2(-0.5f, -0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv * glm::vec4(viewSize * glm::vec2(0.5f, -0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv * glm::vec4(viewSize * glm::vec2(-0.5f, 0.5f), 0.0f, 1.0f)),
+        glm::vec2(viewMatInv * glm::vec4(viewSize * glm::vec2(0.5f, 0.5f), 0.0f, 1.0f)),
     };
 
-    glm::vec2 vAabbMin{vCorners[0]}, vAabbMax{vCorners[0]};
+    glm::vec2 vAabbMin{vCorners[0]};
+    glm::vec2 vAabbMax{vCorners[0]};
     for (int i = 1; i < 4; ++i) {
         vAabbMin = glm::min(vAabbMin, vCorners[i]);
         vAabbMax = glm::max(vAabbMax, vCorners[i]);
     }
 
-    vAabbMin = glm::floor(vAabbMin / tSize);
-    vAabbMax = glm::ceil(vAabbMax / tSize);
+    vAabbMin = glm::floor(vAabbMin / T_SIZE);
+    vAabbMax = glm::ceil(vAabbMax / T_SIZE);
 
     std::vector<glm::ivec2> tPositions;
-    tPositions.reserve((vAabbMax.x - vAabbMin.x) * (vAabbMax.y - vAabbMin.y));
+    tPositions.reserve(static_cast<size_t>(vAabbMax.x - vAabbMin.x) * static_cast<size_t>(vAabbMax.y - vAabbMin.y));
 
     // If needed this can be simded
-    for (int y = std::floor(vAabbMin.y); y < std::ceil(vAabbMax.y); y++) {
-        for (int x = std::floor(vAabbMin.x); x < std::ceil(vAabbMax.x); x++) {
+    for (int y = std::floor(vAabbMin.y); y < static_cast<int>(std::ceil(vAabbMax.y)); y++) {
+        for (int x = std::floor(vAabbMin.x); x < static_cast<int>(std::ceil(vAabbMax.x)); x++) {
             if (IsTileVisible(glm::ivec2(x, y))) {
-                tPositions.push_back(glm::ivec2(x, y));
+                tPositions.emplace_back(x, y);
             }
         }
     }
@@ -185,13 +188,13 @@ std::vector<glm::ivec2> Viewport::VisibleTiles() const {
     return tPositions;
 }
 
-void Viewport::UI() {
+void Viewport::UI() const {
     if (ImGui::Begin("Viewport")) {
-        ImGui::LabelText("Pos", "%.2f, %.2f", translation_.x, translation_.y);
-        ImGui::LabelText("Zoom", "%.2f, %.2f", zoom_.x, zoom_.y);
-        ImGui::LabelText("Zoom origin", "%.2f, %.2f", zoomOrigin_.x, zoomOrigin_.y);
-        ImGui::LabelText("Rotation", "%.2f", rotation_);
-        ImGui::LabelText("Flipped", "(%.1f, %.1f)", flip_.x, flip_.y);
+        ImGui::LabelText("Pos", "%.2f, %.2f", translation.x, translation.y);
+        ImGui::LabelText("Zoom", "%.2f, %.2f", zoom.x, zoom.y);
+        ImGui::LabelText("Zoom origin", "%.2f, %.2f", zoomOrigin.x, zoomOrigin.y);
+        ImGui::LabelText("Rotation", "%.2f", rotation);
+        ImGui::LabelText("Flipped", "(%.1f, %.1f)", flip.x, flip.y);
     }
     ImGui::End();
 }

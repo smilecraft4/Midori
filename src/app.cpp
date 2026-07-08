@@ -11,7 +11,7 @@
 
 namespace Midori {
 
-App::App(int argc, char* argv[]) : renderer(this), canvas(this), ui(*this), stateManager(this) {
+App::App(int argc, char* argv[]) : renderer(this), canvas(this), stateManager(this) {
     ZoneScoped;
     args.resize(argc);
     for (size_t i = 0; i < args.size(); i++) {
@@ -30,31 +30,29 @@ bool App::OnEvent(const SDL_Event* event) {
 bool App::Init() {
     ZoneScoped;
 
-    float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    if (main_scale == 0.0F) {
-        main_scale = 1.0F;
+    float mainScale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    if (mainScale == 0.0F) {
+        mainScale = 1.0F;
     }
 
-    window = SDL_CreateWindow("Midori", window_size.x, window_size.y,
+    window = SDL_CreateWindow("Midori", windowSize.x, windowSize.y,
                               SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (window == nullptr) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create window: %s", SDL_GetError());
         return false;
     }
-    SDL_SetWindowPosition(window, window_pos.x, window_pos.y);
+    SDL_SetWindowPosition(window, windowPos.x, windowPos.y);
     SDL_ShowWindow(window);
 
-    SDL_GetMouseState(&cursor_current_pos.x, &cursor_current_pos.y);
-    cursor_last_pos = cursor_current_pos;
+    SDL_GetMouseState(&cursorCurrentPos.x, &cursorCurrentPos.y);
+    cursorLastPos = cursorCurrentPos;
 
     if (!renderer.Init()) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize renderer");
         return false;
     }
 
-    ui.Init();
-
-    canvas.viewport.Resize(glm::vec2(window_size));
+    canvas.viewport.Resize(glm::vec2(windowSize));
     if (!canvas.Open()) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to create new canvas");
         return false;
@@ -73,24 +71,24 @@ bool App::Init() {
     ImGui::StyleColorsLight();
 
     ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(main_scale);
-    style.FontScaleDpi = main_scale;
+    style.ScaleAllSizes(mainScale);
+    style.FontScaleDpi = mainScale;
     // TODO: load cascadia font
 
     ImGui_ImplSDL3_InitForSDLGPU(window);
-    ImGui_ImplSDLGPU3_InitInfo init_info = {
+    ImGui_ImplSDLGPU3_InitInfo initInfo = {
         .Device = renderer.device,
         .ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(renderer.device, window),
         .MSAASamples = SDL_GPU_SAMPLECOUNT_1,
         .SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
         .PresentMode = SDL_GPU_PRESENTMODE_VSYNC,
     };
-    ImGui_ImplSDLGPU3_Init(&init_info);
+    ImGui_ImplSDLGPU3_Init(&initInfo);
 
     return true;
 }
 
-static const SDL_DialogFileFilter filters[] = {
+static const SDL_DialogFileFilter FILTERS[] = {
     {.name = "Midori files (.mido)", .pattern = "mido"},
     {.name = "All files", .pattern = "*"},
 };
@@ -98,34 +96,34 @@ static const SDL_DialogFileFilter filters[] = {
 void App::Update() {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    if (window_size.x > 0 && window_size.y > 0 && !hidden) {
+    if (windowSize.x > 0 && windowSize.y > 0 && !hidden) {
         { // ImGui Stuff
             ZoneScopedN("UI");
             ImGui_ImplSDLGPU3_NewFrame();
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
-            static bool ui_debug_culling = false;
+            static bool uiDebugCulling = false;
             auto layer = canvas.selectedLayer;
             if (canvas.strokeLayer > 0) {
                 layer = canvas.strokeLayer;
             }
-            ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+            ImDrawList* drawList = ImGui::GetBackgroundDrawList();
 
-            // DebugTileCulling(glm::vec2(window_size) / 2.0f, draw_list);
+            // DebugTileCulling(glm::vec2(windowSize) / 2.0f, draw_list);
 
             if (ImGui::Begin("Debug")) {
                 int depth = 0;
-                for (int i = 0; i < stateManager.states_.size(); i++) {
-                    if (i < stateManager.states_.size() - 1) {
-                        if (!ImGui::TreeNodeEx(stateManager.states_[i]->Name().c_str(),
+                for (int i = 0; i < stateManager.states.size(); i++) {
+                    if (i < stateManager.states.size() - 1) {
+                        if (!ImGui::TreeNodeEx(stateManager.states[i]->Name().c_str(),
                                                ImGuiTreeNodeFlags_DefaultOpen)) {
-                            stateManager.states_[i]->DrawUI();
+                            stateManager.states[i]->DrawUI();
                             break;
                         }
                     } else {
-                        ImGui::TreeNodeEx(stateManager.states_[i]->Name().c_str(), ImGuiTreeNodeFlags_Leaf);
-                        stateManager.states_[i]->DrawUI();
+                        ImGui::TreeNodeEx(stateManager.states[i]->Name().c_str(), ImGuiTreeNodeFlags_Leaf);
+                        stateManager.states[i]->DrawUI();
                     }
                     depth++;
                 }
@@ -135,65 +133,65 @@ void App::Update() {
             }
             ImGui::End();
 
-            if (ui_debug_culling && layer > 0) {
+            if (uiDebugCulling && layer > 0) {
                 for (const auto& [pos, tile] : canvas.layerTilePos[layer]) {
-                    if (canvas.tile_read_queue.contains(tile)) {
+                    if (canvas.tileReadQueue.contains(tile)) {
                         ImU32 col = IM_COL32(255, 0, 0, 64);
                         const char* str{};
-                        switch (canvas.tile_read_queue.at(tile).state) {
-                        case Canvas::TileReadState::Queued:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Queued");
-                            break;
-                        case Canvas::TileReadState::Read:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Read");
-                            break;
-                        case Canvas::TileReadState::Decompressed:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Decompressed");
-                            break;
-                        case Canvas::TileReadState::Uploaded:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Uploaded");
-                            break;
-                        default:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::N/A");
-                            break;
+                        switch (canvas.tileReadQueue.at(tile).state) {
+                            case Canvas::TileReadState::Queued:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Queued");
+                                break;
+                            case Canvas::TileReadState::Read:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Read");
+                                break;
+                            case Canvas::TileReadState::Decompressed:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Decompressed");
+                                break;
+                            case Canvas::TileReadState::Uploaded:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Uploaded");
+                                break;
+                            default:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::N/A");
+                                break;
                         }
-                    } else if (canvas.tile_write_queue.contains(tile)) {
+                    } else if (canvas.tileWriteQueue.contains(tile)) {
                         ImU32 col = IM_COL32(0, 255, 0, 64);
                         const char* str{};
-                        switch (canvas.tile_write_queue.at(tile).state) {
-                        case Canvas::TileWriteState::Queued:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Queued");
-                            break;
-                        case Canvas::TileWriteState::Downloading:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Downloading");
-                            break;
-                        case Canvas::TileWriteState::Downloaded:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Downloaded");
-                            break;
-                        case Canvas::TileWriteState::Encoded:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Encoded");
-                            break;
-                        case Canvas::TileWriteState::Written:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::Written");
-                            break;
-                        default:
-                            DrawTileDebug(pos, draw_list, col, "TileReadState::N/A");
-                            break;
+                        switch (canvas.tileWriteQueue.at(tile).state) {
+                            case Canvas::TileWriteState::Queued:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Queued");
+                                break;
+                            case Canvas::TileWriteState::Downloading:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Downloading");
+                                break;
+                            case Canvas::TileWriteState::Downloaded:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Downloaded");
+                                break;
+                            case Canvas::TileWriteState::Encoded:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Encoded");
+                                break;
+                            case Canvas::TileWriteState::Written:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::Written");
+                                break;
+                            default:
+                                DrawTileDebug(pos, drawList, col, "TileReadState::N/A");
+                                break;
                         }
                     } else {
                         ImU32 col = IM_COL32(0, 0, 0, 64);
-                        DrawTileDebug(pos, draw_list, col);
+                        DrawTileDebug(pos, drawList, col);
                     }
                 }
             }
 
-            if (!ui_focus) {
+            if (!uiFocus) {
                 ImVec2 pos = {};
                 ImVec2 radius = {};
 
-                if (!canvas.stroke_started) {
-                    pos.x = cursor_current_pos.x;
-                    pos.y = cursor_current_pos.y;
+                if (!canvas.strokeStarted) {
+                    pos.x = cursorCurrentPos.x;
+                    pos.y = cursorCurrentPos.y;
                     if (canvas.brushMode) {
                         radius.x = canvas.brushOptions.radius * canvas.viewport.Zoom().x;
                         radius.y = canvas.brushOptions.radius * canvas.viewport.Zoom().y;
@@ -201,15 +199,15 @@ void App::Update() {
                         radius.x = canvas.eraserOptions.radius * canvas.viewport.Zoom().x;
                         radius.y = canvas.eraserOptions.radius * canvas.viewport.Zoom().y;
                     }
-                    draw_list->AddEllipse(pos, radius, ImColor(0, 0, 0, 255));
+                    drawList->AddEllipse(pos, radius, ImColor(0, 0, 0, 255));
                 }
             }
 
-            if (!hide_ui) {
+            if (!hideUi) {
                 canvas.viewport.UI();
 
                 if (ImGui::Begin("Debug")) {
-                    ImGui::Checkbox("view loaded tiles", &ui_debug_culling);
+                    ImGui::Checkbox("view loaded tiles", &uiDebugCulling);
 
                     size_t tileModified{};
                     for (const auto& [la, infos] : canvas.layerInfos) {
@@ -217,55 +215,55 @@ void App::Update() {
                     }
 
                     ImGui::LabelText("tile loaded", "%zu", canvas.tileInfos.size());
-                    ImGui::LabelText("tile textures", "%zu", renderer.tile_textures.size());
+                    ImGui::LabelText("tile textures", "%zu", renderer.tileTextures.size());
                     ImGui::LabelText("tile modified", "%zu", tileModified);
                 }
                 ImGui::End();
 
                 if (ImGui::Begin("Layers")) {
                     // Temporary layer stuff
-                    eastl::vector<LayerInfo> layer_info;
-                    layer_info.reserve(canvas.layerInfos.size());
+                    std::vector<LayerInfo> layerInfo;
+                    layerInfo.reserve(canvas.layerInfos.size());
                     for (auto& [_, info] : canvas.layerInfos) {
-                        layer_info.push_back(info);
+                        layerInfo.push_back(info);
                     }
 
-                    std::ranges::sort(layer_info, [](LayerInfo& a, LayerInfo& b) { return a.height > b.height; });
+                    std::ranges::sort(layerInfo, [](LayerInfo& a, LayerInfo& b) { return a.height > b.height; });
 
-                    const ImVec2 image_size = {
-                        (float)window_size.x / (float)window_size.y * 50.0f,
+                    const ImVec2 imageSize = {
+                        (float)windowSize.x / (float)windowSize.y * 50.0f,
                         50.0f,
                     };
-                    for (int i = static_cast<int>(layer_info.size()) - 1; i >= 0; i--) {
-                        auto& real_data = canvas.layerInfos[layer_info[i].id]; // Wut ??
-                        const std::string title = std::format("-{}: {}", real_data.height, real_data.name);
+                    for (int i = static_cast<int>(layerInfo.size()) - 1; i >= 0; i--) {
+                        auto& realData = canvas.layerInfos[layerInfo[i].id]; // Wut ??
+                        const std::string title = std::format("-{}: {}", realData.height, realData.name);
                         ImGui::SeparatorText(title.c_str());
-                        ImGui::PushID(real_data.id);
+                        ImGui::PushID(realData.id);
 
-                        bool layer_selected = real_data.id == canvas.selectedLayer;
-                        if (ImGui::Checkbox("Selected", &layer_selected)) {
-                            canvas.selectedLayer = real_data.id;
+                        bool layerSelected = realData.id == canvas.selectedLayer;
+                        if (ImGui::Checkbox("Selected", &layerSelected)) {
+                            canvas.selectedLayer = realData.id;
                         }
-                        ImGui::SliderFloat("", &real_data.opacity, 0.0f, 1.0f);
+                        ImGui::SliderFloat("", &realData.opacity, 0.0f, 1.0f);
 
                         // ImGui::Image(
                         //     (ImTextureID)(intptr_t)renderer.layer_textures.at(real_data.layer),
                         //     image_size);
 
-                        if (real_data.height < (canvas.layersCurrentMaxHeight - 1)) {
+                        if (realData.height < (canvas.layersCurrentMaxHeight - 1)) {
                             ImGui::SameLine();
                             if (ImGui::Button("-")) {
                                 // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
                                 // *this, real_data.layer, real_data.depth, real_data.depth + 1));
-                                canvas.SetLayerHeight(real_data.id, real_data.height + 1);
+                                canvas.SetLayerHeight(realData.id, realData.height + 1);
                             }
                         }
-                        if (real_data.height > 0) {
+                        if (realData.height > 0) {
                             ImGui::SameLine();
                             if (ImGui::Button("+")) {
                                 // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
                                 // *this, real_data.layer, real_data.depth, real_data.depth - 1));
-                                canvas.SetLayerHeight(real_data.id, real_data.height - 1);
+                                canvas.SetLayerHeight(realData.id, realData.height - 1);
                             }
                         }
                         if (i != 0) {
@@ -278,7 +276,7 @@ void App::Update() {
                         ImGui::SameLine();
                         if (ImGui::Button("x")) {
                             // canvas.canvasHistory.store(std::make_unique<LayerDeleteCommand>(*this, real_data.layer));
-                            canvas.DeleteLayer(real_data.id);
+                            canvas.DeleteLayer(realData.id);
                         }
 
                         ImGui::PopID();
@@ -292,7 +290,7 @@ void App::Update() {
                         // canvas.layerInfos[layer]));
                         canvas.SaveLayer(newLayer);
                     }
-                    ImGui::ColorEdit4("Background Color", glm::value_ptr(bg_color));
+                    ImGui::ColorEdit4("Background Color", glm::value_ptr(bgColor));
                 }
                 ImGui::End();
 
@@ -391,10 +389,10 @@ void App::Update() {
                                 canvas.eraserOptionsModified = true;
                             }
                             ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.eraserOptions.hardness_pressure)) {
+                            if (ImGui::Checkbox("Pen", &canvas.eraserOptions.hardnessPressure)) {
                                 canvas.eraserOptionsModified = true;
                             }
-                            if (canvas.eraserOptions.hardness_pressure) {
+                            if (canvas.eraserOptions.hardnessPressure) {
                                 if (ImGui::SliderFloat2("range",
                                                         glm::value_ptr(canvas.eraserOptions.hardnessPressureRange),
                                                         0.0f, 1.0f)) {
@@ -416,10 +414,10 @@ void App::Update() {
                             canvas.eraserOptionsModified = true;
                         }
                         ImGui::Separator();
-                        ImGui::LabelText("Stroke num", "%zu", canvas.stroke_points.size());
-                        ImGui::Checkbox("Using pen", &pen_in_range);
-                        ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
-                        ImGui::LabelText("Pressure", "%.2f", pen_pressure);
+                        ImGui::LabelText("Stroke num", "%zu", canvas.strokePoints.size());
+                        ImGui::Checkbox("Using pen", &penInRange);
+                        ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursorCurrentPos.x, cursorCurrentPos.y);
+                        ImGui::LabelText("Pressure", "%.2f", penPressure);
                     } else if (canvas.brushMode) {
                         {
                             ImGui::PushID("Opacity");
@@ -507,10 +505,10 @@ void App::Update() {
                                 canvas.brushOptionsModified = true;
                             }
                             ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.brushOptions.hardness_pressure)) {
+                            if (ImGui::Checkbox("Pen", &canvas.brushOptions.hardnessPressure)) {
                                 canvas.brushOptionsModified = true;
                             }
-                            if (canvas.brushOptions.hardness_pressure) {
+                            if (canvas.brushOptions.hardnessPressure) {
                                 if (ImGui::SliderFloat2("range",
                                                         glm::value_ptr(canvas.brushOptions.hardnessPressureRange), 0.0f,
                                                         1.0f)) {
@@ -532,17 +530,17 @@ void App::Update() {
                             canvas.brushOptionsModified = true;
                         }
                         ImGui::Separator();
-                        ImGui::LabelText("Stroke num", "%zu", canvas.stroke_points.size());
-                        ImGui::Checkbox("Using pen", &pen_in_range);
-                        ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursor_current_pos.x, cursor_current_pos.y);
-                        ImGui::LabelText("Pressure", "%.2f", pen_pressure);
+                        ImGui::LabelText("Stroke num", "%zu", canvas.strokePoints.size());
+                        ImGui::Checkbox("Using pen", &penInRange);
+                        ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursorCurrentPos.x, cursorCurrentPos.y);
+                        ImGui::LabelText("Pressure", "%.2f", penPressure);
                     }
                 }
                 ImGui::End();
 
                 if (ImGui::Begin("Canvas History")) {
                     if (canvas.canvasCommands.Empty() == 0u) {
-                        for (int pos = canvas.canvasCommands.Count() - 1; pos >= 0; pos--) {
+                        for (int pos = static_cast<int>(canvas.canvasCommands.Count()) - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.canvasCommands.Get(pos);
                             const auto name = command->Name();
                             if ((pos + 1) < canvas.canvasCommands.position) {
@@ -560,7 +558,7 @@ void App::Update() {
                 ImGui::End();
                 if (ImGui::Begin("View History")) {
                     if (canvas.viewCommands.Empty() == 0u) {
-                        for (int pos = canvas.viewCommands.Count() - 1; pos >= 0; pos--) {
+                        for (int pos = static_cast<int>(canvas.viewCommands.Count()) - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.viewCommands.Get(pos);
                             const auto name = command->Name();
                             if ((pos + 1) < canvas.viewCommands.position) {
@@ -601,25 +599,25 @@ void App::Update() {
 
 bool App::Resize(const int width, const int height) {
     ZoneScoped;
-    window_size.x = width;
-    window_size.y = height;
+    windowSize.x = width;
+    windowSize.y = height;
 
-    if (window_size.x > 0 || window_size.y > 0) {
+    if (windowSize.x > 0 || windowSize.y > 0) {
         if (!renderer.Resize()) {
             return false;
         }
-        canvas.viewport.Resize(glm::vec2(window_size));
+        canvas.viewport.Resize(glm::vec2(windowSize));
     }
 
     return true;
 }
 
 void App::ShouldQuit() {
-    should_quit = true;
+    shouldQuit = true;
 
     canvas.canvasCommands.Clear();
 
-    const eastl::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
     if (canvas.brushOptionsModified) {
         canvas.SaveBrush();
     }
@@ -659,7 +657,6 @@ void App::Quit() {
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui::DestroyContext();
 
-    ui.Quit();
     renderer.Quit();
 
     SDL_DestroyWindow(window);
@@ -668,9 +665,9 @@ void App::Quit() {
 
 /*
 void App::CursorMove(glm::vec2 new_pos) {
-    // new_pos = canvas.viewport.ScreenToCanvas(new_pos, window_size);
+    // new_pos = canvas.viewport.ScreenToCanvas(new_pos, windowSize);
 
-    static glm::vec2 last_pos = cursor_last_pos;
+    static glm::vec2 last_pos = cursorLastPos;
 
     if (changeCursorSize) {
         glm::vec2 delta_pos = new_pos - last_pos;
@@ -680,10 +677,10 @@ void App::CursorMove(glm::vec2 new_pos) {
         return;
     }
 
-    cursor_last_pos = cursor_current_pos;
-    cursor_current_pos = new_pos;
-    cursor_delta_pos = cursor_current_pos - cursor_last_pos;
-    last_pos = cursor_last_pos;
+    cursorLastPos = cursorCurrentPos;
+    cursorCurrentPos = new_pos;
+    cursor_delta_pos = cursorCurrentPos - cursorLastPos;
+    last_pos = cursorLastPos;
 
     if (!cursor_left_pressed) {
         canvas.viewCursorStart = new_pos;
@@ -695,7 +692,7 @@ void App::CursorMove(glm::vec2 new_pos) {
 
         Color color;
         auto samplePos = new_pos;
-        samplePos.y = static_cast<float>(window_size.y) - new_pos.y;
+        samplePos.y = static_cast<float>(windowSize.y) - new_pos.y;
         Midori::Canvas::SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
         sampledColor.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
         sampledColor.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
@@ -709,13 +706,13 @@ void App::CursorMove(glm::vec2 new_pos) {
             canvas.currentViewportChangeCommand->SetPreviousViewport(canvas.viewport);
         }
 
-        // canvas.ViewUpdateCursor(cursor_current_pos);
+        // canvas.ViewUpdateCursor(cursorCurrentPos);
 
-        if (canvas.stroke_started) {
+        if (canvas.strokeStarted) {
             if (canvas.brushMode) {
                 canvas.UpdateBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
+                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
                     .radius = canvas.brushOptions.radius,
                     .flow = canvas.brushOptions.flow,
                     .hardness = canvas.brushOptions.hardness,
@@ -723,7 +720,7 @@ void App::CursorMove(glm::vec2 new_pos) {
             } else if (canvas.eraserMode) {
                 canvas.UpdateEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
+                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
                     .radius = canvas.eraserOptions.radius,
                     .flow = canvas.eraserOptions.flow,
                     .hardness = canvas.eraserOptions.hardness,
@@ -749,11 +746,11 @@ void App::CursorPress(Uint8 button) {
         }
 
         if (!canvas.viewPanning && !canvas.viewZooming && !canvas.viewRotating && (canvas.selectedLayer != 0) &&
-            !canvas.stroke_started) {
+            !canvas.strokeStarted) {
             if (canvas.brushMode) {
                 canvas.StartBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
+                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
                     .radius = canvas.brushOptions.radius,
                     .flow = canvas.brushOptions.flow,
                     .hardness = canvas.brushOptions.hardness,
@@ -761,7 +758,7 @@ void App::CursorPress(Uint8 button) {
             } else if (canvas.eraserMode) {
                 canvas.StartEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
+                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
                     .radius = canvas.eraserOptions.radius,
                     .flow = canvas.eraserOptions.flow,
                     .hardness = canvas.eraserOptions.hardness,
@@ -774,11 +771,11 @@ void App::CursorRelease(Uint8 button) {
     if (button == SDL_BUTTON_LEFT) {
         cursor_left_pressed = false;
         if (!canvas.viewPanning && !canvas.viewZooming && !canvas.viewRotating && (canvas.selectedLayer != 0) &&
-            canvas.stroke_started) {
+            canvas.strokeStarted) {
             if (canvas.brushMode) {
                 canvas.EndBrushStroke(Canvas::StrokePoint{
                     .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
+                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
                     .radius = canvas.brushOptions.radius,
                     .flow = canvas.brushOptions.flow,
                     .hardness = canvas.brushOptions.hardness,
@@ -786,7 +783,7 @@ void App::CursorRelease(Uint8 button) {
             } else if (canvas.eraserMode) {
                 canvas.EndEraserStroke(Canvas::StrokePoint{
                     .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursor_current_pos),
+                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
                     .radius = canvas.eraserOptions.radius,
                     .flow = canvas.eraserOptions.flow,
                     .hardness = canvas.eraserOptions.hardness,
@@ -825,7 +822,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         Fullscreen(!fullscreen);
     }
     if (key == SDLK_TAB) {
-        hide_ui = !hide_ui;
+        hideUi = !hideUi;
     }
     if (key == SDLK_F && space_pressed) {
         canvas.viewport.FlipHorizontal();
@@ -835,7 +832,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         canvas.viewport.SetZoom(glm::vec2(0.0f), glm::vec2(1.0f));
     }
 
-    if (!canvas.stroke_started) {
+    if (!canvas.strokeStarted) {
         if (key == SDLK_F && !ctrl_pressed) {
             changeCursorSize = true;
         }
@@ -846,8 +843,8 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
             colorPicker = true;
             canvas.canvasTexture_ = canvas.DownloadCanvasTexture(canvas.canvasTextureSize_);
             Color color;
-            auto samplePos = cursor_current_pos;
-            samplePos.y = static_cast<float>(window_size.y) - cursor_current_pos.y;
+            auto samplePos = cursorCurrentPos;
+            samplePos.y = static_cast<float>(windowSize.y) - cursorCurrentPos.y;
             Midori::Canvas::SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
             sampledColor.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
             sampledColor.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
@@ -884,7 +881,7 @@ void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
         }
     }
 
-    // canvas.ViewUpdateState(cursor_current_pos);
+    // canvas.ViewUpdateState(cursorCurrentPos);
 }
 
 
@@ -919,7 +916,7 @@ void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
         return;
     }
 
-    // canvas.ViewUpdateState(cursor_current_pos);
+    // canvas.ViewUpdateState(cursorCurrentPos);
 }*/
 
 void App::Save() {
@@ -928,7 +925,7 @@ void App::Save() {
     }
     saving = true;
 
-    const eastl::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
+    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
     if (canvas.brushOptionsModified) {
         canvas.SaveBrush();
     }
@@ -973,12 +970,12 @@ void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const s
     };
     for (size_t i = 0; i < 5; i++) {
         glm::vec4 p =
-            canvas.viewport.ViewMatrix() *
-            glm::vec4(static_cast<glm::vec2>(pos) * glm::vec2(TILE_WIDTH, TILE_HEIGHT) + offsets[i], 0.0f, 1.0f);
+            canvas.viewport.ViewMatrix()
+            * glm::vec4(static_cast<glm::vec2>(pos) * glm::vec2(TILE_WIDTH, TILE_HEIGHT) + offsets[i], 0.0f, 1.0f);
 
         points[i] = ImVec2{
-            (static_cast<float>(window_size.x) / 2.0f) + p.x,
-            (static_cast<float>(window_size.y) / 2.0f) + p.y,
+            (static_cast<float>(windowSize.x) / 2.0f) + p.x,
+            (static_cast<float>(windowSize.y) / 2.0f) + p.y,
         };
         center.x += points[i].x / 5.0f;
         center.y += points[i].y / 5.0f;

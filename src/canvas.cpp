@@ -2,10 +2,10 @@
 
 #include "app.h"
 #include "renderer.h"
+#define QOI_IMPLEMENTATION
+#define QOI_NO_STDIO
+#include "../deps/qoi/qoi.h"
 #include <SDL3/SDL_assert.h>
-#include <algorithm>
-#include <cstdint>
-#include <format>
 #include <imgui.h>
 #include <map>
 #include <string>
@@ -14,18 +14,17 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
 #include <json.hpp>
-#define QOI_IMPLEMENTATION
-#define QOI_NO_STDIO
-#include <qoi.h>
+#include <algorithm>
+#include <cstdint>
+#include <format>
 
 namespace Midori {
 
 // Canvas
 
-Canvas::Canvas(App* app) : app(app), canvasCommands(256), viewCommands(1024) {
-}
+Canvas::Canvas(App* app) : app(app), canvasCommands(256), viewCommands(1024) {}
 
-SDL_EnumerationResult findLayersCallback(void* userdata, const char* dirname, const char* fname) {
+SDL_EnumerationResult FindLayersCallback(void* userdata, const char* dirname, const char* fname) {
     if (dirname != nullptr) {
         auto* canvas = (Canvas*)userdata;
         const std::string folder = std::format("{}{}", dirname, fname);
@@ -48,7 +47,7 @@ SDL_EnumerationResult findLayersCallback(void* userdata, const char* dirname, co
         SDL_assert(layer != LAYER_INVALID);
 
         canvas->selectedLayer = layer; // TODO: Move this elsewhere
-        canvas->layerTilesSaved[layer] = eastl::unordered_set<glm::ivec2>();
+        canvas->layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
 
         int tilesCount;
         const auto* tilesFile = SDL_GlobDirectory(folder.c_str(), "*.qoi", 0, &tilesCount);
@@ -106,7 +105,7 @@ bool Canvas::Open() {
     // SDL_CloseIO(file_io);
 
     if (exists) {
-        SDL_EnumerateDirectory(filename.c_str(), findLayersCallback, this);
+        SDL_EnumerateDirectory(filename.c_str(), FindLayersCallback, this);
         CompactLayerHeight();
     }
 
@@ -117,7 +116,7 @@ bool Canvas::Open() {
         SDL_assert(layer != LAYER_INVALID);
 
         selectedLayer = layer;
-        layerTilesSaved[layer] = eastl::unordered_set<glm::ivec2>();
+        layerTilesSaved[layer] = std::unordered_set<glm::ivec2>();
         SaveLayer(layer);
     }
 
@@ -182,31 +181,31 @@ void Canvas::DeleteUpdate() {
     { // Deleting tiles
         ZoneScopedN("Deleting tiles");
 
-        eastl::vector<Tile> clear_tiles;
+        std::vector<Tile> clearTiles;
         for (const auto& tile : tileToDelete) {
-            SDL_assert(!tile_read_queue.contains(tile));
+            SDL_assert(!tileReadQueue.contains(tile));
 
-            if (tile_write_queue.contains(tile)) {
+            if (tileWriteQueue.contains(tile)) {
                 continue;
             }
 
             SDL_assert(tileInfos.contains(tile));
-            const auto tile_info = tileInfos.at(tile);
-            SDL_assert(layerInfos.contains(tile_info.layer));
+            const auto tileInfo = tileInfos.at(tile);
+            SDL_assert(layerInfos.contains(tileInfo.layer));
 
             const std::string tilePath =
-                std::format("{}/{}/{}_{}.qoi", filename, tile_info.layer, tile_info.pos.x, tile_info.pos.y);
+                std::format("{}/{}/{}_{}.qoi", filename, tileInfo.layer, tileInfo.pos.x, tileInfo.pos.y);
             SDL_RemovePath(tilePath.c_str());
 
-            layerTiles.at(tile_info.layer).erase(tile);
-            layerTilePos.at(tile_info.layer).erase(tileInfos.at(tile).pos);
-            layerTilesSaved[tile_info.layer].erase(tileInfos.at(tile).pos);
+            layerTiles.at(tileInfo.layer).erase(tile);
+            layerTilePos.at(tileInfo.layer).erase(tileInfos.at(tile).pos);
+            layerTilesSaved[tileInfo.layer].erase(tileInfos.at(tile).pos);
             app->renderer.ReleaseTileTexture(tile);
             tileInfos.erase(tile);
             tilesUnassigned.push_back(tile);
-            clear_tiles.push_back(tile);
+            clearTiles.push_back(tile);
         }
-        for (const auto tile : clear_tiles) {
+        for (const auto tile : clearTiles) {
             tileToDelete.erase(tile);
         }
     }
@@ -214,7 +213,7 @@ void Canvas::DeleteUpdate() {
     { // Deleting layers
         ZoneScopedN("Delete layer");
 
-        eastl::vector<Layer> layer_cleared;
+        std::vector<Layer> layerCleared;
         for (const auto layer : layerToDelete) {
             if (!layerTiles.at(layer).empty()) {
                 continue;
@@ -238,18 +237,18 @@ void Canvas::DeleteUpdate() {
             layerTilesSaved.erase(layer);
             layerTilePos.erase(layer);
 
-            layer_cleared.push_back(layer);
+            layerCleared.push_back(layer);
         }
 
-        for (const auto layer : layer_cleared) {
+        for (const auto layer : layerCleared) {
             layerToDelete.erase(layer);
         }
     }
 }
 
-eastl::vector<Layer> Canvas::Layers() const {
+std::vector<Layer> Canvas::Layers() const {
     ZoneScoped;
-    eastl::vector<Layer> layers;
+    std::vector<Layer> layers;
     layers.reserve(layerInfos.size());
     for (const auto& [layer, info] : layerInfos) {
         layers.push_back(layer);
@@ -267,11 +266,11 @@ bool Canvas::LayerHasTile(const Layer layer, const Tile tile) const {
     return layerTiles.at(layer).contains(tile);
 }
 
-eastl::vector<Tile> Canvas::LayerTiles(const Layer layer) const {
+std::vector<Tile> Canvas::LayerTiles(const Layer layer) const {
     ZoneScoped;
     SDL_assert(HasLayer(layer) && "Layer not found");
 
-    eastl::vector<Tile> tiles;
+    std::vector<Tile> tiles;
     tiles.reserve(layerTiles.at(layer).size());
     for (const auto& tile : layerTiles.at(layer)) {
         SDL_assert(tile != 0 && "Invalid tile found");
@@ -323,10 +322,10 @@ Layer Canvas::CreateLayer(LayerInfo layerInfo) {
     }
 
     layerInfos[layerInfo.id] = layerInfo;
-    layerTiles[layerInfo.id] = eastl::unordered_set<Tile>();
-    layerTilePos[layerInfo.id] = eastl::unordered_map<glm::ivec2, Tile>();
-    layerTilesSaved[layerInfo.id] = eastl::unordered_set<glm::ivec2>();
-    layerTilesModified[layerInfo.id] = eastl::unordered_set<Tile>();
+    layerTiles[layerInfo.id] = std::unordered_set<Tile>();
+    layerTilePos[layerInfo.id] = std::unordered_map<glm::ivec2, Tile>();
+    layerTilesSaved[layerInfo.id] = std::unordered_set<glm::ivec2>();
+    layerTilesModified[layerInfo.id] = std::unordered_set<Tile>();
 
     // TODO: do this properly
     layersHeightSorted.push_back(layerInfo.id);
@@ -348,10 +347,10 @@ bool Canvas::SaveLayer(Layer layer) {
     std::string layerDump = layerJson.dump(4);
 
     std::string file = std::format("{}/layer.json", path);
-    SDL_IOStream* file_io = SDL_IOFromFile(file.c_str(), "w");
-    SDL_assert(file_io != nullptr);
-    SDL_WriteIO(file_io, layerDump.data(), layerDump.size());
-    SDL_CloseIO(file_io);
+    SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
+    SDL_assert(fileIo != nullptr);
+    SDL_WriteIO(fileIo, layerDump.data(), layerDump.size());
+    SDL_CloseIO(fileIo);
     layersModified.erase(layer);
 
     return true;
@@ -436,7 +435,7 @@ void Canvas::DeleteLayer(const Layer layer) {
         selectedLayer = 0;
     }
 
-    eastl::vector<Tile> tiles = LayerTiles(layer);
+    std::vector<Tile> tiles = LayerTiles(layer);
     if (layerInfos.at(layer).internal) {
         for (const auto tile : tiles) {
             QueueUnloadTile(layer, tile);
@@ -454,23 +453,22 @@ void Canvas::DeleteLayer(const Layer layer) {
     layerToDelete.insert(layer);
 }
 
-void Canvas::MergeLayer(const Layer over_layer, const Layer below_layer) {
-    SDL_assert(layerInfos.contains(over_layer));
-    SDL_assert(!layerToDelete.contains(over_layer));
-    SDL_assert(layerInfos.contains(below_layer));
-    SDL_assert(!layerToDelete.contains(below_layer));
+void Canvas::MergeLayer(const Layer overLayer, const Layer belowLayer) {
+    SDL_assert(layerInfos.contains(overLayer));
+    SDL_assert(!layerToDelete.contains(overLayer));
+    SDL_assert(layerInfos.contains(belowLayer));
+    SDL_assert(!layerToDelete.contains(belowLayer));
 
     // TODO: Do this for all the tiles stored in file
-    eastl::vector<std::pair<Tile, Tile>> tile_to_merge;
-    eastl::vector<Tile> tile_to_move;
-    for (const auto& over_tile : layerTiles.at(over_layer)) {
-        const auto tile_merge_pos = tileInfos.at(over_tile).pos;
-        const auto below_tile = layerTilePos.at(below_layer).at(tile_merge_pos);
-        tile_to_merge.emplace_back(over_tile, below_tile);
+    std::vector<std::pair<Tile, Tile>> tileToMerge;
+    for (const auto& overTile : layerTiles.at(overLayer)) {
+        const auto tileMergePos = tileInfos.at(overTile).pos;
+        const auto belowTile = layerTilePos.at(belowLayer).at(tileMergePos);
+        tileToMerge.emplace_back(overTile, belowTile);
     }
     // TODO: Batch all merging action to only have a single command_buffer for this
     // per frame
-    for (const auto& [over, below] : tile_to_merge) {
+    for (const auto& [over, below] : tileToMerge) {
         MergeTiles(over, below);
     }
 }
@@ -514,7 +512,7 @@ Tile Canvas::QueueLoadTile(const Layer layer, const glm::ivec2 position) {
     const auto tile = CreateTile(layer, position);
     SDL_assert(tile != TILE_INVALID && "Tile invalid ?");
 
-    tile_read_queue[tile] = TileReadStatus{
+    tileReadQueue[tile] = TileReadStatus{
         .layer = layer,
         .tile = tile,
         .state = TileReadState::Queued,
@@ -528,9 +526,9 @@ bool Canvas::QueueSaveTile(const Layer layer, const Tile tile) {
     SDL_assert(layerInfos.contains(layer) && "Layer not found");
     SDL_assert(layerTilesModified.contains(layer) && "Tile not found");
     SDL_assert(tileInfos.contains(tile) && "Tile not found");
-    SDL_assert(!tile_write_queue.contains(tile) && "Tile already being queued for saving");
+    SDL_assert(!tileWriteQueue.contains(tile) && "Tile already being queued for saving");
 
-    tile_write_queue[tile] = TileWriteStatus{
+    tileWriteQueue[tile] = TileWriteStatus{
         .layer = layer,
         .tile = tile,
         .state = TileWriteState::Queued,
@@ -538,14 +536,14 @@ bool Canvas::QueueSaveTile(const Layer layer, const Tile tile) {
     };
 
     return true;
-};
+}
 
 void Canvas::QueueUnloadTile(const Layer layer, const Tile tile) {
     ZoneScoped;
     SDL_assert(layerInfos.contains(layer) && "Layer not found");
     SDL_assert(tileInfos.contains(tile) && "Tile not found");
 
-    if (!tile_write_queue.contains(tile)) {
+    if (!tileWriteQueue.contains(tile)) {
         QueueSaveTile(layer, tile);
     }
 
@@ -573,20 +571,20 @@ Tile Canvas::GetLoadedTileAt(const Layer layer, const glm::ivec2 position) const
     return tile;
 }
 
-void Canvas::MergeTiles(Tile over_tile, Tile below_tile) {
-    SDL_assert(tileInfos.contains(over_tile));
-    SDL_assert(!tileToDelete.contains(over_tile));
-    SDL_assert(tileInfos.contains(below_tile));
-    SDL_assert(!tileToDelete.contains(below_tile));
+void Canvas::MergeTiles(Tile overTile, Tile belowTile) {
+    SDL_assert(tileInfos.contains(overTile));
+    SDL_assert(!tileToDelete.contains(overTile));
+    SDL_assert(tileInfos.contains(belowTile));
+    SDL_assert(!tileToDelete.contains(belowTile));
 
-    app->renderer.MergeTileTextures(over_tile, below_tile);
-    layerTilesModified[tileInfos.at(below_tile).layer].insert(below_tile);
+    app->renderer.MergeTileTextures(overTile, belowTile);
+    layerTilesModified[tileInfos.at(belowTile).layer].insert(belowTile);
 }
 
-void Canvas::ViewUpdateState(glm::vec2 cursor_pos) {
-    const auto pan = app->space_pressed;
-    const auto zoom = app->ctrl_pressed;
-    const auto rotate = app->shift_pressed;
+void Canvas::ViewUpdateState(glm::vec2 cursorPos) {
+    const auto pan = app->spacePressed;
+    const auto zoom = app->ctrlPressed;
+    const auto rotate = app->shiftPressed;
 
     if (viewPanning && (!pan || (pan && zoom) || (pan && rotate))) {
         viewPanning = false;
@@ -611,25 +609,25 @@ void Canvas::ViewUpdateState(glm::vec2 cursor_pos) {
         viewRotating = true;
     }
 
-    viewCursorPrevious = cursor_pos;
+    viewCursorPrevious = cursorPos;
 }
 
-void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos) {
+void Canvas::ViewUpdateCursor(glm::vec2 cursorPos) {
     if (viewPanning) {
-        const auto viewCursorDelta = cursor_pos - viewCursorPrevious;
+        const auto viewCursorDelta = cursorPos - viewCursorPrevious;
         // SDL_Log("%.2f, %.2f", viewCursorDelta.x, viewCursorDelta.y);
         viewport.Translate(viewCursorDelta);
     } else if (viewRotating) {
-        const auto startAngle = std::atan2(viewCursorStart.x - (static_cast<float>(app->window_size.x) / 2.0f),
-                                           viewCursorStart.y - (static_cast<float>(app->window_size.y) / 2.0f));
-        const auto previousAngle = std::atan2(viewCursorPrevious.x - (static_cast<float>(app->window_size.x) / 2.0f),
-                                              viewCursorPrevious.y - (static_cast<float>(app->window_size.y) / 2.0f));
-        const auto currentAngle = std::atan2(cursor_pos.x - (static_cast<float>(app->window_size.x) / 2.0f),
-                                             cursor_pos.y - (static_cast<float>(app->window_size.y) / 2.0f));
+        const auto startAngle = std::atan2(viewCursorStart.x - (static_cast<float>(app->windowSize.x) / 2.0f),
+                                           viewCursorStart.y - (static_cast<float>(app->windowSize.y) / 2.0f));
+        const auto previousAngle = std::atan2(viewCursorPrevious.x - (static_cast<float>(app->windowSize.x) / 2.0f),
+                                              viewCursorPrevious.y - (static_cast<float>(app->windowSize.y) / 2.0f));
+        const auto currentAngle = std::atan2(cursorPos.x - (static_cast<float>(app->windowSize.x) / 2.0f),
+                                             cursorPos.y - (static_cast<float>(app->windowSize.y) / 2.0f));
         const auto angleDelta = (previousAngle - startAngle) - (currentAngle - startAngle);
         viewport.Rotate(angleDelta);
     } else if (viewZooming) {
-        const auto viewCursorDelta = cursor_pos - viewCursorPrevious;
+        const auto viewCursorDelta = cursorPos - viewCursorPrevious;
         viewport.Zoom(viewCursorStart, glm::vec2(viewCursorDelta.x / 1000.0f));
     }
 }
@@ -638,30 +636,30 @@ void Canvas::ViewUpdateCursor(glm::vec2 cursor_pos) {
 void Canvas::UpdateTileLoading() {
     ZoneScoped;
 
-    eastl::vector<Tile> tiles_unqueued;
+    std::vector<Tile> tilesUnqueued;
     size_t i = 0;
-    for (auto& [tile, tile_load] : tile_read_queue) {
+    for (auto& [tile, tile_load] : tileReadQueue) {
         if (i >= Midori::Renderer::TILE_MAX_UPLOAD_TRANSFER) {
             break;
         }
 
         if (tile_load.state == TileReadState::Queued) {
             SDL_assert(tileInfos.contains(tile));
-            const auto tile_info = tileInfos.at(tile);
-            const std::string tile_filename =
-                std::format("{}/{}/{}_{}.qoi", filename, tile_load.layer, tile_info.pos.x, tile_info.pos.y);
+            const auto tileInfo = tileInfos.at(tile);
+            const std::string tileFilename =
+                std::format("{}/{}/{}_{}.qoi", filename, tile_load.layer, tileInfo.pos.x, tileInfo.pos.y);
 
             ZoneScopedN("Reading Tile");
-            size_t buf_size;
-            auto* buf = (uint8_t*)SDL_LoadFile(tile_filename.c_str(), &buf_size);
-            SDL_assert(buf_size > 0);
+            size_t bufSize;
+            auto* buf = (uint8_t*)SDL_LoadFile(tileFilename.c_str(), &bufSize);
+            SDL_assert(bufSize > 0);
             SDL_assert(buf);
 
             // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found tile encoded texture");
-            SDL_assert(buf_size > 0);
+            SDL_assert(bufSize > 0);
             SDL_assert(buf != nullptr);
-            tile_load.encodedTexture.resize(buf_size);
-            memcpy(tile_load.encodedTexture.data(), buf, buf_size);
+            tile_load.encodedTexture.resize(bufSize);
+            memcpy(tile_load.encodedTexture.data(), buf, bufSize);
             SDL_free(buf);
 
             tile_load.state = TileReadState::Read;
@@ -687,12 +685,12 @@ void Canvas::UpdateTileLoading() {
             ZoneScopedN("Uploading Tile");
             app->renderer.UploadTileTexture(tile, tile_load.rawTexture);
             tile_load.state = TileReadState::Uploaded;
-            tiles_unqueued.push_back(tile);
+            tilesUnqueued.push_back(tile);
         }
         i++;
     }
-    for (const auto& tile : tiles_unqueued) {
-        tile_read_queue.erase(tile);
+    for (const auto& tile : tilesUnqueued) {
+        tileReadQueue.erase(tile);
     }
 }
 
@@ -700,15 +698,15 @@ void Canvas::UpdateTileLoading() {
 void Canvas::UpdateTileUnloading() {
     ZoneScoped;
 
-    eastl::vector<Tile> tiles_written;
+    std::vector<Tile> tileWritten;
     size_t i = 0;
-    for (auto& [tile, tile_write] : tile_write_queue) {
-        const auto tile_info = tileInfos.at(tile);
+    for (auto& [tile, tile_write] : tileWriteQueue) {
+        const auto tileInfo = tileInfos.at(tile);
 
         // If the tile is already saved marked it as finished
-        if (!layerTilesModified.at(tile_info.layer).contains(tile)) {
+        if (!layerTilesModified.at(tileInfo.layer).contains(tile)) {
             tile_write.state = TileWriteState::Written;
-            tiles_written.push_back(tile);
+            tileWritten.push_back(tile);
             continue;
         }
 
@@ -735,8 +733,8 @@ void Canvas::UpdateTileUnloading() {
                         }
                     }
                     if (empty) {
-                        QueueTileDelete(tile_info.layer, tile);
-                        tiles_written.push_back(tile);
+                        QueueTileDelete(tileInfo.layer, tile);
+                        tileWritten.push_back(tile);
                         tile_write.state = TileWriteState::Written;
                     } else {
                         tile_write.state = TileWriteState::Downloaded;
@@ -752,26 +750,26 @@ void Canvas::UpdateTileUnloading() {
                 .channels = 4,
                 .colorspace = QOI_LINEAR,
             };
-            int out_len = 0;
-            auto* buf = (uint8_t*)qoi_encode(tile_write.rawTexture.data(), &desc, &out_len);
-            SDL_assert(out_len > 0);
+            int outLen = 0;
+            auto* buf = (uint8_t*)qoi_encode(tile_write.rawTexture.data(), &desc, &outLen);
+            SDL_assert(outLen > 0);
             SDL_assert(buf != nullptr);
 
-            tile_write.encodedTexture.resize(out_len);
-            memcpy(tile_write.encodedTexture.data(), buf, out_len);
+            tile_write.encodedTexture.resize(outLen);
+            memcpy(tile_write.encodedTexture.data(), buf, outLen);
             free(buf);
 
             tile_write.state = TileWriteState::Encoded;
         }
         if (tile_write.state == TileWriteState::Encoded) {
             ZoneScopedN("Write Tile file");
-            const std::string tile_filename = std::format("{}/{}/{}_{}.qoi", filename, tile_write.layer,
-                                                          tile_write.position.x, tile_write.position.y);
+            const std::string tileFilename = std::format("{}/{}/{}_{}.qoi", filename, tile_write.layer,
+                                                         tile_write.position.x, tile_write.position.y);
 
-            SDL_IOStream* file_io = SDL_IOFromFile(tile_filename.c_str(), "wb");
-            SDL_assert(file_io != nullptr);
-            SDL_WriteIO(file_io, tile_write.encodedTexture.data(), tile_write.encodedTexture.size());
-            SDL_CloseIO(file_io);
+            SDL_IOStream* fileIo = SDL_IOFromFile(tileFilename.c_str(), "wb");
+            SDL_assert(fileIo != nullptr);
+            SDL_WriteIO(fileIo, tile_write.encodedTexture.data(), tile_write.encodedTexture.size());
+            SDL_CloseIO(fileIo);
             // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Wrote tile encoded texture");
 
             tile_write.state = TileWriteState::Written;
@@ -783,23 +781,23 @@ void Canvas::UpdateTileUnloading() {
             SDL_assert(layerInfos.contains(tileInfo.layer));
             layerTilesSaved[tileInfo.layer].insert(tileInfo.pos);
             layerTilesModified[tileInfo.layer].erase(tile);
-            tiles_written.push_back(tile);
+            tileWritten.push_back(tile);
         }
     }
 
     {
         ZoneScopedN("Unqueing unload queue");
-        for (const auto& tile : tiles_written) {
-            tile_write_queue.erase(tile);
+        for (const auto& tile : tileWritten) {
+            tileWriteQueue.erase(tile);
 
             if (!tileToUnload.contains(tile)) {
                 continue;
             }
-            const auto& tile_info = tileInfos.at(tile);
+            const auto& tileInfo = tileInfos.at(tile);
             if (!tileToDelete.contains(tile)) {
                 app->renderer.ReleaseTileTexture(tile);
-                layerTiles.at(tile_info.layer).erase(tile);
-                layerTilePos.at(tile_info.layer).erase(tileInfos.at(tile).pos);
+                layerTiles.at(tileInfo.layer).erase(tile);
+                layerTilePos.at(tileInfo.layer).erase(tileInfos.at(tile).pos);
                 tileInfos.erase(tile);
                 tilesUnassigned.push_back(tile);
             }
@@ -809,19 +807,19 @@ void Canvas::UpdateTileUnloading() {
     }
 }
 
-eastl::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
-    constexpr glm::vec2 tile_size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
-    eastl::vector<glm::ivec2> tilesPos;
+std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
+    constexpr glm::vec2 TILE_SIZE = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
+    std::vector<glm::ivec2> tilesPos;
 
-    glm::ivec2 tile_pos_min = glm::floor((point.position - (point.radius + 16.0f)) / tile_size);
-    glm::ivec2 tile_pos_max = glm::ceil((point.position + (point.radius + 16.0f)) / tile_size);
+    glm::ivec2 tilePosMin = glm::floor((point.position - (point.radius + 16.0f)) / TILE_SIZE);
+    glm::ivec2 tilePosMax = glm::ceil((point.position + (point.radius + 16.0f)) / TILE_SIZE);
 
-    const glm::ivec2 tile_distance = tile_pos_max - tile_pos_min;
-    tilesPos.reserve((size_t)tile_distance.x * tile_distance.y);
-    glm::ivec2 tile_pos;
-    for (tile_pos.y = tile_pos_min.y; tile_pos.y < tile_pos_max.y; tile_pos.y++) {
-        for (tile_pos.x = tile_pos_min.x; tile_pos.x < tile_pos_max.x; tile_pos.x++) {
-            tilesPos.push_back(tile_pos);
+    const glm::ivec2 tileDistance = tilePosMax - tilePosMin;
+    tilesPos.reserve((size_t)tileDistance.x * tileDistance.y);
+    glm::ivec2 tilePos;
+    for (tilePos.y = tilePosMin.y; tilePos.y < tilePosMax.y; tilePos.y++) {
+        for (tilePos.x = tilePosMin.x; tilePos.x < tilePosMax.x; tilePos.x++) {
+            tilesPos.push_back(tilePos);
         }
     }
 
@@ -843,7 +841,7 @@ Canvas::StrokePoint Canvas::ApplyBrushPressure(StrokePoint point, const float pr
     if (brushOptions.flowPressure) {
         point.flow *= Remap(pressure, brushOptions.flowPressureRange.x, brushOptions.flowPressureRange.y);
     }
-    if (brushOptions.hardness_pressure) {
+    if (brushOptions.hardnessPressure) {
         point.hardness *= Remap(pressure, brushOptions.hardnessPressureRange.x, brushOptions.hardnessPressureRange.y);
     }
 
@@ -854,14 +852,14 @@ Canvas::StrokePoint Canvas::ApplyBrushPressure(StrokePoint point, const float pr
 void Canvas::StartBrushStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(selectedLayer != LAYER_INVALID);
-    SDL_assert(!stroke_started);
+    SDL_assert(!strokeStarted);
     SDL_assert(!currentTileModificationCommand);
 
-    stroke_started = true;
+    strokeStarted = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
 
-    if (app->pen_in_range) {
-        point = ApplyBrushPressure(point, app->pen_pressure);
+    if (app->penInRange) {
+        point = ApplyBrushPressure(point, app->penPressure);
     }
 
     SDL_assert(strokeLayer == 0);
@@ -881,7 +879,7 @@ void Canvas::StartBrushStroke(StrokePoint point) {
             tile = CreateTile(strokeLayer, tilePos);
             SDL_assert(tile != TILE_INVALID && "Failed to create tile on stroke layer");
         }
-        stroke_tile_affected.insert(tile);
+        strokeTileAffected.insert(tile);
 
         if (!layerTilePos.at(selectedLayer).contains(tilePos)) {
             const auto srcLayerTile = CreateTile(selectedLayer, tilePos);
@@ -890,31 +888,31 @@ void Canvas::StartBrushStroke(StrokePoint point) {
         allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
     }
 
-    stroke_points.push_back(point);
-    previous_point = point;
+    strokePoints.push_back(point);
+    previousPoint = point;
 
-    SDL_assert(stroke_started);
+    SDL_assert(strokeStarted);
     SDL_assert(currentTileModificationCommand);
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::UpdateBrushStroke(StrokePoint point) {
     ZoneScoped;
-    SDL_assert(stroke_started);
+    SDL_assert(strokeStarted);
     SDL_assert(strokeLayer != 0);
     SDL_assert(currentTileModificationCommand);
 
-    if (app->pen_in_range) {
-        point = ApplyBrushPressure(point, app->pen_pressure);
+    if (app->penInRange) {
+        point = ApplyBrushPressure(point, app->penPressure);
     }
 
-    const auto distance = glm::distance(previous_point.position, point.position);
+    const auto distance = glm::distance(previousPoint.position, point.position);
     const int strokeNum = static_cast<int>(std::floor(distance / brushOptions.spacing));
     if (strokeNum == 0) {
         return;
     }
 
-    const auto startPoint = previous_point;
+    const auto startPoint = previousPoint;
     const auto endPoint = point;
 
     static int round = 0;
@@ -922,8 +920,8 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
     glm::vec4 debugColor;
     ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debugColor.r, debugColor.g, debugColor.b);
 
-    const auto t_step = brushOptions.spacing / distance;
-    float t = t_step;
+    const auto tStep = brushOptions.spacing / distance;
+    float t = tStep;
     int i = 1;
     while (t < 1.0f) {
         ZoneScoped;
@@ -937,26 +935,26 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
         newPoint.radius = std::lerp(startPoint.radius, endPoint.radius, t);
         newPoint.hardness = std::lerp(startPoint.hardness, endPoint.hardness, t);
 
-        stroke_points.push_back(newPoint);
-        previous_point = newPoint;
+        strokePoints.push_back(newPoint);
+        previousPoint = newPoint;
 
-        t += t_step;
+        t += tStep;
         i++;
 
         const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint);
-        for (const auto& tile_pos : tilesPos) {
-            Tile strokeLayerTile = GetLoadedTileAt(strokeLayer, tile_pos);
+        for (const auto& tilePos : tilesPos) {
+            Tile strokeLayerTile = GetLoadedTileAt(strokeLayer, tilePos);
             if (strokeLayerTile == TILE_INVALID) {
-                strokeLayerTile = CreateTile(strokeLayer, tile_pos);
+                strokeLayerTile = CreateTile(strokeLayer, tilePos);
                 SDL_assert(strokeLayerTile != TILE_INVALID && "Failed to create tile on stroke layer");
             }
-            stroke_tile_affected.insert(strokeLayerTile);
+            strokeTileAffected.insert(strokeLayerTile);
 
-            if (!layerTilePos.at(selectedLayer).contains(tile_pos)) {
-                const auto selectedLayerTile = CreateTile(selectedLayer, tile_pos);
+            if (!layerTilePos.at(selectedLayer).contains(tilePos)) {
+                const auto selectedLayerTile = CreateTile(selectedLayer, tilePos);
                 SDL_assert(selectedLayerTile != TILE_INVALID && "Failed to create tile on selected layer");
             }
-            allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tile_pos));
+            allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
         }
     }
 }
@@ -964,7 +962,7 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
 // This assumes every painted tiles are not going to be culled
 void Canvas::EndBrushStroke(StrokePoint point) {
     ZoneScoped;
-    SDL_assert(stroke_started);
+    SDL_assert(strokeStarted);
     SDL_assert(currentTileModificationCommand);
 
     currentTileModificationCommand->SavePreviousTilesTexture(allTileStrokeAffected);
@@ -972,16 +970,16 @@ void Canvas::EndBrushStroke(StrokePoint point) {
     MergeLayer(strokeLayer, selectedLayer);
     DeleteLayer(strokeLayer);
     strokeLayer = 0;
-    stroke_points.clear();
+    strokePoints.clear();
 
     currentTileModificationCommand->SaveNewTilesTexture(allTileStrokeAffected);
 
     canvasCommands.Push(std::move(currentTileModificationCommand));
     allTileStrokeAffected.clear();
-    stroke_started = false;
+    strokeStarted = false;
 
     SDL_assert(!currentTileModificationCommand);
-    SDL_assert(!stroke_started);
+    SDL_assert(!strokeStarted);
 }
 
 void Canvas::SaveBrush() {
@@ -1023,8 +1021,8 @@ void Canvas::SaveBrush() {
          }},
         {"hardness", brushOptions.hardness},
         {
-            "hardness_pressure",
-            brushOptions.hardness_pressure,
+            "hardnessPressure",
+            brushOptions.hardnessPressure,
         },
         {"hardnessPressureRange",
          {
@@ -1037,10 +1035,10 @@ void Canvas::SaveBrush() {
     const std::string brushJsonDump = brushJson.dump(4);
 
     const std::string file = std::format("{}brushes/brush.json", path);
-    SDL_IOStream* file_io = SDL_IOFromFile(file.c_str(), "w");
-    SDL_assert(file_io != nullptr);
-    SDL_WriteIO(file_io, brushJsonDump.data(), brushJsonDump.size());
-    SDL_CloseIO(file_io);
+    SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
+    SDL_assert(fileIo != nullptr);
+    SDL_WriteIO(fileIo, brushJsonDump.data(), brushJsonDump.size());
+    SDL_CloseIO(fileIo);
     brushOptionsModified = false;
 }
 
@@ -1082,7 +1080,7 @@ void Canvas::OpenBrush() {
     brushOptions.radiusPressureRange.y = layerJson.at("radiusPressureRange")[1];
 
     brushOptions.hardness = layerJson.at("hardness");
-    brushOptions.hardness_pressure = layerJson.at("hardness_pressure");
+    brushOptions.hardnessPressure = layerJson.at("hardnessPressure");
     brushOptions.hardnessPressureRange.x = layerJson.at("hardnessPressureRange")[0];
     brushOptions.hardnessPressureRange.y = layerJson.at("hardnessPressureRange")[1];
 
@@ -1122,8 +1120,8 @@ void Canvas::SaveEraser() {
          }},
         {"hardness", eraserOptions.hardness},
         {
-            "hardness_pressure",
-            eraserOptions.hardness_pressure,
+            "hardnessPressure",
+            eraserOptions.hardnessPressure,
         },
         {"hardnessPressureRange",
          {
@@ -1136,10 +1134,10 @@ void Canvas::SaveEraser() {
     const std::string eraserJsonDump = eraserJson.dump(4);
 
     const std::string file = std::format("{}brushes/eraser.json", path);
-    SDL_IOStream* file_io = SDL_IOFromFile(file.c_str(), "w");
-    SDL_assert(file_io != nullptr);
-    SDL_WriteIO(file_io, eraserJsonDump.data(), eraserJsonDump.size());
-    SDL_CloseIO(file_io);
+    SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
+    SDL_assert(fileIo != nullptr);
+    SDL_WriteIO(fileIo, eraserJsonDump.data(), eraserJsonDump.size());
+    SDL_CloseIO(fileIo);
     eraserOptionsModified = false;
 }
 
@@ -1178,7 +1176,7 @@ void Canvas::OpenEraser() {
     eraserOptions.radiusPressureRange.y = layerJson.at("radiusPressureRange")[1];
 
     eraserOptions.hardness = layerJson.at("hardness");
-    eraserOptions.hardness_pressure = layerJson.at("hardness_pressure");
+    eraserOptions.hardnessPressure = layerJson.at("hardnessPressure");
     eraserOptions.hardnessPressureRange.x = layerJson.at("hardnessPressureRange")[0];
     eraserOptions.hardnessPressureRange.y = layerJson.at("hardnessPressureRange")[1];
 
@@ -1197,18 +1195,18 @@ void Canvas::ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode) {
     }
 }
 
-eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) const {
+std::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) const {
     ZoneScoped;
 
-    SDL_assert(app->window_size.x > 0);
-    SDL_assert(app->window_size.y > 0);
-    SDL_assert(app->renderer.canvas_texture);
+    SDL_assert(app->windowSize.x > 0);
+    SDL_assert(app->windowSize.y > 0);
+    SDL_assert(app->renderer.canvasTexture);
 
-    size.x = app->window_size.x;
-    size.y = app->window_size.y;
+    size.x = app->windowSize.x;
+    size.y = app->windowSize.y;
 
-    eastl::vector<Color> canvasTexture(static_cast<std::size_t>(app->window_size.x) *
-                                       static_cast<std::size_t>(app->window_size.y));
+    std::vector<Color> canvasTexture(static_cast<std::size_t>(app->windowSize.x)
+                                     * static_cast<std::size_t>(app->windowSize.y));
 
     const SDL_GPUTransferBufferCreateInfo transferBufferCreateInfo = {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
@@ -1223,20 +1221,20 @@ eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) const {
 
     SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmdBuf);
     SDL_GPUTextureRegion region = {
-        .texture = app->renderer.canvas_texture,
+        .texture = app->renderer.canvasTexture,
         .mip_level = 0,
         .layer = 0,
         .x = 0,
         .y = 0,
         .z = 0,
-        .w = static_cast<Uint32>(app->window_size.x),
-        .h = static_cast<Uint32>(app->window_size.y),
+        .w = static_cast<Uint32>(app->windowSize.x),
+        .h = static_cast<Uint32>(app->windowSize.y),
         .d = 1,
     };
     const SDL_GPUTextureTransferInfo transferInfo = {
         .transfer_buffer = transferBuffer,
-        .pixels_per_row = static_cast<Uint32>(app->window_size.x),
-        .rows_per_layer = static_cast<Uint32>(app->window_size.y),
+        .pixels_per_row = static_cast<Uint32>(app->windowSize.x),
+        .rows_per_layer = static_cast<Uint32>(app->windowSize.y),
     };
     SDL_DownloadFromGPUTexture(copyPass, &region, &transferInfo);
 
@@ -1256,11 +1254,11 @@ eastl::vector<Color> Canvas::DownloadCanvasTexture(glm::ivec2& size) const {
     return canvasTexture;
 }
 
-bool Canvas::SampleTexture(const eastl::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color) {
+bool Canvas::SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color) {
     SDL_assert(textureSize.x > 0);
     SDL_assert(textureSize.y > 0);
-    SDL_assert(texture.size() == static_cast<std::size_t>(textureSize.x) * textureSize.y &&
-               "SampleTexture is of wrong dimensions");
+    SDL_assert(texture.size() == static_cast<std::size_t>(textureSize.x) * textureSize.y
+               && "SampleTexture is of wrong dimensions");
 
     const auto rx = static_cast<int>(std::round(pos.x));
     const auto ry = static_cast<int>(std::round(pos.y));
@@ -1289,7 +1287,7 @@ Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float p
     if (eraserOptions.flowPressure) {
         point.flow *= Remap(pressure, eraserOptions.flowPressureRange.x, eraserOptions.flowPressureRange.y);
     }
-    if (eraserOptions.hardness_pressure) {
+    if (eraserOptions.hardnessPressure) {
         point.hardness *= Remap(pressure, eraserOptions.hardnessPressureRange.x, eraserOptions.hardnessPressureRange.y);
     }
 
@@ -1300,14 +1298,14 @@ Canvas::StrokePoint Canvas::ApplyEraserPressure(StrokePoint point, const float p
 void Canvas::StartEraserStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(selectedLayer && "No layer selected");
-    SDL_assert(!stroke_started && "Stroke already started");
+    SDL_assert(!strokeStarted && "Stroke already started");
     SDL_assert(!currentTileModificationCommand && "TileModification already started");
 
-    stroke_started = true;
+    strokeStarted = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
 
-    if (app->pen_in_range) {
-        point = ApplyEraserPressure(point, app->pen_pressure);
+    if (app->penInRange) {
+        point = ApplyEraserPressure(point, app->penPressure);
     }
 
     const auto tilesPos = GetTilePosAffectedByStrokePoint(point);
@@ -1315,13 +1313,13 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     // TODO: find a better algorithm when erasing on layers. Right now the opacity of the erase brush does not work.
     // TODO: find a way to duplicate the layer this early and instead use a temporary internal layer as the
     // modification source
-    eastl::hash_set<Tile> tileTexturesToSave;
-    for (const auto& tile_pos : tilesPos) {
-        Tile tile = GetLoadedTileAt(selectedLayer, tile_pos);
+    std::unordered_set<Tile> tileTexturesToSave;
+    for (const auto& tilePos : tilesPos) {
+        Tile tile = GetLoadedTileAt(selectedLayer, tilePos);
         if (tile != TILE_INVALID) {
-            stroke_tile_affected.insert(tile);
+            strokeTileAffected.insert(tile);
             layerTilesModified[selectedLayer].insert(tile);
-            allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tile_pos));
+            allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
             tileTexturesToSave.insert(tile);
         }
     }
@@ -1329,40 +1327,40 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     currentTileModificationCommand->SavePreviousTilesTexture(tileTexturesToSave);
 
     // stroke_points.push_back(point);
-    stroke_points.clear();
-    previous_point = point;
+    strokePoints.clear();
+    previousPoint = point;
 
-    SDL_assert(stroke_started);
+    SDL_assert(strokeStarted);
     SDL_assert(currentTileModificationCommand);
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::UpdateEraserStroke(StrokePoint point) {
     ZoneScoped;
-    SDL_assert(stroke_started);
+    SDL_assert(strokeStarted);
 
-    if (app->pen_in_range) {
-        point = ApplyEraserPressure(point, app->pen_pressure);
+    if (app->penInRange) {
+        point = ApplyEraserPressure(point, app->penPressure);
     }
 
-    const auto distance = glm::distance(previous_point.position, point.position);
-    const int stroke_num = static_cast<int>(std::floor(distance / eraserOptions.spacing));
-    if (stroke_num == 0) {
+    const auto distance = glm::distance(previousPoint.position, point.position);
+    const int strokeNum = static_cast<int>(std::floor(distance / eraserOptions.spacing));
+    if (strokeNum == 0) {
         return;
     }
 
-    const auto startPoint = previous_point;
+    const auto startPoint = previousPoint;
     const auto endPoint = point;
 
     static int round = 0;
     round = (round + 1) % 4;
-    glm::vec4 debug_color;
-    ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debug_color.r, debug_color.g, debug_color.b);
+    glm::vec4 debugColor;
+    ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debugColor.r, debugColor.g, debugColor.b);
 
-    eastl::hash_set<Tile> tileTexturesToSave;
+    std::unordered_set<Tile> tileTexturesToSave;
 
-    const auto t_step = eraserOptions.spacing / distance;
-    float t = t_step;
+    const auto tStep = eraserOptions.spacing / distance;
+    float t = tStep;
     while (t < 1.0f) {
         ZoneScoped;
 
@@ -1375,20 +1373,20 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
         newPoint.radius = std::lerp(startPoint.radius, endPoint.radius, t);
         newPoint.hardness = std::lerp(startPoint.hardness, endPoint.hardness, t);
 
-        stroke_points.push_back(newPoint);
-        previous_point = newPoint;
+        strokePoints.push_back(newPoint);
+        previousPoint = newPoint;
 
-        t += t_step;
+        t += tStep;
 
         const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint);
 
-        for (const auto& tile_pos : tilesPos) {
-            Tile tile = GetLoadedTileAt(selectedLayer, tile_pos);
+        for (const auto& tilePos : tilesPos) {
+            Tile tile = GetLoadedTileAt(selectedLayer, tilePos);
             if (tile != TILE_INVALID) {
-                stroke_tile_affected.insert(tile);
+                strokeTileAffected.insert(tile);
                 layerTilesModified[selectedLayer].insert(tile);
                 if (!allTileStrokeAffected.contains(tile)) {
-                    allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tile_pos));
+                    allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
                     tileTexturesToSave.insert(tile);
                 }
             }
@@ -1401,18 +1399,18 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
 // This assumes every painted tiles are not going to be culled
 void Canvas::EndEraserStroke(StrokePoint point) {
     ZoneScoped;
-    SDL_assert(stroke_started && "Stroke must be started to end it");
+    SDL_assert(strokeStarted && "Stroke must be started to end it");
     SDL_assert(currentTileModificationCommand && "tile modification not started");
 
     currentTileModificationCommand->SaveNewTilesTexture(allTileStrokeAffected);
     canvasCommands.Push(std::move(currentTileModificationCommand));
 
-    stroke_points.clear();
+    strokePoints.clear();
     allTileStrokeAffected.clear();
 
-    stroke_started = false;
+    strokeStarted = false;
 
-    SDL_assert(!stroke_started);
+    SDL_assert(!strokeStarted);
     SDL_assert(!currentTileModificationCommand);
 }
 } // namespace Midori

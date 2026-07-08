@@ -3,7 +3,6 @@
 #include "canvas.h"
 #include "renderer.h"
 #include "states.h"
-#include "ui.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_events.h>
 #include <glm/vec2.hpp>
@@ -44,7 +43,7 @@ public:
     void Update();
 
     bool Resize(int width, int height);
-    void CursorMove(glm::vec2 new_pos);
+    void CursorMove(glm::vec2 newPos);
     void CursorPress(Uint8 button);
     void CursorRelease(Uint8 button);
     void KeyPress(SDL_Keycode key, SDL_Keymod mods);
@@ -55,14 +54,14 @@ public:
     void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "") const;
 
     SDL_Window* window = nullptr;
-    eastl::vector<std::string> args;
+    std::vector<std::string> args;
 
     bool saving = false;
-    bool should_quit = false;
+    bool shouldQuit = false;
     bool hidden = false;
     bool fullscreen = false;
-    bool ui_focus = false;
-    bool hide_ui = false;
+    bool uiFocus = false;
+    bool hideUi = false;
     bool changeCursorSize = false;
 
     bool colorPicker = false;
@@ -71,24 +70,23 @@ public:
     StateManager stateManager;
     Renderer renderer;
     Canvas canvas;
-    UI ui;
 
-    glm::vec4 bg_color = {1.0F, 1.0F, 1.0F, 1.0F};
-    glm::ivec2 window_pos = {SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED};
-    glm::ivec2 window_size = {1280, 720};
+    glm::vec4 bgColor = {1.0F, 1.0F, 1.0F, 1.0F};
+    glm::ivec2 windowPos = {SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED};
+    glm::ivec2 windowSize = {1280, 720};
 
     /* should this be in canvas space ?? */
-    glm::vec2 cursor_last_pos = glm::vec2(0.0f);
-    glm::vec2 cursor_current_pos = glm::vec2(0.0f);
-    glm::vec2 cursor_delta_pos = glm::vec2(0.0f);
-    bool cursor_left_pressed = false;
-    bool cursor_right_pressed = false;
+    glm::vec2 cursorLastPos = glm::vec2(0.0f);
+    glm::vec2 cursorCurrentPos = glm::vec2(0.0f);
+    glm::vec2 cursorDeltaPos = glm::vec2(0.0f);
+    bool cursorLeftPressed = false;
+    bool cursorRightPressed = false;
 
-    bool space_pressed = false;
-    bool shift_pressed = false;
-    bool ctrl_pressed = false;
-    bool alt_pressed = false;
-    bool pen_in_range = false;
-    float pen_pressure = 1.0f;
+    bool spacePressed = false;
+    bool shiftPressed = false;
+    bool ctrlPressed = false;
+    bool altPressed = false;
+    bool penInRange = false;
+    float penPressure = 1.0f;
 };
 } // namespace Midori
