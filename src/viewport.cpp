@@ -1,6 +1,6 @@
 ﻿#include "viewport.h"
-#include "tiles.h"
 #include "SDL3/SDL_assert.h"
+#include "defines.hpp"
 #include "glm/ext/matrix_transform.hpp"
 #include <imgui.h>
 #include <numbers>
@@ -35,8 +35,8 @@ void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
 
     zoomOrigin = origin;
     zoom += amount;
-    zoom.x = std::max(0.25f, std::min(2.5f, zoom.x));
-    zoom.y = std::max(0.25f, std::min(2.5f, zoom.y));
+    zoom.x = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.x));
+    zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));
 
     viewComputed = false;
     ComputeViewMatrix();
@@ -45,8 +45,8 @@ void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
 void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
     zoomOrigin = origin;
     zoom = amount;
-    zoom.x = std::max(0.01f, std::min(100.0f, zoom.x));
-    zoom.y = std::max(0.01f, std::min(100.0f, zoom.y));
+    zoom.x = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.x));
+    zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));;
 
     viewComputed = false;
     ComputeViewMatrix();

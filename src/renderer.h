@@ -107,7 +107,7 @@ public:
     // Tile download
 
     bool DownloadTileTexture(Tile tile);
-    bool IsTileTextureDownloaded(Tile tile) const;
+    [[nodiscard]] bool IsTileTextureDownloaded(Tile tile) const;
     bool CopyTileTextureDownloaded(Tile tile, std::vector<uint8_t>& tileTexture);
     SDL_GPUTexture* DuplicateTileTexture(SDL_GPUCopyPass* copyPass, SDL_GPUTexture* tileTexture) const;
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "defines.hpp"
 #include "layers.h"
 #include <glm/vec2.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -11,10 +12,7 @@ namespace Midori {
 // have UINT16_MAX tiles loaded at once
 using Tile = uint16_t;
 
-constexpr Tile TILE_INVALID = UINT16_MAX;
-constexpr Tile TILES_MAX = UINT16_MAX; // Number of tile loaded at once
-constexpr size_t TILE_WIDTH = 256;
-constexpr size_t TILE_HEIGHT = 256;
+constexpr Tile TILE_INVALID = TILES_MAX;
 
 struct TileCoord {
     Layer layer;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "colors.h"
+#include "defines.hpp"
 #include <string>
 
 namespace Midori {
@@ -9,8 +10,7 @@ namespace Midori {
 using Layer = std::uint16_t;
 using LayerHeight = std::uint16_t;
 
-constexpr Layer LAYER_INVALID = UINT16_MAX;
-constexpr Layer LAYERS_MAX = UINT16_MAX;
+constexpr Layer LAYER_INVALID = LAYER_MAX;
 
 struct LayerInfo {
     std::string name;

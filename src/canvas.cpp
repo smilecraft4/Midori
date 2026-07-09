@@ -287,7 +287,7 @@ Layer Canvas::CreateLayer(LayerInfo layerInfo) {
         layerLastAssigned = std::max(layerLastAssigned, layerInfo.id);
     } else {
         if (layersUnassigned.empty()) {
-            if (layerLastAssigned >= LAYERS_MAX) {
+            if (layerLastAssigned >= LAYER_MAX) {
                 SDL_assert(false && "Max layer reached");
                 return 0;
             }
