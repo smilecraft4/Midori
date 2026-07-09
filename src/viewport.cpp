@@ -20,10 +20,10 @@ void Viewport::Translate(glm::vec2 amount) {
     ComputeViewMatrix();
 }
 
-void Viewport::SetTranslation(glm::vec2 translation) {
+void Viewport::SetTranslation(glm::vec2 newTranslation) {
     glm::vec2 correctedTranslation{};
-    correctedTranslation.x = (translation.x * std::cos(-rotation)) - (translation.y * std::sin(-rotation));
-    correctedTranslation.y = (translation.x * std::sin(-rotation)) + (translation.y * std::cos(-rotation));
+    correctedTranslation.x = (newTranslation.x * std::cos(-rotation)) - (newTranslation.y * std::sin(-rotation));
+    correctedTranslation.y = (newTranslation.x * std::sin(-rotation)) + (newTranslation.y * std::cos(-rotation));
     translation = correctedTranslation;
 
     viewComputed = false;
@@ -46,7 +46,8 @@ void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
     zoomOrigin = origin;
     zoom = amount;
     zoom.x = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.x));
-    zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));;
+    zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));
+    ;
 
     viewComputed = false;
     ComputeViewMatrix();
@@ -66,8 +67,8 @@ void Viewport::Rotate(float amount) {
     ComputeViewMatrix();
 }
 
-void Viewport::SetRotation(float rotation) {
-    rotation = rotation;
+void Viewport::SetRotation(float newRotation) {
+    rotation = newRotation;
     viewComputed = false;
     ComputeViewMatrix();
 }
@@ -133,7 +134,7 @@ glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos) const {
 bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
     SDL_assert(viewComputed);
     const glm::vec2 t0 = static_cast<float>(tilePos.x) * vX + static_cast<float>(tilePos.y) * vY + vTrans;
-    const std::array<glm::vec2, 4> tCorners = {
+    const glm::vec2 tCorners[4] = {
         t0,
         t0 + vX,
         t0 + vY,

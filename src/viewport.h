@@ -14,11 +14,11 @@ public:
     void FlipHorizontal();
     void FlipVertical();
 
-    void SetTranslation(glm::vec2 translation);
+    void SetTranslation(glm::vec2 newTranslation);
     void SetZoom(glm::vec2 origin, glm::vec2 amount);
-    void SetRotation(float rotation);
+    void SetRotation(float newRotation);
 
-    void Resize(glm::vec2 viewSize);
+    void Resize(glm::vec2 newViewSize);
 
     void UI() const;
 

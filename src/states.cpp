@@ -1,275 +1,317 @@
 #include "states.h"
 
 #include "app.h"
-#include <SDL3/SDL_assert.h>
 #include <backends/imgui_impl_sdl3.h>
+#include <imgui.h>
 #include <memory>
 
 namespace Midori {
 
+namespace {
+
+// Collapse left/right variants so a shortcut works with either key.
+SDL_Keymod NormalizeMods(const SDL_Keymod mod) {
+    SDL_Keymod out = SDL_KMOD_NONE;
+    if ((mod & SDL_KMOD_CTRL) != 0u) {
+        out |= SDL_KMOD_CTRL;
+    }
+    if ((mod & SDL_KMOD_SHIFT) != 0u) {
+        out |= SDL_KMOD_SHIFT;
+    }
+    if ((mod & SDL_KMOD_ALT) != 0u) {
+        out |= SDL_KMOD_ALT;
+    }
+    if ((mod & SDL_KMOD_GUI) != 0u) {
+        out |= SDL_KMOD_GUI;
+    }
+    return out;
+}
+
+bool IsKeyPressed(const SDL_Event* event, const SDL_Keycode key, const SDL_Keymod mods) {
+    return event->type == SDL_EVENT_KEY_DOWN && event->key.key == key && NormalizeMods(event->key.mod) == mods;
+}
+
+// While a pen is in range SDL synthesizes mouse events for it; use only the pen events then.
+bool IsPointerDown(const App* app, const SDL_Event* event) {
+    if (event->type == SDL_EVENT_PEN_DOWN) {
+        return true;
+    }
+    return !app->penInRange && event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT;
+}
+
+bool IsPointerUp(const App* app, const SDL_Event* event) {
+    if (event->type == SDL_EVENT_PEN_UP) {
+        return true;
+    }
+    return !app->penInRange && event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT;
+}
+
+bool IsPointerMove(const App* app, const SDL_Event* event) {
+    if (event->type == SDL_EVENT_PEN_MOTION) {
+        return true;
+    }
+    return !app->penInRange && event->type == SDL_EVENT_MOUSE_MOTION;
+}
+
+Canvas::StrokePoint MakeStrokePoint(App* app, const bool erasing) {
+    if (erasing) {
+        const auto& options = app->canvas.eraserOptions;
+        return Canvas::StrokePoint{
+            .color = glm::vec4(0.0f, 0.0f, 0.0f, options.opacity),
+            .position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos),
+            .radius = options.radius,
+            .flow = options.flow,
+            .hardness = options.hardness,
+        };
+    }
+    const auto& options = app->canvas.brushOptions;
+    return Canvas::StrokePoint{
+        .color = options.color,
+        .position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos),
+        .radius = options.radius,
+        .flow = options.flow,
+        .hardness = options.hardness,
+    };
+}
+
+} // namespace
+
 IState::IState(App* app) : app(app) {}
 
-StateManager::StateManager(App* app) : app(app) {}
-
-StateManager::~StateManager() {
-    while (!states.empty()) {
-        Pop();
-    }
-}
+StateManager::StateManager(App* app) : app(app), current(std::make_unique<IdleState>(app)) {}
 
 void StateManager::Switch(std::unique_ptr<IState> state) {
-    Pop();
-    Push(std::move(state));
-}
-
-void StateManager::Push(std::unique_ptr<IState> state) {
-    states.push_back(std::move(state));
-}
-
-void StateManager::Pop() {
-    states.pop_back();
+    next = std::move(state);
 }
 
 void StateManager::OnEvent(const SDL_Event* event) {
     ImGui_ImplSDL3_ProcessEvent(event);
 
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.WantCaptureKeyboard) {
+    const ImGuiIO& io = ImGui::GetIO();
+    // WantCaptureKeyboard is already true when a UI window merely has nav focus (as on startup),
+    // which would swallow global shortcuts. Only yield the keyboard while typing in a text field.
+    if (io.WantTextInput) {
         if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
             return;
         }
     }
-    if (io.WantCaptureMouse) {
-        if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN || event->type == SDL_EVENT_MOUSE_BUTTON_UP
-            || event->type == SDL_EVENT_MOUSE_WHEEL || event->type == SDL_EVENT_MOUSE_MOTION) {
-            return;
+    if (io.WantCaptureMouse && !current->CapturesPointer()) {
+        switch (event->type) {
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_WHEEL:
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_PEN_DOWN:
+            case SDL_EVENT_PEN_UP:
+            case SDL_EVENT_PEN_MOTION:
+                return;
+            default:
+                break;
         }
     }
 
-    if (event->type == SDL_EVENT_MOUSE_MOTION) {
-        const glm::vec2 newPos{event->motion.x, event->motion.y};
+    // Pen tracking
+    if (event->type == SDL_EVENT_PEN_PROXIMITY_IN) {
+        app->penInRange = true;
+    }
+    if (event->type == SDL_EVENT_PEN_PROXIMITY_OUT) {
+        app->penInRange = false;
+    }
+    if (event->type == SDL_EVENT_PEN_AXIS && event->paxis.axis == SDL_PEN_AXIS_PRESSURE) {
+        app->penPressure = event->paxis.value;
+    }
+
+    // Cursor tracking; pen events win over the mouse events SDL synthesizes from them
+    if (event->type == SDL_EVENT_MOUSE_MOTION && !app->penInRange) {
         app->cursorLastPos = app->cursorCurrentPos;
-        app->cursorCurrentPos.x = event->motion.x;
-        app->cursorCurrentPos.y = event->motion.y;
+        app->cursorCurrentPos = glm::vec2(event->motion.x, event->motion.y);
+        app->cursorDeltaPos = app->cursorCurrentPos - app->cursorLastPos;
+    }
+    if (event->type == SDL_EVENT_PEN_MOTION) {
+        app->cursorLastPos = app->cursorCurrentPos;
+        app->cursorCurrentPos = glm::vec2(event->pmotion.x, event->pmotion.y);
         app->cursorDeltaPos = app->cursorCurrentPos - app->cursorLastPos;
     }
 
-    // TODO Update inputManager current keybind
-
-    for (int i = static_cast<int>(states.size()) - 1; i >= 0; i--) {
-        // TODO See if the inputManager has a matching action for the current scoped state
-
-        if (!states[i]->OnEvent(event)) {
-            break;
+    // Modifier tracking
+    if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
+        const bool down = event->type == SDL_EVENT_KEY_DOWN;
+        switch (event->key.key) {
+            case SDLK_LSHIFT:
+            case SDLK_RSHIFT:
+                app->shiftPressed = down;
+                break;
+            case SDLK_LCTRL:
+            case SDLK_RCTRL:
+                app->ctrlPressed = down;
+                break;
+            case SDLK_LALT:
+            case SDLK_RALT:
+                app->altPressed = down;
+                break;
+            case SDLK_SPACE:
+                app->spacePressed = down;
+                break;
+            default:
+                break;
         }
     }
-}
 
-AppState::AppState(App* app) : IState(app) {}
-
-AppState::~AppState() {}
-
-std::string AppState::Name() const {
-    return "AppState";
-}
-
-bool AppState::OnEvent(const SDL_Event* event) {
+    // App-level events, handled whatever the current state is
     if (app->shouldQuit) {
-        // The quit senquence as started
-        return true;
+        // The quit sequence has started
+        return;
     }
-
     if ((event->type == SDL_EVENT_QUIT)
         || (event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED
             && event->window.windowID == SDL_GetWindowID(app->window))) {
         SDL_HideWindow(app->window);
         app->hidden = true;
         app->ShouldQuit();
-        return true;
+        return;
     }
-
     if (event->type == SDL_EVENT_WINDOW_RESIZED) {
         app->Resize(event->window.data1, event->window.data2);
+        return;
     }
 
-    if (event->type == SDL_EVENT_KEY_DOWN) {
-        constexpr SDL_Keymod MODS_IGNORED = SDL_KMOD_NUM | SDL_KMOD_CAPS | SDL_KMOD_SCROLL;
+    current->OnEvent(event);
 
-        if (event->key.key == SDLK_S && (event->key.mod & ~MODS_IGNORED) == SDL_KMOD_CTRL) {
-            app->Save();
-        }
-        if (event->key.key == SDLK_F11 && (event->key.mod & ~MODS_IGNORED) == SDL_KMOD_NONE) {
-            app->Fullscreen(!app->fullscreen); // TODO replace by the input manager
-            return true;
-        }
-        if (event->key.key == SDLK_TAB && (event->key.mod & ~MODS_IGNORED) == SDL_KMOD_NONE) {
-            app->hideUi = !app->hideUi;
-            return true;
-        }
-        if (event->key.key == SDLK_Z && (event->key.mod & ~MODS_IGNORED) == SDL_KMOD_CTRL) {
-            app->canvas.canvasCommands.Redo(); // TODO replace by the input manager
-            return true;
-        }
-        if (event->key.key == SDLK_Z && (event->key.mod & ~MODS_IGNORED) == (SDL_KMOD_CTRL | SDL_KMOD_SHIFT)) {
-            app->canvas.canvasCommands.Undo(); // TODO replace by the input manager
-            return true;
-        }
-        if (event->key.key == SDLK_LEFT && (event->key.mod & ~MODS_IGNORED) == SDL_KMOD_ALT) {
-            app->canvas.viewCommands.Undo();
-            return true;
-        }
-        if (event->key.key == SDLK_RIGHT && (event->key.mod & ~MODS_IGNORED) == SDL_KMOD_ALT) {
-            app->canvas.viewCommands.Redo();
-            return true;
-        }
-        if (event->key.key == SDLK_SPACE && !event->key.repeat) {
-            app->stateManager.Push(std::make_unique<NavigateState>(app));
-        }
+    if (next != nullptr) {
+        current = std::move(next);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IdleState
+
+IdleState::IdleState(App* app) : IState(app) {}
+
+std::string IdleState::Name() const {
+    return "Idle";
+}
+
+void IdleState::OnEvent(const SDL_Event* event) {
+    if (IsPointerDown(app, event) && app->canvas.selectedLayer != 0 && !app->canvas.strokeStarted) {
+        app->stateManager.Switch(std::make_unique<StrokeState>(app, app->canvas.eraserMode));
+        return;
     }
 
-    if (event->type == SDL_EVENT_KEY_UP) {}
+    if (event->type != SDL_EVENT_KEY_DOWN) {
+        return;
+    }
 
-    return false;
+    if (event->key.key == SDLK_SPACE && !event->key.repeat) {
+        app->stateManager.Switch(std::make_unique<NavigateState>(app));
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_S, SDL_KMOD_CTRL)) {
+        app->Save();
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_F11, SDL_KMOD_NONE)) {
+        app->Fullscreen(!app->fullscreen);
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_TAB, SDL_KMOD_NONE)) {
+        app->hideUi = !app->hideUi;
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_Z, SDL_KMOD_CTRL)) {
+        app->canvas.canvasCommands.Undo();
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_Z, SDL_KMOD_CTRL | SDL_KMOD_SHIFT)) {
+        app->canvas.canvasCommands.Redo();
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_LEFT, SDL_KMOD_ALT)) {
+        app->canvas.viewCommands.Undo();
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_RIGHT, SDL_KMOD_ALT)) {
+        app->canvas.viewCommands.Redo();
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_B, SDL_KMOD_NONE)) {
+        app->canvas.brushMode = true;
+        app->canvas.eraserMode = false;
+        return;
+    }
+    if (IsKeyPressed(event, SDLK_E, SDL_KMOD_NONE)) {
+        app->canvas.brushMode = false;
+        app->canvas.eraserMode = true;
+        return;
+    }
 }
 
-void AppState::DrawUI() const {
-    ImGui::Text("App State ¯\\_(ツ)_/¯");
+void IdleState::DrawUI() const {
+    ImGui::Text("Tool: %s", app->canvas.eraserMode ? "Eraser" : "Brush");
 }
+
+// ---------------------------------------------------------------------------
+// NavigateState
 
 NavigateState::NavigateState(App* app) : IState(app) {
-    // Save the previous view state for later comparaison
-}
-
-NavigateState::~NavigateState() {
-    // If there was change with the previous view state add the changes to the view history
+    // TODO: Save the previous view state so leaving the state can push a ViewportChangeCommand
 }
 
 std::string NavigateState::Name() const {
-    return "NavigateState";
+    return "Navigate";
 }
 
-bool NavigateState::OnEvent(const SDL_Event* event) {
-    bool handled = false;
-    constexpr SDL_Keymod MODS_IGNORED = SDL_KMOD_NUM | SDL_KMOD_CAPS | SDL_KMOD_SCROLL;
-
-    // TODO: Transform everything to use InputManager instead
-
-    // Examples of keybinds strategy for navigation keybinds
-    // (Press) is the default state so "F" == "F (Press)"
-    // version A
-    // - NavigateTool: "Space (Hold)"
-    // - NavigateTool.Pan: "" ? How to set the default entry state
-    // - NavigateTool.Zoom: "Shift (Hold)"
-    // - NavigateTool.Rotate: "Ctrl (Hold)"
-    // - NavigateTool.FlipHorizontal: "F+H"
-    // - NavigateTool.FlipVertical: "F+V"
-    // - NavigateTool.RestoreFlipHorizontal: "Alt+F+H"
-    // - NavigateTool.RestoreFlipVertical: "Alt+F+V"
-    //
-    // version B
-    // - EnableNavigateTool: "Space (Press)"
-    // - DisableNavigateTool: "Space (Release)"
-    // - NavigateTool.EnableZoom: "Shift (Press)"
-    // - NavigateTool.DisableZoom: "Shift (Release)"
-    // - NavigateTool.EnableRotate: "Ctrl (Press)"
-    // - NavigateTool.DisableRotate: "Ctrl (Release)"
-    // - NavigateTool.FlipHorizontal: "F+H"
-    // - NavigateTool.FlipVertical: "F+V"
-    // - NavigateTool.RestoreFlipHorizontal: "Alt+F+H"
-    // - NavigateTool.RestoreFlipVertical: "Alt+F+V"
-
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        if (event->button.button == 1) {
-            startPos = app->cursorCurrentPos;
-            clicking = true;
-            handled = true;
-        }
+void NavigateState::OnEvent(const SDL_Event* event) {
+    if (event->type == SDL_EVENT_KEY_UP && event->key.key == SDLK_SPACE) {
+        app->stateManager.Switch(std::make_unique<IdleState>(app));
+        return;
     }
 
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
-        if (event->button.button == 1) {
-            clicking = false;
-            handled = true;
-        }
+    if (IsPointerDown(app, event)) {
+        startPos = app->cursorCurrentPos;
+        dragging = true;
+        return;
+    }
+    if (IsPointerUp(app, event)) {
+        dragging = false;
+        return;
     }
 
-    if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) {
-        if (event->key.key == SDLK_LSHIFT || event->key.key == SDLK_RSHIFT) {
-            shift = true;
-            handled = true;
-        }
-        if (event->key.key == SDLK_LCTRL || event->key.key == SDLK_RCTRL) {
-            ctrl = true;
-            handled = true;
-        }
-        if (event->key.key == SDLK_R) {
-            app->canvas.viewport.SetRotation(0.0f);
-            app->canvas.viewport.SetTranslation(glm::vec2(0.0f, 0.0f));
-            app->canvas.viewport.SetZoom(glm::vec2(0.0f, 0.0f), glm::vec2(1.0f, 1.0f));
-        }
+    if (IsKeyPressed(event, SDLK_R, SDL_KMOD_NONE)) {
+        app->canvas.viewport.SetRotation(0.0f);
+        app->canvas.viewport.SetZoom(glm::vec2(0.0f), glm::vec2(1.0f));
+        return;
     }
 
-    if (event->type == SDL_EVENT_KEY_UP) {
-        if (event->key.key == SDLK_LSHIFT || event->key.key == SDLK_RSHIFT) {
-            shift = false;
-            handled = true;
-        }
-        if (event->key.key == SDLK_LCTRL || event->key.key == SDLK_RCTRL) {
-            ctrl = false;
-            handled = true;
-        }
-        if (event->key.key == SDLK_SPACE) {
-            // If there was change add this operation to the view history
-            app->stateManager.Pop();
-        }
-    }
-
-    if (ctrl && !shift) {
+    if (app->ctrlPressed && !app->shiftPressed) {
         mode = Mode::Zoom;
-        handled = true;
-    } else if (shift && !ctrl) {
+    } else if (app->shiftPressed && !app->ctrlPressed) {
         mode = Mode::Rotate;
-        handled = true;
-    } else if (mode != Mode::Pan) {
+    } else {
         mode = Mode::Pan;
-        handled = true;
     }
 
-    if (event->type == SDL_EVENT_MOUSE_MOTION && clicking) {
-        const glm::vec2 cursorPos = glm::vec2(event->motion.x, event->motion.y);
-        const glm::vec2 cursorRel = glm::vec2(event->motion.xrel, event->motion.yrel);
-
-        if (mode == Mode::Rotate) {
-            const auto startAngle = std::atan2(startPos.x - (static_cast<float>(app->windowSize.x) / 2.0f),
-                                               startPos.y - (static_cast<float>(app->windowSize.y) / 2.0f));
-            const auto previousAngle =
-                std::atan2(app->cursorLastPos.x - (static_cast<float>(app->windowSize.x) / 2.0f),
-                           app->cursorLastPos.y - (static_cast<float>(app->windowSize.y) / 2.0f));
-            const auto currentAngle = std::atan2(cursorPos.x - (static_cast<float>(app->windowSize.x) / 2.0f),
-                                                 cursorPos.y - (static_cast<float>(app->windowSize.y) / 2.0f));
-            const auto angleDelta = (previousAngle - startAngle) - (currentAngle - startAngle);
-            app->canvas.viewport.Rotate(angleDelta);
-            handled = true;
-        } else if (mode == Mode::Zoom) {
-            app->canvas.viewport.Zoom(app->canvas.viewCursorStart, glm::vec2(app->cursorDeltaPos.x / 1000.0f));
-            handled = true;
-        } else if (mode == Mode::Pan) {
-            app->canvas.viewport.Translate(app->cursorDeltaPos);
-            handled = true;
+    if (IsPointerMove(app, event) && dragging) {
+        const glm::vec2 center = glm::vec2(app->windowSize) / 2.0f;
+        switch (mode) {
+            case Mode::Pan:
+                app->canvas.viewport.Translate(app->cursorDeltaPos);
+                break;
+            case Mode::Zoom:
+                app->canvas.viewport.Zoom(startPos - center, glm::vec2(app->cursorDeltaPos.x / 1000.0f));
+                break;
+            case Mode::Rotate: {
+                const auto previousAngle = std::atan2(app->cursorLastPos.x - center.x, app->cursorLastPos.y - center.y);
+                const auto currentAngle =
+                    std::atan2(app->cursorCurrentPos.x - center.x, app->cursorCurrentPos.y - center.y);
+                app->canvas.viewport.Rotate(previousAngle - currentAngle);
+                break;
+            }
         }
     }
-
-    if (event->type == SDL_EVENT_PEN_MOTION) {}
-
-    return handled;
 }
 
 void NavigateState::DrawUI() const {
-    ImGui::Text("Navigate State");
-    ImGui::Text("Clicking: %s", clicking ? "true" : "false");
-    ImGui::Text("Space: %s", space ? "true" : "false");
-    ImGui::Text("Shift: %s", shift ? "true" : "false");
-    ImGui::Text("Alt: %s", ctrl ? "true" : "false");
+    ImGui::Text("Dragging: %s", dragging ? "true" : "false");
     switch (mode) {
         case Mode::Pan:
             ImGui::Text("Mode: Pan");
@@ -281,6 +323,45 @@ void NavigateState::DrawUI() const {
             ImGui::Text("Mode: Zoom");
             break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// StrokeState
+
+StrokeState::StrokeState(App* app, const bool erasing) : IState(app), erasing(erasing) {
+    if (erasing) {
+        app->canvas.StartEraserStroke(MakeStrokePoint(app, true));
+    } else {
+        app->canvas.StartBrushStroke(MakeStrokePoint(app, false));
+    }
+}
+
+std::string StrokeState::Name() const {
+    return erasing ? "Stroke (Eraser)" : "Stroke (Brush)";
+}
+
+void StrokeState::OnEvent(const SDL_Event* event) {
+    if (IsPointerMove(app, event)) {
+        if (erasing) {
+            app->canvas.UpdateEraserStroke(MakeStrokePoint(app, true));
+        } else {
+            app->canvas.UpdateBrushStroke(MakeStrokePoint(app, false));
+        }
+        return;
+    }
+
+    if (IsPointerUp(app, event)) {
+        if (erasing) {
+            app->canvas.EndEraserStroke(MakeStrokePoint(app, true));
+        } else {
+            app->canvas.EndBrushStroke(MakeStrokePoint(app, false));
+        }
+        app->stateManager.Switch(std::make_unique<IdleState>(app));
+    }
+}
+
+void StrokeState::DrawUI() const {
+    ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
 }
 
 } // namespace Midori

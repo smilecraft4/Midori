@@ -17,8 +17,6 @@ App::App(int argc, char* argv[]) : renderer(this), canvas(this), stateManager(th
     for (size_t i = 0; i < args.size(); i++) {
         args[i] = std::string(argv[i]);
     }
-
-    stateManager.Push(std::make_unique<AppState>(this));
 }
 
 bool App::OnEvent(const SDL_Event* event) {
@@ -113,23 +111,8 @@ void App::Update() {
             // DebugTileCulling(glm::vec2(windowSize) / 2.0f, draw_list);
 
             if (ImGui::Begin("Debug")) {
-                int depth = 0;
-                for (int i = 0; i < stateManager.states.size(); i++) {
-                    if (i < stateManager.states.size() - 1) {
-                        if (!ImGui::TreeNodeEx(stateManager.states[i]->Name().c_str(),
-                                               ImGuiTreeNodeFlags_DefaultOpen)) {
-                            stateManager.states[i]->DrawUI();
-                            break;
-                        }
-                    } else {
-                        ImGui::TreeNodeEx(stateManager.states[i]->Name().c_str(), ImGuiTreeNodeFlags_Leaf);
-                        stateManager.states[i]->DrawUI();
-                    }
-                    depth++;
-                }
-                for (int i = 0; i < depth; i++) {
-                    ImGui::TreePop();
-                }
+                ImGui::Text("State: %s", stateManager.current->Name().c_str());
+                stateManager.current->DrawUI();
             }
             ImGui::End();
 
