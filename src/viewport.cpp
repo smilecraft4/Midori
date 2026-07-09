@@ -72,8 +72,8 @@ void Viewport::SetRotation(float rotation) {
     ComputeViewMatrix();
 }
 
-void Viewport::Resize(glm::vec2 viewSize) {
-    viewSize = viewSize;
+void Viewport::Resize(glm::vec2 newViewSize) {
+    viewSize = newViewSize;
     viewComputed = false;
     ComputeViewMatrix();
 }
