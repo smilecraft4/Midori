@@ -3,6 +3,7 @@
 #include "canvas.h"
 #include "renderer.h"
 #include "states.h"
+#include "base.hpp"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_events.h>
 #include <glm/vec2.hpp>
@@ -50,8 +51,8 @@ public:
     void KeyRelease(SDL_Keycode key, SDL_Keymod mods);
 
     // TODO: this should not be there but somewhere else
-    void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) const;
-    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "") const;
+    void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList);
+    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "");
 
     SDL_Window* window = nullptr;
     std::vector<std::string> args;
@@ -88,5 +89,7 @@ public:
     bool altPressed = false;
     bool penInRange = false;
     float penPressure = 1.0f;
+
+    Arena<> frameArena{8_MiB};
 };
 } // namespace Midori

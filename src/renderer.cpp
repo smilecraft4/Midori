@@ -2,6 +2,7 @@
 
 #include "SDL3/SDL_stdinc.h"
 #include "app.h"
+#include "base.hpp"
 #include "canvas.h"
 #include "layers.h"
 #include "tiles.h"
@@ -16,7 +17,7 @@
 #include <format>
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
-#include "../deps/qoi/qoi.h"
+#include "../deps/qoi.h"
 #include <tracy/Tracy.hpp>
 
 // #if defined(MIDORI_WINDOWS)
@@ -934,7 +935,7 @@ bool Renderer::Render() {
         }
 
         // Get all layers that needs redrawing
-        std::vector<LayerInfo> layerRendering;
+        std::vector<LayerInfo, arena_allocator<LayerInfo>> layerRendering(app->frameArena);
         {
             ZoneScopedN("Layer Culling");
             {

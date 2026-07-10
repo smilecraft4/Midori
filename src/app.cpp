@@ -93,6 +93,8 @@ static const SDL_DialogFileFilter FILTERS[] = {
 
 void App::Update() {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const size_t previousFrameArenaUsage = frameArena.Size();
+    frameArena.Reset();
 
     if (windowSize.x > 0 && windowSize.y > 0 && !hidden) {
         { // ImGui Stuff
@@ -111,6 +113,7 @@ void App::Update() {
             // DebugTileCulling(glm::vec2(windowSize) / 2.0f, draw_list);
 
             if (ImGui::Begin("Debug")) {
+                ImGui::Text("Frame: %zu/%zuKB", previousFrameArenaUsage / 1_KB, frameArena.Capacity() / 1_KB);
                 ImGui::Text("State: %s", stateManager.current->Name().c_str());
                 stateManager.current->DrawUI();
             }
@@ -934,14 +937,14 @@ void App::Save() {
     saving = false;
 }
 
-void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) const {
-    const auto tilePositions = canvas.viewport.VisibleTiles();
+void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) {
+    const auto tilePositions = canvas.viewport.VisibleTiles(frameArena);
     for (const auto& tilePosition : tilePositions) {
         DrawTileDebug(tilePosition, drawList, IM_COL32(255, 0, 0, 128));
     }
 }
 
-void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) const {
+void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) {
     ImVec2 points[5]{};
     ImVec2 center;
     glm::vec2 offsets[5] = {

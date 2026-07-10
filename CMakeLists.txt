@@ -41,10 +41,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 target_sources(midori PRIVATE
+  "src/base.cpp"
   "src/app.cpp"
   "src/canvas.cpp"
   "src/renderer.cpp"
-  "src/memory.cpp"
   "src/viewport.cpp"
   "src/commands.cpp"
   "src/states.cpp"
@@ -71,6 +71,8 @@ target_sources(midori PRIVATE
   "deps/imgui/backends/imgui_impl_sdl3.cpp"
   "deps/imgui/backends/imgui_impl_sdlgpu3.cpp"
 )
+
+add_subdirectory(tests)
 
 # Install
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

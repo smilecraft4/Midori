@@ -152,7 +152,7 @@ bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
         && (tMin.y <= (viewSize.y / 2.0f) && tMax.y >= (-viewSize.y / 2.0f));
 }
 
-std::vector<glm::ivec2> Viewport::VisibleTiles() const {
+std::vector<glm::ivec2, arena_allocator<glm::ivec2>> Viewport::VisibleTiles(Arena<>& arena) const {
     SDL_assert(viewComputed);
     constexpr glm::vec2 T_SIZE(TILE_WIDTH, TILE_HEIGHT);
 
@@ -174,7 +174,7 @@ std::vector<glm::ivec2> Viewport::VisibleTiles() const {
     vAabbMin = glm::floor(vAabbMin / T_SIZE);
     vAabbMax = glm::ceil(vAabbMax / T_SIZE);
 
-    std::vector<glm::ivec2> tPositions;
+    std::vector<glm::ivec2, arena_allocator<glm::ivec2>> tPositions(arena);
     tPositions.reserve(static_cast<size_t>(vAabbMax.x - vAabbMin.x) * static_cast<size_t>(vAabbMax.y - vAabbMin.y));
 
     // If needed this can be simded

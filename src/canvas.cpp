@@ -1,10 +1,12 @@
 ﻿#include "canvas.h"
 
 #include "app.h"
+#include "base.hpp"
 #include "renderer.h"
 #define QOI_IMPLEMENTATION
 #define QOI_NO_STDIO
-#include "../deps/qoi/qoi.h"
+#include "../deps/qoi.h"
+#include "../deps/json.hpp"
 #include <SDL3/SDL_assert.h>
 #include <imgui.h>
 #include <map>
@@ -13,7 +15,6 @@
 #include <utility>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
-#include <json.hpp>
 #include <algorithm>
 #include <cstdint>
 #include <format>
@@ -149,7 +150,7 @@ void Canvas::Update() {
 void Canvas::CullTiles(Viewport& viewport) {
     ZoneScoped;
 
-    const auto& tilesVisible = viewport.VisibleTiles();
+    const auto& tilesVisible = viewport.VisibleTiles(app->frameArena);
     for (const auto& [layer, info] : layerInfos) {
         if (info.hidden) {
             // A layer with 0 opacity can still be painted on,
@@ -181,7 +182,9 @@ void Canvas::DeleteUpdate() {
     { // Deleting tiles
         ZoneScopedN("Deleting tiles");
 
-        std::vector<Tile> clearTiles;
+        std::vector<Tile, arena_allocator<Tile>> clearTiles(app->frameArena);
+        clearTiles.reserve(tileToDelete.size());
+
         for (const auto& tile : tileToDelete) {
             SDL_assert(!tileReadQueue.contains(tile));
 
@@ -213,7 +216,9 @@ void Canvas::DeleteUpdate() {
     { // Deleting layers
         ZoneScopedN("Delete layer");
 
-        std::vector<Layer> layerCleared;
+        std::vector<Layer, arena_allocator<Layer>> layerCleared(app->frameArena);
+        layerCleared.reserve(layerToDelete.size());
+
         for (const auto layer : layerToDelete) {
             if (!layerTiles.at(layer).empty()) {
                 continue;
@@ -636,7 +641,7 @@ void Canvas::ViewUpdateCursor(glm::vec2 cursorPos) {
 void Canvas::UpdateTileLoading() {
     ZoneScoped;
 
-    std::vector<Tile> tilesUnqueued;
+    std::vector<Tile, arena_allocator<Tile>> tilesUnqueued(app->frameArena);
     size_t i = 0;
     for (auto& [tile, tile_load] : tileReadQueue) {
         if (i >= Midori::Renderer::TILE_MAX_UPLOAD_TRANSFER) {
@@ -698,7 +703,7 @@ void Canvas::UpdateTileLoading() {
 void Canvas::UpdateTileUnloading() {
     ZoneScoped;
 
-    std::vector<Tile> tileWritten;
+    std::vector<Tile, arena_allocator<Tile>> tileWritten(app->frameArena);
     size_t i = 0;
     for (auto& [tile, tile_write] : tileWriteQueue) {
         const auto tileInfo = tileInfos.at(tile);
