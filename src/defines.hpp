@@ -29,5 +29,9 @@ constexpr size_t TILE_WIDTH = 256;
 constexpr size_t TILE_HEIGHT = 256;
 constexpr size_t TILE_PIXEL_SIZE = 4;
 constexpr size_t TILE_SIZE = TILE_WIDTH * TILE_HEIGHT * TILE_PIXEL_SIZE;
+// QOI worst case: one tag byte plus every channel byte per pixel (QOI_OP_RGBA),
+// plus the 14-byte header and 8-byte end padding. This exceeds TILE_SIZE, so
+// encoded tiles must never share the raw TILE_SIZE buffers.
+constexpr size_t TILE_ENCODED_MAX_SIZE = (TILE_WIDTH * TILE_HEIGHT * (TILE_PIXEL_SIZE + 1)) + 14 + 8;
 constexpr size_t TILE_MAX_CONCURENT_UPLOAD = 32;
 constexpr size_t TILE_MAX_CONCURENT_DOWNLOAD = 32;

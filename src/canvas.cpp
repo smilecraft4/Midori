@@ -24,7 +24,7 @@ namespace Midori {
 
 // Canvas
 
-Canvas::Canvas(App* app) : app(app), canvasCommands(256), viewCommands(1024), strokeTileAffected(app->frameArena) {}
+Canvas::Canvas(App* app) : app(app), canvasCommands(256), viewCommands(1024) {}
 
 SDL_EnumerationResult FindLayersCallback(void* userdata, const char* dirname, const char* fname) {
     if (dirname != nullptr) {
@@ -664,7 +664,8 @@ void Canvas::UpdateTileLoading() {
             // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found tile encoded texture");
             SDL_assert(bufSize > 0);
             SDL_assert(buf != nullptr);
-            tile_load.encodedTexture = tileTexturePool.Allocate();
+            SDL_assert(bufSize <= TILE_ENCODED_MAX_SIZE && "Encoded tile larger than buffer");
+            tile_load.encodedTexture = tileEncodedPool.Allocate();
             tile_load.encodedSize = bufSize;
             memcpy(&tile_load.encodedTexture->data, buf, bufSize);
             SDL_free(buf);
@@ -680,7 +681,7 @@ void Canvas::UpdateTileLoading() {
             SDL_assert(desc.channels = 4);
             SDL_assert(desc.width = TILE_WIDTH);
             SDL_assert(desc.height = TILE_HEIGHT);
-            tileTexturePool.Deallocate(tile_load.encodedTexture);
+            tileEncodedPool.Deallocate(tile_load.encodedTexture);
             tile_load.encodedSize = 0;
 
             tile_load.rawTexture = tileTexturePool.Allocate();
@@ -767,8 +768,9 @@ void Canvas::UpdateTileUnloading() {
             SDL_assert(buf != nullptr);
 
             tileTexturePool.Deallocate(tile_write.rawTexture);
+            SDL_assert(static_cast<size_t>(outLen) <= TILE_ENCODED_MAX_SIZE && "Encoded tile larger than buffer");
             tile_write.encodedSize = outLen;
-            tile_write.encodedTexture = tileTexturePool.Allocate();
+            tile_write.encodedTexture = tileEncodedPool.Allocate();
             memcpy(&tile_write.encodedTexture->data, buf, outLen);
             free(buf);
 
@@ -784,7 +786,7 @@ void Canvas::UpdateTileUnloading() {
             SDL_WriteIO(fileIo, &tile_write.encodedTexture->data, tile_write.encodedSize);
             SDL_CloseIO(fileIo);
 
-            tileTexturePool.Deallocate(tile_write.encodedTexture);
+            tileEncodedPool.Deallocate(tile_write.encodedTexture);
             tile_write.encodedSize = 0;
 
             tile_write.state = TileWriteState::Written;
@@ -877,6 +879,7 @@ void Canvas::StartBrushStroke(StrokePoint point) {
     std::construct_at(&allTileStrokeAffected, strokeArena);
 
     allTileStrokeAffected.reserve(512);
+    strokePoints.reserve(8192);
 
     strokeStarted = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
@@ -1330,7 +1333,8 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     std::construct_at(&allTileStrokeAffected, strokeArena);
 
     allTileStrokeAffected.reserve(512);
-
+    strokePoints.reserve(8192);
+    
     strokeStarted = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
 

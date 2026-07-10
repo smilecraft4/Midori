@@ -555,7 +555,7 @@ void App::Update() {
                 if (ImGui::Begin("View History")) {
                     if (!canvas.viewCommands.Empty()) {
                         if (ImGui::Button("Clear View History")) {
-                            canvas.canvasCommands.Clear();
+                            canvas.viewCommands.Clear();
                         }
                         for (int pos = static_cast<int>(canvas.viewCommands.Count()) - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.viewCommands.Get(pos);

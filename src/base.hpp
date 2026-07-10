@@ -263,8 +263,11 @@ struct Arena {
 
     void* Allocate(size_t size, size_t alignment = __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
         void* ptr = head;
-        ptr = std::align(alignment, size, ptr, capacity);
-        if (ptr == nullptr || (static_cast<std::byte*>(ptr) + size) > (data + capacity)) {
+        // std::align takes `space` by reference and decrements it by the alignment
+        // padding, so it must be a local holding the *remaining* space, not the
+        // member `capacity` (passing the member would permanently shrink it).
+        size_t space = capacity - Size();
+        if (std::align(alignment, size, ptr, space) == nullptr) {
             return nullptr;
         }
         head = static_cast<std::byte*>(ptr) + size;
@@ -360,14 +363,11 @@ struct Pool {
     }
 
     explicit Pool(size_t count, Alloc allocator) : alloc(ChunkAlloc(allocator)), count(count) {
-        Chunk* chunk;
-        for (size_t c = 0; c + 1 < count; c++) {
-            chunk = alloc.allocate(1);
-            chunk->next = nullptr;
-            if (c == 0) {
-                free = chunk;
-            }
-            chunk = chunk->next;
+        Chunk* prev{};
+        for (size_t c = 0; c < count; c++) {
+            free = alloc.allocate(1);
+            free->next = prev;
+            prev = free;
         }
     }
 

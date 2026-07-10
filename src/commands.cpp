@@ -1,5 +1,7 @@
 #include "commands.h"
 
+#include "SDL3/SDL_gpu.h"
+#include "SDL3/SDL_render.h"
 #include "app.h"
 #include "canvas.h"
 #include "tiles.h"
@@ -46,13 +48,14 @@ void TileModificationCommand::Revert() {
 void TileModificationCommand::SavePreviousTilesTexture(std::span<Tile> tiles) {
     ZoneScoped;
 
-    const auto duplicateTileTextures = DuplicateTileTextures(tiles);
+    const auto textures = DuplicateTileTextures(tiles);
     for (size_t i = 0; i < tiles.size(); i++) {
         const auto coord = canvas->tileInfos.at(tiles[i]);
         if (previousTileTextures.contains(coord)) {
+            SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures[i]);
             continue;
         } else {
-            previousTileTextures[coord] = duplicateTileTextures[i];
+            previousTileTextures[coord] = textures[i];
         }
     }
 }
@@ -64,6 +67,7 @@ void TileModificationCommand::SaveNewTilesTexture(std::span<Tile> tiles) {
     for (size_t i = 0; i < tiles.size(); i++) {
         const auto coord = canvas->tileInfos.at(tiles[i]);
         if (newTileTextures.contains(coord)) {
+            SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures[i]);
             continue;
         } else {
             newTileTextures[coord] = textures[i];

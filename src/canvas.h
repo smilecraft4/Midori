@@ -116,13 +116,20 @@ public:
     struct TileTextureBuffer {
         std::array<uint8_t, TILE_SIZE> data;
     };
-    Pool<TileTextureBuffer> tileTexturePool{32};
+    Pool<TileTextureBuffer> tileTexturePool{4};
+
+    // Encoded (QOI) tiles can be larger than the raw TILE_SIZE, so they get their
+    // own worst-case-sized pool. Sharing tileTexturePool would overflow the chunk.
+    struct TileEncodedBuffer {
+        std::array<uint8_t, TILE_ENCODED_MAX_SIZE> data;
+    };
+    Pool<TileEncodedBuffer> tileEncodedPool{4};
 
     struct TileReadStatus {
         Layer layer{};
         Tile tile{};
         TileReadState state{};
-        TileTextureBuffer* encodedTexture{};
+        TileEncodedBuffer* encodedTexture{};
         size_t encodedSize{};
         TileTextureBuffer* rawTexture{};
     };
@@ -142,7 +149,7 @@ public:
         Tile tile{};
         TileWriteState state{};
         glm::ivec2 position{};
-        TileTextureBuffer* encodedTexture{};
+        TileEncodedBuffer* encodedTexture{};
         size_t encodedSize{};
         TileTextureBuffer* rawTexture{};
     };
@@ -161,7 +168,7 @@ public:
     Arena<> strokeArena{4_MiB};
     std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};
     std::vector<Tile, arena_allocator<Tile>> allTileStrokeAffected{strokeArena};
-    std::vector<Tile, arena_allocator<Tile>> strokeTileAffected;
+    std::vector<Tile, arena_allocator<Tile>> strokeTileAffected{strokeArena};
     std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
     std::vector<glm::ivec2, arena_allocator<glm::ivec2>> GetTilePosAffectedByStrokePoint(StrokePoint point);
 
