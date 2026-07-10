@@ -2,6 +2,7 @@
 
 #include "app.h"
 #include "base.hpp"
+#include "defines.hpp"
 #include "renderer.h"
 #define QOI_IMPLEMENTATION
 #define QOI_NO_STDIO
@@ -23,7 +24,7 @@ namespace Midori {
 
 // Canvas
 
-Canvas::Canvas(App* app) : app(app), canvasCommands(256), viewCommands(1024) {}
+Canvas::Canvas(App* app) : app(app), canvasCommands(256), viewCommands(1024), strokeTileAffected(app->frameArena) {}
 
 SDL_EnumerationResult FindLayersCallback(void* userdata, const char* dirname, const char* fname) {
     if (dirname != nullptr) {
@@ -644,7 +645,7 @@ void Canvas::UpdateTileLoading() {
     std::vector<Tile, arena_allocator<Tile>> tilesUnqueued(app->frameArena);
     size_t i = 0;
     for (auto& [tile, tile_load] : tileReadQueue) {
-        if (i >= Midori::Renderer::TILE_MAX_UPLOAD_TRANSFER) {
+        if (i >= TILE_MAX_CONCURENT_UPLOAD) {
             break;
         }
 
@@ -663,8 +664,9 @@ void Canvas::UpdateTileLoading() {
             // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found tile encoded texture");
             SDL_assert(bufSize > 0);
             SDL_assert(buf != nullptr);
-            tile_load.encodedTexture.resize(bufSize);
-            memcpy(tile_load.encodedTexture.data(), buf, bufSize);
+            tile_load.encodedTexture = tileTexturePool.Allocate();
+            tile_load.encodedSize = bufSize;
+            memcpy(&tile_load.encodedTexture->data, buf, bufSize);
             SDL_free(buf);
 
             tile_load.state = TileReadState::Read;
@@ -672,23 +674,25 @@ void Canvas::UpdateTileLoading() {
         if (tile_load.state == TileReadState::Read) {
             ZoneScopedN("Decoding Tile");
             qoi_desc desc;
-            auto* buf = (uint8_t*)qoi_decode(tile_load.encodedTexture.data(),
-                                             static_cast<int>(tile_load.encodedTexture.size()), &desc, 4);
+            auto* buf = (uint8_t*)qoi_decode(&tile_load.encodedTexture->data, static_cast<int>(tile_load.encodedSize),
+                                             &desc, 4);
             SDL_assert(buf != nullptr);
             SDL_assert(desc.channels = 4);
             SDL_assert(desc.width = TILE_WIDTH);
             SDL_assert(desc.height = TILE_HEIGHT);
-            tile_load.encodedTexture.clear();
+            tileTexturePool.Deallocate(tile_load.encodedTexture);
+            tile_load.encodedSize = 0;
 
-            tile_load.rawTexture.resize(TILE_WIDTH * TILE_HEIGHT * 4);
-            memcpy(tile_load.rawTexture.data(), buf, TILE_WIDTH * TILE_HEIGHT * 4);
+            tile_load.rawTexture = tileTexturePool.Allocate();
+            memcpy(&tile_load.rawTexture->data, buf, TILE_SIZE);
             free(buf);
 
             tile_load.state = TileReadState::Decompressed;
         }
         if (tile_load.state == TileReadState::Decompressed) {
             ZoneScopedN("Uploading Tile");
-            app->renderer.UploadTileTexture(tile, tile_load.rawTexture);
+            app->renderer.UploadTileTexture(tile, tile_load.rawTexture->data);
+            tileTexturePool.Deallocate(tile_load.rawTexture);
             tile_load.state = TileReadState::Uploaded;
             tilesUnqueued.push_back(tile);
         }
@@ -716,7 +720,7 @@ void Canvas::UpdateTileUnloading() {
         }
 
         // limit the amount of download per frame
-        if (i >= Midori::Renderer::TILE_MAX_DOWNLOAD_TRANSFER) {
+        if (i >= TILE_MAX_CONCURENT_DOWNLOAD) {
             break;
         }
 
@@ -728,10 +732,11 @@ void Canvas::UpdateTileUnloading() {
         }
         if (tile_write.state == TileWriteState::Downloading) {
             if (app->renderer.IsTileTextureDownloaded(tile)) {
-                if (app->renderer.CopyTileTextureDownloaded(tile, tile_write.rawTexture)) {
+                tile_write.rawTexture = tileTexturePool.Allocate();
+                if (app->renderer.CopyTileTextureDownloaded(tile, tile_write.rawTexture->data)) {
                     ZoneScopedN("Check if tile is empty");
                     bool empty = true;
-                    for (const auto& v : tile_write.rawTexture) {
+                    for (const auto& v : tile_write.rawTexture->data) {
                         if (v > 1) {
                             empty = false;
                             break;
@@ -739,6 +744,7 @@ void Canvas::UpdateTileUnloading() {
                     }
                     if (empty) {
                         QueueTileDelete(tileInfo.layer, tile);
+                        tileTexturePool.Deallocate(tile_write.rawTexture);
                         tileWritten.push_back(tile);
                         tile_write.state = TileWriteState::Written;
                     } else {
@@ -756,12 +762,14 @@ void Canvas::UpdateTileUnloading() {
                 .colorspace = QOI_LINEAR,
             };
             int outLen = 0;
-            auto* buf = (uint8_t*)qoi_encode(tile_write.rawTexture.data(), &desc, &outLen);
+            auto* buf = (uint8_t*)qoi_encode(&tile_write.rawTexture->data, &desc, &outLen);
             SDL_assert(outLen > 0);
             SDL_assert(buf != nullptr);
 
-            tile_write.encodedTexture.resize(outLen);
-            memcpy(tile_write.encodedTexture.data(), buf, outLen);
+            tileTexturePool.Deallocate(tile_write.rawTexture);
+            tile_write.encodedSize = outLen;
+            tile_write.encodedTexture = tileTexturePool.Allocate();
+            memcpy(&tile_write.encodedTexture->data, buf, outLen);
             free(buf);
 
             tile_write.state = TileWriteState::Encoded;
@@ -773,9 +781,11 @@ void Canvas::UpdateTileUnloading() {
 
             SDL_IOStream* fileIo = SDL_IOFromFile(tileFilename.c_str(), "wb");
             SDL_assert(fileIo != nullptr);
-            SDL_WriteIO(fileIo, tile_write.encodedTexture.data(), tile_write.encodedTexture.size());
+            SDL_WriteIO(fileIo, &tile_write.encodedTexture->data, tile_write.encodedSize);
             SDL_CloseIO(fileIo);
-            // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Wrote tile encoded texture");
+
+            tileTexturePool.Deallocate(tile_write.encodedTexture);
+            tile_write.encodedSize = 0;
 
             tile_write.state = TileWriteState::Written;
         }
@@ -812,9 +822,10 @@ void Canvas::UpdateTileUnloading() {
     }
 }
 
-std::vector<glm::ivec2> GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
+std::vector<glm::ivec2, arena_allocator<glm::ivec2>>
+Canvas::GetTilePosAffectedByStrokePoint(Canvas::StrokePoint point) {
     constexpr glm::vec2 TILE_SIZE = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
-    std::vector<glm::ivec2> tilesPos;
+    std::vector<glm::ivec2, arena_allocator<glm::ivec2>> tilesPos(strokeArena);
 
     glm::ivec2 tilePosMin = glm::floor((point.position - (point.radius + 16.0f)) / TILE_SIZE);
     glm::ivec2 tilePosMax = glm::ceil((point.position + (point.radius + 16.0f)) / TILE_SIZE);
@@ -860,6 +871,13 @@ void Canvas::StartBrushStroke(StrokePoint point) {
     SDL_assert(!strokeStarted);
     SDL_assert(!currentTileModificationCommand);
 
+    strokeArena.Reset();
+    std::construct_at(&strokePoints, strokeArena);
+    std::construct_at(&strokeTileAffected, strokeArena);
+    std::construct_at(&allTileStrokeAffected, strokeArena);
+
+    allTileStrokeAffected.reserve(512);
+
     strokeStarted = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
 
@@ -884,13 +902,13 @@ void Canvas::StartBrushStroke(StrokePoint point) {
             tile = CreateTile(strokeLayer, tilePos);
             SDL_assert(tile != TILE_INVALID && "Failed to create tile on stroke layer");
         }
-        strokeTileAffected.insert(tile);
+        PushUnique(strokeTileAffected, tile);
 
         if (!layerTilePos.at(selectedLayer).contains(tilePos)) {
             const auto srcLayerTile = CreateTile(selectedLayer, tilePos);
             SDL_assert(srcLayerTile != TILE_INVALID && "Failed to create on selected layer during stroke");
         }
-        allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
+        PushUnique(allTileStrokeAffected, layerTilePos.at(selectedLayer).at(tilePos));
     }
 
     strokePoints.push_back(point);
@@ -953,13 +971,13 @@ void Canvas::UpdateBrushStroke(StrokePoint point) {
                 strokeLayerTile = CreateTile(strokeLayer, tilePos);
                 SDL_assert(strokeLayerTile != TILE_INVALID && "Failed to create tile on stroke layer");
             }
-            strokeTileAffected.insert(strokeLayerTile);
+            PushUnique(strokeTileAffected, strokeLayerTile);
 
             if (!layerTilePos.at(selectedLayer).contains(tilePos)) {
                 const auto selectedLayerTile = CreateTile(selectedLayer, tilePos);
                 SDL_assert(selectedLayerTile != TILE_INVALID && "Failed to create tile on selected layer");
             }
-            allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
+            PushUnique(allTileStrokeAffected, layerTilePos.at(selectedLayer).at(tilePos));
         }
     }
 }
@@ -1306,6 +1324,13 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     SDL_assert(!strokeStarted && "Stroke already started");
     SDL_assert(!currentTileModificationCommand && "TileModification already started");
 
+    strokeArena.Reset();
+    std::construct_at(&strokePoints, strokeArena);
+    std::construct_at(&strokeTileAffected, strokeArena);
+    std::construct_at(&allTileStrokeAffected, strokeArena);
+
+    allTileStrokeAffected.reserve(512);
+
     strokeStarted = true;
     currentTileModificationCommand = std::make_unique<TileModificationCommand>(this, selectedLayer);
 
@@ -1318,14 +1343,15 @@ void Canvas::StartEraserStroke(StrokePoint point) {
     // TODO: find a better algorithm when erasing on layers. Right now the opacity of the erase brush does not work.
     // TODO: find a way to duplicate the layer this early and instead use a temporary internal layer as the
     // modification source
-    std::unordered_set<Tile> tileTexturesToSave;
+    std::vector<Tile, arena_allocator<Tile>> tileTexturesToSave(strokeArena);
+    tileTexturesToSave.reserve(tilesPos.size());
     for (const auto& tilePos : tilesPos) {
         Tile tile = GetLoadedTileAt(selectedLayer, tilePos);
         if (tile != TILE_INVALID) {
-            strokeTileAffected.insert(tile);
+            PushUnique(strokeTileAffected, tile);
             layerTilesModified[selectedLayer].insert(tile);
-            allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
-            tileTexturesToSave.insert(tile);
+            PushUnique(allTileStrokeAffected, layerTilePos.at(selectedLayer).at(tilePos));
+            tileTexturesToSave.push_back(tile);
         }
     }
 
@@ -1362,7 +1388,7 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
     glm::vec4 debugColor;
     ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debugColor.r, debugColor.g, debugColor.b);
 
-    std::unordered_set<Tile> tileTexturesToSave;
+    std::vector<Tile, arena_allocator<Tile>> tileTexturesToSave(strokeArena);
 
     const auto tStep = eraserOptions.spacing / distance;
     float t = tStep;
@@ -1388,11 +1414,10 @@ void Canvas::UpdateEraserStroke(StrokePoint point) {
         for (const auto& tilePos : tilesPos) {
             Tile tile = GetLoadedTileAt(selectedLayer, tilePos);
             if (tile != TILE_INVALID) {
-                strokeTileAffected.insert(tile);
+                PushUnique(strokeTileAffected, tile);
                 layerTilesModified[selectedLayer].insert(tile);
-                if (!allTileStrokeAffected.contains(tile)) {
-                    allTileStrokeAffected.insert(layerTilePos.at(selectedLayer).at(tilePos));
-                    tileTexturesToSave.insert(tile);
+                if (PushUnique(allTileStrokeAffected, layerTilePos.at(selectedLayer).at(tilePos))) {
+                    tileTexturesToSave.push_back(tile);
                 }
             }
         }

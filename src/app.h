@@ -31,16 +31,8 @@ public:
     void Save();
     void Fullscreen(bool enable);
 
-    // Event responses
     void Quit();
     bool Init();
-
-    /**
-     * @brief Sync multithreaded operations, Render needed window, Fetch semaphores and fences from the gpu, etc...
-     *
-     * @return true
-     * @return false
-     */
     void Update();
 
     bool Resize(int width, int height);
@@ -53,6 +45,8 @@ public:
     // TODO: this should not be there but somewhere else
     void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList);
     void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "");
+
+    Arena<> frameArena{1_MiB};
 
     SDL_Window* window = nullptr;
     std::vector<std::string> args;
@@ -89,7 +83,5 @@ public:
     bool altPressed = false;
     bool penInRange = false;
     float penPressure = 1.0f;
-
-    Arena<> frameArena{8_MiB};
 };
 } // namespace Midori

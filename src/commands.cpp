@@ -4,6 +4,7 @@
 #include "canvas.h"
 #include "tiles.h"
 #include <SDL3/SDL_assert.h>
+#include <span>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
@@ -42,31 +43,31 @@ void TileModificationCommand::Revert() {
     ApplyTilesTexture(previousTileTextures);
 }
 
-void TileModificationCommand::SavePreviousTilesTexture(const std::unordered_set<Tile>& tiles) {
+void TileModificationCommand::SavePreviousTilesTexture(std::span<Tile> tiles) {
     ZoneScoped;
 
     const auto duplicateTileTextures = DuplicateTileTextures(tiles);
-
-    previousTileTextures.reserve(previousTileTextures.bucket_count() + duplicateTileTextures.size());
-    for (const auto& [tileCoord, texture] : duplicateTileTextures) {
-        if (previousTileTextures.contains(tileCoord)) {
+    for (size_t i = 0; i < tiles.size(); i++) {
+        const auto coord = canvas->tileInfos.at(tiles[i]);
+        if (previousTileTextures.contains(coord)) {
             continue;
+        } else {
+            previousTileTextures[coord] = duplicateTileTextures[i];
         }
-        previousTileTextures[tileCoord] = texture;
     }
 }
 
-void TileModificationCommand::SaveNewTilesTexture(const std::unordered_set<Tile>& tiles) {
+void TileModificationCommand::SaveNewTilesTexture(std::span<Tile> tiles) {
     ZoneScoped;
 
-    const auto duplicateTileTextures = DuplicateTileTextures(tiles);
-
-    newTileTextures.reserve(newTileTextures.bucket_count() + duplicateTileTextures.size());
-    for (const auto& [tileCoord, texture] : duplicateTileTextures) {
-        if (newTileTextures.contains(tileCoord)) {
+    const auto textures = DuplicateTileTextures(tiles);
+    for (size_t i = 0; i < tiles.size(); i++) {
+        const auto coord = canvas->tileInfos.at(tiles[i]);
+        if (newTileTextures.contains(coord)) {
             continue;
+        } else {
+            newTileTextures[coord] = textures[i];
         }
-        newTileTextures[tileCoord] = texture;
     }
 }
 
@@ -123,13 +124,13 @@ void TileModificationCommand::ApplyTilesTexture(
     }
 }
 
-std::unordered_map<TileCoord, SDL_GPUTexture*>
-TileModificationCommand::DuplicateTileTextures(const std::unordered_set<Tile>& tiles) const {
+std::vector<SDL_GPUTexture*> TileModificationCommand::DuplicateTileTextures(std::span<Tile> tiles) const {
     // The textures must be duplicated. The texture saved in the command don't share the same lifetime as the one
     // loaded/unloaded in runtime. The  textures here should be kept as archive versions only and never used as is to
     // avoid leaks/crash
 
-    std::unordered_map<TileCoord, SDL_GPUTexture*> duplicatedTilesTexture(tiles.size());
+    std::vector<SDL_GPUTexture*> duplicatedTilesTexture;
+    duplicatedTilesTexture.reserve(tiles.size());
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(canvas->app->renderer.device);
     SDL_assert(cmd && "Failed to create copyPass command buffer");
@@ -142,7 +143,7 @@ TileModificationCommand::DuplicateTileTextures(const std::unordered_set<Tile>& t
         auto* const tileTexture = canvas->app->renderer.tileTextures.at(tile);
         auto* const duplicatedTileTexture = canvas->app->renderer.DuplicateTileTexture(copyPass, tileTexture);
         SDL_assert(duplicatedTileTexture && "Failed to duplicate tile texture");
-        duplicatedTilesTexture[canvas->tileInfos.at(tile)] = duplicatedTileTexture;
+        duplicatedTilesTexture.push_back(duplicatedTileTexture);
     }
 
     SDL_EndGPUCopyPass(copyPass);
@@ -182,7 +183,8 @@ void CommandHistory::Clear() {
     position = 0;
     count = 0;
     start = 0;
-    commands.clear();
+    commands.clear(); // we just want to call the destructors
+    commands.resize(commands.capacity());
 }
 
 size_t CommandHistory::Index(size_t pos) const {

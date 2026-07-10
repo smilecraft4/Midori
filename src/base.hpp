@@ -226,10 +226,10 @@ constexpr T Pow(T power, T exponent) {
 
 void Assert(bool cond, const char* msg, const std::source_location& loc = std::source_location::current());
 
-void *Malloc(size_t size);
-void *Calloc(size_t value, size_t size);
-void *Realloc(void *ptr, size_t size);
-void Free(void *ptr);
+void* Malloc(size_t size);
+void* Calloc(size_t value, size_t size);
+void* Realloc(void* ptr, size_t size);
+void Free(void* ptr);
 
 template<class Alloc = std::allocator<std::byte>>
 struct Arena {
@@ -351,25 +351,24 @@ struct Pool {
     // TODO Add RAII stuff
 
     explicit Pool(size_t count) : alloc(std::allocator<Chunk>()), count(count) {
-        Chunk* blocks = alloc.allocate(count);
-        for (size_t c = 0; c + 1 < count; c++) {
-            blocks[c].next = &blocks[c + 1];
+        Chunk* prev{};
+        for (size_t c = 0; c < count; c++) {
+            free = alloc.allocate(1);
+            free->next = prev;
+            prev = free;
         }
-        if (count > 0) {
-            blocks[count - 1].next = nullptr;
-        }
-        free = blocks;
     }
 
     explicit Pool(size_t count, Alloc allocator) : alloc(ChunkAlloc(allocator)), count(count) {
-        Chunk* blocks = alloc.allocate(count);
+        Chunk* chunk;
         for (size_t c = 0; c + 1 < count; c++) {
-            blocks[c].next = &blocks[c + 1];
+            chunk = alloc.allocate(1);
+            chunk->next = nullptr;
+            if (c == 0) {
+                free = chunk;
+            }
+            chunk = chunk->next;
         }
-        if (count > 0) {
-            blocks[count - 1].next = nullptr;
-        }
-        free = blocks;
     }
 
     ~Pool() { Clear(); }
@@ -389,12 +388,11 @@ struct Pool {
     template<typename... Args>
     T* Allocate(Args&&... args) {
         if (!free) {
-            free = alloc.allocate(1);
-            count++;
-            free->next = nullptr;
+            throw std::bad_alloc();
         }
         Chunk* chunk = free;
         free = free->next;
+        count--;
         return ::new (&chunk->data) T(std::forward<Args>(args)...);
     }
 
@@ -403,15 +401,17 @@ struct Pool {
         auto* chunk = reinterpret_cast<Chunk*>(obj);
         chunk->next = free;
         free = chunk;
+        count++;
     }
 
     void Clear() {
-        while (free->next != nullptr) {
-            Chunk* prev = free;
+        while (free != nullptr) {
+            const auto prev = free;
             free = free->next;
             alloc.deallocate(prev, 1);
+            count--;
         }
-        count = 0;
+        // Assert(count == 0, "Did not cleared all owned chunks");
     }
 };
 
@@ -431,3 +431,14 @@ struct ThreadPool {
     bool wait{};
     bool stop{};
 };
+
+template<typename Vec, typename T>
+bool PushUnique(Vec& vec, const T& value) {
+    for (const auto& elem : vec) {
+        if (elem == value) {
+            return false;
+        }
+    }
+    vec.push_back(value);
+    return true;
+}

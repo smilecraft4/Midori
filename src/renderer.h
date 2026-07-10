@@ -7,6 +7,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <cstdint>
+#include <span>
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
@@ -46,7 +47,7 @@ public:
     };
 
     TileTextureError CreateTileTexture(Tile tile);
-    TileTextureError UploadTileTexture(Tile tile, const std::vector<uint8_t>& pixels);
+    TileTextureError UploadTileTexture(Tile tile, std::span<uint8_t, TILE_SIZE> pixels);
 
     void ReleaseTileTexture(Tile tile);
     bool MergeTileTextures(Tile overTile, Tile belowTile);
@@ -97,7 +98,6 @@ public:
     size_t lastRenderedTilesNum = 0;
 
     // Tile upload
-    static constexpr size_t TILE_MAX_UPLOAD_TRANSFER = 32;
     SDL_GPUTransferBuffer* tileUploadBuffer = nullptr;
     SDL_GPUTransferBuffer* tileBlankTextureBuffer = nullptr;
     uint8_t* tileUploadBufferPtr = nullptr;
@@ -108,10 +108,9 @@ public:
 
     bool DownloadTileTexture(Tile tile);
     [[nodiscard]] bool IsTileTextureDownloaded(Tile tile) const;
-    bool CopyTileTextureDownloaded(Tile tile, std::vector<uint8_t>& tileTexture);
+    bool CopyTileTextureDownloaded(Tile tile, std::span<uint8_t, TILE_SIZE> tileTexture);
     SDL_GPUTexture* DuplicateTileTexture(SDL_GPUCopyPass* copyPass, SDL_GPUTexture* tileTexture) const;
 
-    static constexpr size_t TILE_MAX_DOWNLOAD_TRANSFER = 32;
     SDL_GPUTransferBuffer* tileDownloadBuffer = nullptr;
     uint8_t* tileDownloadBufferPtr = nullptr;
     std::unordered_map<Tile, size_t> allocatedTileDownloadOffset;

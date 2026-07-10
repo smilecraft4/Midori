@@ -29,3 +29,5 @@ constexpr size_t TILE_WIDTH = 256;
 constexpr size_t TILE_HEIGHT = 256;
 constexpr size_t TILE_PIXEL_SIZE = 4;
 constexpr size_t TILE_SIZE = TILE_WIDTH * TILE_HEIGHT * TILE_PIXEL_SIZE;
+constexpr size_t TILE_MAX_CONCURENT_UPLOAD = 32;
+constexpr size_t TILE_MAX_CONCURENT_DOWNLOAD = 32;

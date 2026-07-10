@@ -2,9 +2,12 @@
 
 #include "colors.h"
 #include "commands.h"
+#include "defines.hpp"
 #include "viewport.h"
+#include "base.hpp"
 
 #include <SDL3/SDL_gpu.h>
+#include <array>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -110,12 +113,18 @@ public:
         Uploaded,
     };
 
+    struct TileTextureBuffer {
+        std::array<uint8_t, TILE_SIZE> data;
+    };
+    Pool<TileTextureBuffer> tileTexturePool{32};
+
     struct TileReadStatus {
-        Layer layer;
-        Tile tile;
-        TileReadState state;
-        std::vector<std::uint8_t> encodedTexture;
-        std::vector<std::uint8_t> rawTexture;
+        Layer layer{};
+        Tile tile{};
+        TileReadState state{};
+        TileTextureBuffer* encodedTexture{};
+        size_t encodedSize{};
+        TileTextureBuffer* rawTexture{};
     };
     std::unordered_map<Tile, TileReadStatus> tileReadQueue;
     void UpdateTileLoading();
@@ -129,12 +138,13 @@ public:
     };
 
     struct TileWriteStatus {
-        Layer layer;
-        Tile tile;
-        TileWriteState state;
-        glm::ivec2 position;
-        std::vector<std::uint8_t> encodedTexture;
-        std::vector<std::uint8_t> rawTexture;
+        Layer layer{};
+        Tile tile{};
+        TileWriteState state{};
+        glm::ivec2 position{};
+        TileTextureBuffer* encodedTexture{};
+        size_t encodedSize{};
+        TileTextureBuffer* rawTexture{};
     };
     std::unordered_map<Tile, TileWriteStatus> tileWriteQueue;
     void UpdateTileUnloading();
@@ -147,18 +157,18 @@ public:
         float hardness = 0.5f;
         float pad[3];
     };
-    std::vector<StrokePoint> strokePoints;
-    std::unordered_set<Tile> strokeTileAffected;
-    std::unordered_set<Tile> allTileStrokeAffected;
     StrokePoint previousPoint = {};
+    Arena<> strokeArena{4_MiB};
+    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};
+    std::vector<Tile, arena_allocator<Tile>> allTileStrokeAffected{strokeArena};
+    std::vector<Tile, arena_allocator<Tile>> strokeTileAffected;
     std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
-
-    std::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
-
-    static bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
+    std::vector<glm::ivec2, arena_allocator<glm::ivec2>> GetTilePosAffectedByStrokePoint(StrokePoint point);
 
     std::vector<Color> canvasTexture;
     glm::ivec2 canvasTextureSize;
+    std::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
+    static bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
 
     // TODO: Merge brush and eraser in a single struct with a erase flag
     bool brushMode = true;

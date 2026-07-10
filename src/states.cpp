@@ -246,6 +246,7 @@ void IdleState::OnEvent(const SDL_Event* event) {
 }
 
 void IdleState::DrawUI() const {
+    ImGui::Text("IdleState");
     ImGui::Text("Tool: %s", app->canvas.eraserMode ? "Eraser" : "Brush");
 }
 
@@ -311,6 +312,7 @@ void NavigateState::OnEvent(const SDL_Event* event) {
 }
 
 void NavigateState::DrawUI() const {
+    ImGui::Text("NavigateState");
     ImGui::Text("Dragging: %s", dragging ? "true" : "false");
     switch (mode) {
         case Mode::Pan:
@@ -361,6 +363,7 @@ void StrokeState::OnEvent(const SDL_Event* event) {
 }
 
 void StrokeState::DrawUI() const {
+    ImGui::Text("StrokeState");
     ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
 }
 

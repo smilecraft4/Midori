@@ -4,6 +4,7 @@
 #include "app.h"
 #include "base.hpp"
 #include "canvas.h"
+#include "defines.hpp"
 #include "layers.h"
 #include "tiles.h"
 #include <SDL3/SDL_assert.h>
@@ -384,7 +385,7 @@ bool Renderer::InitTiles() {
 
     const SDL_GPUTransferBufferCreateInfo uploadBufferCreateInfo = {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-        .size = TILE_MAX_UPLOAD_TRANSFER * TILE_WIDTH * TILE_HEIGHT * 4,
+        .size = TILE_MAX_CONCURENT_UPLOAD * TILE_SIZE,
     };
     tileUploadBuffer = SDL_CreateGPUTransferBuffer(device, &uploadBufferCreateInfo);
     if (tileUploadBuffer == nullptr) {
@@ -397,14 +398,14 @@ bool Renderer::InitTiles() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map tile upload transfer buffer: %s", SDL_GetError());
         return false;
     }
-    freeTileUploadOffset.reserve(TILE_MAX_UPLOAD_TRANSFER);
-    for (size_t i = 0; i < TILE_MAX_UPLOAD_TRANSFER; i++) {
-        freeTileUploadOffset.push_back(i * TILE_WIDTH * TILE_HEIGHT * 4);
+    freeTileUploadOffset.reserve(TILE_MAX_CONCURENT_UPLOAD);
+    for (size_t i = 0; i < TILE_MAX_CONCURENT_UPLOAD; i++) {
+        freeTileUploadOffset.push_back(i * TILE_SIZE);
     }
 
     const SDL_GPUTransferBufferCreateInfo downloadBufferCreateInfo = {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
-        .size = TILE_MAX_DOWNLOAD_TRANSFER * TILE_WIDTH * TILE_HEIGHT * 4,
+        .size = TILE_MAX_CONCURENT_DOWNLOAD * TILE_SIZE,
     };
     tileDownloadBuffer = SDL_CreateGPUTransferBuffer(device, &downloadBufferCreateInfo);
     if (tileDownloadBuffer == nullptr) {
@@ -416,14 +417,14 @@ bool Renderer::InitTiles() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map tile download transfer buffer: %s", SDL_GetError());
         return false;
     }
-    freeTileDownloadOffset.reserve(TILE_MAX_DOWNLOAD_TRANSFER);
-    for (size_t i = 0; i < TILE_MAX_DOWNLOAD_TRANSFER; i++) {
-        freeTileDownloadOffset.push_back(i * TILE_WIDTH * TILE_HEIGHT * 4);
+    freeTileDownloadOffset.reserve(TILE_MAX_CONCURENT_DOWNLOAD);
+    for (size_t i = 0; i < TILE_MAX_CONCURENT_DOWNLOAD; i++) {
+        freeTileDownloadOffset.push_back(i * TILE_SIZE);
     }
 
     const SDL_GPUTransferBufferCreateInfo tileBlankTextureBufferCreateInfo = {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-        .size = TILE_WIDTH * TILE_HEIGHT * 4,
+        .size = TILE_SIZE,
     };
     tileBlankTextureBuffer = SDL_CreateGPUTransferBuffer(device, &tileBlankTextureBufferCreateInfo);
     if (tileBlankTextureBuffer == nullptr) {
@@ -432,7 +433,7 @@ bool Renderer::InitTiles() {
     }
 
     auto* buf = (uint8_t*)SDL_MapGPUTransferBuffer(device, tileBlankTextureBuffer, false);
-    memset(buf, 0, TILE_WIDTH * TILE_HEIGHT * 4);
+    memset(buf, 0, TILE_SIZE);
     SDL_UnmapGPUTransferBuffer(device, tileBlankTextureBuffer);
 
     return true;
@@ -1260,7 +1261,7 @@ Renderer::TileTextureError Renderer::CreateTileTexture(const Tile tile) {
     return TileTextureError::None;
 }
 
-Renderer::TileTextureError Renderer::UploadTileTexture(const Tile tile, const std::vector<uint8_t>& pixels) {
+Renderer::TileTextureError Renderer::UploadTileTexture(const Tile tile, std::span<uint8_t, TILE_SIZE> pixels) {
     ZoneScoped;
     if (!tileTextures.contains(tile)) {
         return TileTextureError::MissingTexture;
@@ -1272,7 +1273,7 @@ Renderer::TileTextureError Renderer::UploadTileTexture(const Tile tile, const st
 
     if (!allocatedTileUploadOffset.contains(tile)) {
         size_t offset = freeTileUploadOffset.back();
-        SDL_assert(offset <= (TILE_MAX_UPLOAD_TRANSFER - 1) * TILE_WIDTH * TILE_HEIGHT * 4);
+        SDL_assert(offset <= (TILE_MAX_CONCURENT_UPLOAD - 1) * TILE_SIZE);
         freeTileUploadOffset.pop_back();
         allocatedTileUploadOffset[tile] = offset;
     }
@@ -1375,7 +1376,7 @@ bool Renderer::DownloadTileTexture(Tile tile) {
 
     const auto tileOffset = freeTileDownloadOffset.back();
     freeTileDownloadOffset.pop_back();
-    SDL_assert(tileOffset <= (TILE_MAX_DOWNLOAD_TRANSFER - 1) * TILE_WIDTH * TILE_HEIGHT * 4);
+    SDL_assert(tileOffset <= (TILE_MAX_CONCURENT_DOWNLOAD - 1) * TILE_SIZE);
 
     allocatedTileDownloadOffset[tile] = tileOffset;
 
@@ -1390,19 +1391,15 @@ bool Renderer::IsTileTextureDownloaded(Tile tile) const {
     return tileDownloaded.contains(tile);
 }
 
-bool Renderer::CopyTileTextureDownloaded(const Tile tile, std::vector<uint8_t>& tileTexture) {
+bool Renderer::CopyTileTextureDownloaded(const Tile tile, std::span<uint8_t, TILE_SIZE> tileTexture) {
     ZoneScoped;
     SDL_assert(tile > 0 && "Tile is invalid");
     SDL_assert(IsTileTextureDownloaded(tile));
 
-    tileTexture.resize(TILE_WIDTH * TILE_HEIGHT * 4);
-
     SDL_assert(tileDownloadBufferPtr != nullptr);
     SDL_assert(allocatedTileDownloadOffset.at(tile) >= 0);
-    SDL_assert(allocatedTileDownloadOffset.at(tile)
-               <= (TILE_MAX_DOWNLOAD_TRANSFER - 1) * (TILE_WIDTH * TILE_HEIGHT * 4));
-    memcpy(tileTexture.data(), tileDownloadBufferPtr + allocatedTileDownloadOffset.at(tile),
-           (TILE_WIDTH * TILE_HEIGHT * 4));
+    SDL_assert(allocatedTileDownloadOffset.at(tile) <= (TILE_MAX_CONCURENT_DOWNLOAD - 1) * (TILE_SIZE));
+    memcpy(tileTexture.data(), tileDownloadBufferPtr + allocatedTileDownloadOffset.at(tile), (TILE_SIZE));
 
     freeTileDownloadOffset.push_back(allocatedTileDownloadOffset.at(tile));
     tileDownloaded.erase(tile);

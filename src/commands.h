@@ -6,9 +6,9 @@
 #include <SDL3/SDL_render.h>
 #include <SDL3/SDL_assert.h>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace Midori {
 
@@ -17,10 +17,6 @@ struct Canvas;
 struct ICommand {
     ICommand() = default;
     virtual ~ICommand() = default;
-    // ICommand(ICommand&&) = delete;
-    // ICommand& operator=(ICommand&&) = delete;
-    // ICommand(const ICommand&) = delete;
-    // ICommand& operator=(const ICommand&) = delete;
 
     [[nodiscard]] virtual std::string Name() const = 0;
     virtual void Execute() = 0;
@@ -28,11 +24,6 @@ struct ICommand {
 };
 
 struct CommandHistory final {
-    // CommandHistory(CommandHistory&&) = delete;
-    // CommandHistory& operator=(CommandHistory&&) = delete;
-    // CommandHistory(const CommandHistory&) = delete;
-    // CommandHistory& operator=(const CommandHistory&) = delete;
-
     CommandHistory(size_t capacity);
     ~CommandHistory();
 
@@ -48,21 +39,22 @@ struct CommandHistory final {
     [[nodiscard]] size_t Count() const;
 
     std::vector<std::unique_ptr<ICommand>> commands;
-    size_t position{0}; // starts at 1 and end at capacity, 0 means nothing
-    size_t count{0};    // starts at 1 and end at capacity, 0 means no element
+    // TODO extract into a RingArray<T>
+    size_t position{0};
+    size_t count{0};
     size_t start{0};
 };
 
 struct TileModificationCommand final : public ICommand {
     explicit TileModificationCommand(Canvas* canvas, Layer layer);
-    virtual ~TileModificationCommand();
+    ~TileModificationCommand() override;
 
-    std::string Name() const override;
+    [[nodiscard]] std::string Name() const override;
     void Execute() override;
     void Revert() override;
 
-    void SavePreviousTilesTexture(const std::unordered_set<Tile>& tiles);
-    void SaveNewTilesTexture(const std::unordered_set<Tile>& tiles);
+    void SavePreviousTilesTexture(std::span<Tile> tiles);
+    void SaveNewTilesTexture(std::span<Tile> tiles);
 
     Canvas* canvas;
     Layer layer;
@@ -73,15 +65,14 @@ private:
     void ApplyTilesTexture(const std::unordered_map<TileCoord, SDL_GPUTexture*>& tileCoordsTexture) const;
 
     // TODO: Move to the renderer directly
-    [[nodiscard]] std::unordered_map<TileCoord, SDL_GPUTexture*>
-    DuplicateTileTextures(const std::unordered_set<Tile>& tiles) const;
+    [[nodiscard]] std::vector<SDL_GPUTexture*> DuplicateTileTextures(std::span<Tile> tiles) const;
 };
 
 struct ViewportChangeCommand final : public ICommand {
     explicit ViewportChangeCommand(Canvas* canvas);
-    virtual ~ViewportChangeCommand();
+    ~ViewportChangeCommand() override;
 
-    std::string Name() const override;
+    [[nodiscard]] std::string Name() const override;
     void Execute() override;
     void Revert() override;
 
@@ -92,50 +83,4 @@ struct ViewportChangeCommand final : public ICommand {
     Viewport previousViewport;
     Viewport newViewport;
 };
-
-/*
-struct LayerCreateCommand final : public ICommand {
-    explicit LayerCreateCommand(Canvas& canvas, Layer layer, LayerInfo layerInfo);
-    virtual ~LayerCreateCommand();
-
-    virtual std::string Name() const;
-    virtual void Execute();
-    virtual void Revert();
-
-    Canvas& canvas_;
-    Layer& layer_;
-    LayerInfo& layerInfo_;
-};
-
-struct LayerDeleteCommand final : public ICommand {
-    explicit LayerDeleteCommand(Canvas& canvas, Layer layer, LayerInfo layerInfo);
-    virtual ~LayerDeleteCommand();
-
-    virtual std::string Name() const;
-    virtual void Execute();
-    virtual void Revert();
-
-    Canvas& canvas_;
-    Layer& layer_;
-    LayerInfo& layerInfo_;
-};
-
-struct LayerEditCommand final : public ICommand {
-    explicit LayerEditCommand(Canvas& canvas, Layer layer);
-    virtual ~LayerEditCommand();
-
-    void SetPreviousLayerInfo(LayerInfo previousInfo);
-    void SetNewLayerInfo(LayerInfo newInfo);
-
-    virtual std::string Name() const;
-    virtual void Execute();
-    virtual void Revert();
-
-    Canvas& canvas_;
-    Layer& layer_;
-    LayerInfo previousInfo_;
-    LayerInfo newInfo_;
-};
-
-*/
 } // namespace Midori

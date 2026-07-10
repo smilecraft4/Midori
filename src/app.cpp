@@ -93,7 +93,8 @@ static const SDL_DialogFileFilter FILTERS[] = {
 
 void App::Update() {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    const size_t previousFrameArenaUsage = frameArena.Size();
+    const size_t frameArenaUsage = frameArena.Size();
+    const size_t strokeArenaUsage = canvas.strokeArena.Size();
     frameArena.Reset();
 
     if (windowSize.x > 0 && windowSize.y > 0 && !hidden) {
@@ -113,8 +114,14 @@ void App::Update() {
             // DebugTileCulling(glm::vec2(windowSize) / 2.0f, draw_list);
 
             if (ImGui::Begin("Debug")) {
-                ImGui::Text("Frame: %zu/%zuKB", previousFrameArenaUsage / 1_KB, frameArena.Capacity() / 1_KB);
-                ImGui::Text("State: %s", stateManager.current->Name().c_str());
+                ImGui::SeparatorText("Memory");
+                ImGui::Text("Frame: %.03f/%.03fKB", static_cast<float>(frameArenaUsage) / 1_KB,
+                            static_cast<float>(frameArena.Capacity()) / 1_KB);
+                ImGui::Text("Stroke: %.03f/%.03fKB", static_cast<float>(strokeArenaUsage) / 1_KB,
+                            static_cast<float>(canvas.strokeArena.Capacity()) / 1_KB);
+                ImGui::SeparatorText("IO");
+                ImGui::Text("TexturePool free: %zu", canvas.tileTexturePool.Count());
+                ImGui::SeparatorText("State");
                 stateManager.current->DrawUI();
             }
             ImGui::End();
@@ -525,7 +532,10 @@ void App::Update() {
                 ImGui::End();
 
                 if (ImGui::Begin("Canvas History")) {
-                    if (canvas.canvasCommands.Empty() == 0u) {
+                    if (!canvas.canvasCommands.Empty()) {
+                        if (ImGui::Button("Clear Canvas History")) {
+                            canvas.canvasCommands.Clear();
+                        }
                         for (int pos = static_cast<int>(canvas.canvasCommands.Count()) - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.canvasCommands.Get(pos);
                             const auto name = command->Name();
@@ -543,7 +553,10 @@ void App::Update() {
                 }
                 ImGui::End();
                 if (ImGui::Begin("View History")) {
-                    if (canvas.viewCommands.Empty() == 0u) {
+                    if (!canvas.viewCommands.Empty()) {
+                        if (ImGui::Button("Clear View History")) {
+                            canvas.canvasCommands.Clear();
+                        }
                         for (int pos = static_cast<int>(canvas.viewCommands.Count()) - 1; pos >= 0; pos--) {
                             const ICommand* command = canvas.viewCommands.Get(pos);
                             const auto name = command->Name();
