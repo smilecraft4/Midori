@@ -31,15 +31,29 @@ void Viewport::SetTranslation(glm::vec2 newTranslation) {
 }
 
 void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
-    origin = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(origin, 0.0f, 1.0f));
+    // origin is the cursor position in screen-centered coordinates.
+    // Remember which canvas point currently sits under the cursor.
+    // const glm::vec2 pivotCanvas = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(origin, 0.0f, 1.0f));
+    // zoomOrigin = pivotCanvas;
 
-    zoomOrigin = origin;
-    zoom += amount;
+    // Exponential (multiplicative) zoom: `amount` is a log-space increment, so
+    // every drag-pixel is a constant *percentage* change. This makes the zoom
+    // feel uniform/linear at any scale instead of stalling when zoomed in and
+    // over-shooting when zoomed out.
+    zoom.x *= std::exp(amount.x);
+    zoom.y *= std::exp(amount.y);
+
+    // zoom += amount;
     zoom.x = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.x));
     zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));
 
     viewComputed = false;
     ComputeViewMatrix();
+
+    // The zoom moved the pivot away from the cursor; translate it back so the
+    // canvas point under the cursor stays fixed (zoom centered on the cursor).
+    // const glm::vec2 pivotScreen = static_cast<glm::vec2>(ViewMatrix() * glm::vec4(pivotCanvas, 0.0f, 1.0f));
+    // Translate(origin - pivotScreen);
 }
 
 void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {

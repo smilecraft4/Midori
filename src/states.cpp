@@ -297,9 +297,10 @@ void NavigateState::OnEvent(const SDL_Event* event) {
             case Mode::Pan:
                 app->canvas.viewport.Translate(app->cursorDeltaPos);
                 break;
-            case Mode::Zoom:
-                app->canvas.viewport.Zoom(startPos - center, glm::vec2(app->cursorDeltaPos.x / 1000.0f));
+            case Mode::Zoom: {
+                app->canvas.viewport.Zoom(startPos - center, glm::vec2(app->cursorDeltaPos.x / 256.0f));
                 break;
+            }
             case Mode::Rotate: {
                 const auto previousAngle = std::atan2(app->cursorLastPos.x - center.x, app->cursorLastPos.y - center.y);
                 const auto currentAngle =
