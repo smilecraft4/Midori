@@ -62,24 +62,24 @@ void operator delete(void* ptr) noexcept {
     Free(ptr);
 }
 
-ThreadPool::ThreadPool(size_t size, const std::string& name) {
-    threads.reserve(size);
+thread_pool::thread_pool(size_t size, const std::string& name) {
+    threads_.reserve(size);
     for (size_t i = 0; i < size; i++) {
-        threads.emplace_back([this, name, i] {
+        threads_.emplace_back([this, name, i] {
             const auto n = std::format("{} {}", name, i);
             tracy::SetThreadName(n.c_str());
 
             while (true) {
                 std::function<void()> task;
                 {
-                    std::unique_lock lock(tasksMtx);
-                    cv.wait(lock, [this] { return !tasks.empty() || wait || stop; });
-                    if (stop || (wait && tasks.empty())) {
+                    std::unique_lock lock(mtx_);
+                    cv_.wait(lock, [this] { return !tasks_.empty() || wait_ || stop_; });
+                    if (stop_ || (wait_ && tasks_.empty())) {
                         return;
                     }
 
-                    task = std::move(tasks.front());
-                    tasks.pop();
+                    task = std::move(tasks_.front());
+                    tasks_.pop();
                 }
                 task();
             }
@@ -87,44 +87,44 @@ ThreadPool::ThreadPool(size_t size, const std::string& name) {
     }
 }
 
-ThreadPool::~ThreadPool() {
-    Stop();
+thread_pool::~thread_pool() {
+    stop();
 }
 
-void ThreadPool::Wait() {
-    if (wait) {
+void thread_pool::wait() {
+    if (wait_) {
         return;
     }
 
     {
-        std::unique_lock lock(tasksMtx);
-        wait = true;
+        std::unique_lock lock(mtx_);
+        wait_ = true;
     }
-    cv.notify_all();
-    for (auto& thread : threads) {
+    cv_.notify_all();
+    for (auto& thread : threads_) {
         thread.join();
     }
 }
 
-void ThreadPool::Stop() {
-    if (stop) {
+void thread_pool::stop() {
+    if (stop_) {
         return;
     }
 
     {
-        std::unique_lock lock(tasksMtx);
-        stop = true;
+        std::unique_lock lock(mtx_);
+        stop_ = true;
     }
-    cv.notify_all();
-    for (auto& thread : threads) {
+    cv_.notify_all();
+    for (auto& thread : threads_) {
         thread.join();
     }
 }
 
-void ThreadPool::Emplace(std::function<void()> task) {
+void thread_pool::emplace(std::function<void()> task) {
     {
-        std::unique_lock lock(tasksMtx);
-        tasks.emplace(std::move(task));
+        std::unique_lock lock(mtx_);
+        tasks_.emplace(std::move(task));
     }
-    cv.notify_one();
+    cv_.notify_one();
 }

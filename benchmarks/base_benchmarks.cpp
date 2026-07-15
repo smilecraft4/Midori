@@ -43,7 +43,7 @@ struct std::hash<Bar> {
 
 int main() {
     {
-        Arena arena(1_MiB);
+        arena arena(1_MiB);
 
         std::random_device rd;
         std::mt19937 mt(rd());
@@ -57,23 +57,29 @@ int main() {
             key.b = keyDist(mt);
         }
 
-        HashSet<Bar, arena_allocator<Bar>> set(ops.size(), arena);
+        hash_set<Bar, arena_allocator<Bar>> set(ops.size(), arena);
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Insert", [&] {
             for (const auto& [_, key] : ops) {
-                ankerl::nanobench::doNotOptimizeAway(set.Insert(key));
+                ankerl::nanobench::doNotOptimizeAway(set.insert(key));
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Contains", [&] {
             for (const auto& [_, key] : ops) {
-                ankerl::nanobench::doNotOptimizeAway(set.Contains(key));
+                ankerl::nanobench::doNotOptimizeAway(set.contains(key));
+            }
+        });
+
+        ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Iterator", [&] {
+            for (const auto& key : set) {
+                ankerl::nanobench::doNotOptimizeAway(key);
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Erase", [&] {
             for (const auto& [_, key] : ops) {
-                ankerl::nanobench::doNotOptimizeAway(set.Erase(key));
+                ankerl::nanobench::doNotOptimizeAway(set.erase(key));
             }
         });
 
@@ -81,13 +87,13 @@ int main() {
             for (const auto& [op, key] : ops) {
                 switch (op) {
                     case 0:
-                        ankerl::nanobench::doNotOptimizeAway(set.Insert(key));
+                        ankerl::nanobench::doNotOptimizeAway(set.insert(key));
                         break;
                     case 1:
-                        ankerl::nanobench::doNotOptimizeAway(set.Contains(key));
+                        ankerl::nanobench::doNotOptimizeAway(set.contains(key));
                         break;
                     case 2:
-                        ankerl::nanobench::doNotOptimizeAway(set.Erase(key));
+                        ankerl::nanobench::doNotOptimizeAway(set.erase(key));
                         break;
                     default:
                         break;
@@ -96,7 +102,7 @@ int main() {
         });
     }
     {
-        Arena arena(1_MiB);
+        arena arena(1_MiB);
 
         std::random_device rd;
         std::mt19937 mt(rd());
@@ -116,29 +122,36 @@ int main() {
             em.emplace_back(Bar{.a = keyDist(mt), .b = keyDist(mt)});
         }
 
-        HashMap<Bar, Foo, arena_allocator<Bar>> map(ops.size(), arena);
+        hash_map<Bar, Foo, arena_allocator<Bar>> map(ops.size(), arena);
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Insert", [&] {
             for (const auto& [ops, key, elem] : ops) {
-                ankerl::nanobench::doNotOptimizeAway(map.Insert(key, elem));
+                ankerl::nanobench::doNotOptimizeAway(map.insert(key, elem));
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Emplace", [&] {
             for (const auto& key : em) {
-                ankerl::nanobench::doNotOptimizeAway(map.Emplace(key, mt));
+                ankerl::nanobench::doNotOptimizeAway(map.emplace(key, mt));
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Contains", [&] {
             for (const auto& [ops, key, elem] : ops) {
-                ankerl::nanobench::doNotOptimizeAway(map.Contains(key));
+                ankerl::nanobench::doNotOptimizeAway(map.contains(key));
+            }
+        });
+
+        ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Iterator", [&] {
+            for (auto [key, elem] : map) {
+                ankerl::nanobench::doNotOptimizeAway(key);
+                ankerl::nanobench::doNotOptimizeAway(elem);
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Erase", [&] {
             for (const auto& [ops, key, elem] : ops) {
-                ankerl::nanobench::doNotOptimizeAway(map.Erase(key));
+                ankerl::nanobench::doNotOptimizeAway(map.erase(key));
             }
         });
 
@@ -146,16 +159,16 @@ int main() {
             for (const auto& [op, key, elem] : ops) {
                 switch (op) {
                     case 0:
-                        ankerl::nanobench::doNotOptimizeAway(map.Insert(key, elem));
+                        ankerl::nanobench::doNotOptimizeAway(map.insert(key, elem));
                         break;
                     case 1:
-                        ankerl::nanobench::doNotOptimizeAway(map.Emplace(key, mt));
+                        ankerl::nanobench::doNotOptimizeAway(map.emplace(key, mt));
                         break;
                     case 2:
-                        ankerl::nanobench::doNotOptimizeAway(map.Contains(key));
+                        ankerl::nanobench::doNotOptimizeAway(map.contains(key));
                         break;
                     case 3:
-                        ankerl::nanobench::doNotOptimizeAway(map.Erase(key));
+                        ankerl::nanobench::doNotOptimizeAway(map.erase(key));
                         break;
                     default:
                         break;
