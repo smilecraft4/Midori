@@ -34,7 +34,8 @@ void TileModificationCommand::Execute() {
             canvas->DestroyTile(tile);
         } else {
             if (!canvas->tilesLoaded.contains(tile)) {
-                SDL_assert(canvas->CreateTile(tile, false));
+                SDL_assert(canvas->app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
+                canvas->tilesLoaded.insert(tile);
             }
 
             SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
@@ -58,7 +59,8 @@ void TileModificationCommand::Revert() {
             canvas->DestroyTile(tile);
         } else {
             if (!canvas->tilesLoaded.contains(tile)) {
-                SDL_assert(canvas->CreateTile(tile, false));
+                SDL_assert(canvas->app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
+                canvas->tilesLoaded.insert(tile);
             }
 
             SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
