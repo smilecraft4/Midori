@@ -247,8 +247,8 @@ bool Renderer::InitLayers() {
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET
                | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE,
-        .width = (Uint32)app->windowSize.x,
-        .height = (Uint32)app->windowSize.y,
+        .width = static_cast<Uint32>(app->windowSize.x),
+        .height = static_cast<Uint32>(app->windowSize.y),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
@@ -567,8 +567,8 @@ bool Renderer::InitPaint() {
         .type = SDL_GPU_TEXTURETYPE_2D,
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        .width = (Uint32)desc.width,
-        .height = (Uint32)desc.height,
+        .width = static_cast<Uint32>(desc.width),
+        .height = static_cast<Uint32>(desc.height),
         .layer_count_or_depth = 1,
         .num_levels = 10,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
@@ -870,7 +870,7 @@ bool Renderer::QueryTileTextureDownload(TileTextureDownload slot) {
 bool Renderer::FreeTileTextureDownload(TileTextureDownload slot) {
     ZoneScoped;
     SDL_assert(slot < tileDownloadSlots.size());
-    tileDownloadSlots[slot].state.store(TextureDownloadState::None, std::memory_order_acquire);
+    tileDownloadSlots[slot].state.store(TextureDownloadState::None, std::memory_order_relaxed);
     return true;
 }
 
@@ -1266,8 +1266,8 @@ bool Renderer::Resize() {
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET
                | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE,
-        .width = (Uint32)app->windowSize.x,
-        .height = (Uint32)app->windowSize.y,
+        .width = static_cast<Uint32>(app->windowSize.x),
+        .height = static_cast<Uint32>(app->windowSize.y),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
@@ -1339,8 +1339,8 @@ bool Renderer::CreateLayerTexture(const Layer layer) {
         .type = SDL_GPU_TEXTURETYPE_2D,
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        .width = (Uint32)app->windowSize.x,
-        .height = (Uint32)app->windowSize.y,
+        .width = static_cast<Uint32>(app->windowSize.x),
+        .height = static_cast<Uint32>(app->windowSize.y),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
@@ -1374,8 +1374,8 @@ Renderer::Error Renderer::CreateUninitializedTileTexture(TileCoord tile) {
         .type = SDL_GPU_TEXTURETYPE_2D,
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE,
-        .width = (Uint32)TILE_WIDTH,
-        .height = (Uint32)TILE_HEIGHT,
+        .width = static_cast<Uint32>(TILE_WIDTH),
+        .height = static_cast<Uint32>(TILE_HEIGHT),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
@@ -1412,10 +1412,9 @@ Renderer::Error Renderer::CreateTileTexture(TileCoord tile) {
 
 void Renderer::DestroyTileTexture(TileCoord tile) {
     ZoneScoped;
-    SDL_assert(tileTextures.contains(tile) && "Tile does not exists");
-    if (tileTextures.contains(tile)) {
-        SDL_ReleaseGPUTexture(device, tileTextures.at(tile));
-    }
+    SDL_assert(tileTextures.contains(tile) && "Tile texture not found");
+
+    SDL_ReleaseGPUTexture(device, tileTextures.at(tile));
     tileTextures.erase(tile);
 }
 
@@ -1514,8 +1513,8 @@ SDL_GPUTexture* Renderer::DuplicateTileTexture(SDL_GPUTexture* texture) const {
         .type = SDL_GPU_TEXTURETYPE_2D,
         .format = app->renderer.textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE,
-        .width = (Uint32)TILE_WIDTH,
-        .height = (Uint32)TILE_HEIGHT,
+        .width = static_cast<Uint32>(TILE_WIDTH),
+        .height = static_cast<Uint32>(TILE_HEIGHT),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,

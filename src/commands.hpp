@@ -57,8 +57,8 @@ struct TileModificationCommand final : public ICommand {
     void Revert() override;
 
     void TrackTile(TileCoord tile);
-    void SaveTrackedTilesForPrevious();
-    void SaveTrackedTilesForNew();
+    void SaveTrackedTilesForPrevious(bool overwrite = true);
+    void SaveTrackedTilesForNew(bool overwrite = true);
 
     Canvas* canvas;
     Layer layer;

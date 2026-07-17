@@ -1,6 +1,7 @@
 ﻿#include "canvas.hpp"
 
 #include "SDL3/SDL_gpu.h"
+#include "SDL3/SDL_log.h"
 #include "app.hpp"
 #include "base.hpp"
 #include "brushes.hpp"
@@ -129,8 +130,8 @@ void Canvas::Update() {
 
     UpdateTileVisibility(viewport);
 
-    UpdateTileLoading();
-    UpdateTileUnloading();
+    UpdateTileReading();
+    UpdateTileWriting();
 }
 
 void Canvas::UpdateTileVisibility(Viewport& viewport) {
@@ -312,7 +313,7 @@ bool Canvas::MergeLayers(const Layer srcLayer, const Layer dstLayer) {
     SDL_assert(layers.contains(srcLayer));
     SDL_assert(layers.contains(dstLayer));
 
-    // FIXME take into account the tiles not loaded
+    // TODO take into account the tiles not loaded but stored
 
     size_t failed{};
     for (const auto& tile : tilesLoaded) {
@@ -356,11 +357,11 @@ bool Canvas::CreateTile(TileCoord tile, bool initialize) {
 
 bool Canvas::DestroyTile(TileCoord tile) {
     ZoneScoped;
-    SDL_assert(layers.contains(tile.layer) && "Layer not found");
     SDL_assert(tilesLoaded.contains(tile) && "Tile not found");
 
     app->renderer.DestroyTileTexture(tile);
     tilesLoaded.erase(tile);
+
     return true;
 }
 
@@ -369,7 +370,6 @@ bool Canvas::UnloadTile(TileCoord tile) {
     SDL_assert(layers.contains(tile.layer) && "Layer not found");
     SDL_assert(tilesLoaded.contains(tile) && "Tile not found");
 
-    tilesLoaded.erase(tile);
     if (tilesModified.contains(tile)) {
         return SaveTile(tile);
     } else {
@@ -378,23 +378,42 @@ bool Canvas::UnloadTile(TileCoord tile) {
 }
 
 bool Canvas::SaveTile(TileCoord tile) {
+    ZoneScoped;
+    SDL_assert(tilesLoaded.contains(tile) && "Tile not found");
+
     if (!tilesModified.contains(tile)) {
         return true;
     }
     if (tilesWriting.contains(tile)) {
         return false;
     }
+
     const TileWriteData data{
         .tile = tile,
         .state = TileWriteState::Pending,
     };
-    tilesWriting.emplace(tile, data);
+    if (!tilesWriting.insert(tile, data)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed queue tile(%u, %d, %d) for saving", tile.layer, tile.x,
+                    tile.y);
+        return false;
+    }
+
     return true;
 }
 
 bool Canvas::LoadTile(TileCoord tile) {
     ZoneScoped;
     SDL_assert(layers.at(tile.layer).tiles.contains(tile) && "Tile not saved, cannot load it");
+
+    // The tile is still queued for unloading (being written to disk) and its GPU
+    // texture is therefore still resident. Cancel the pending write and re-adopt
+    // that texture instead of creating a duplicate, which would fail because
+    // tileTextures already holds an entry for this tile.
+    if (tilesWriting.contains(tile) && app->renderer.tileTextures.contains(tile)) {
+        tilesWriting.erase(tile);
+        tilesLoaded.insert(tile);
+        return true;
+    }
 
     if (tilesReading.contains(tile)) {
         return false;
@@ -510,62 +529,56 @@ bool Canvas::MoveTile(TileCoord srcTile, TileCoord dstTile) {
 }
 
 // TODO: Make multithreaded
-bool Canvas::UpdateTileLoading() {
+bool Canvas::UpdateTileReading() {
     ZoneScoped;
 
     std::vector<TileCoord, arena_allocator<TileCoord>> tilesUnqueued(app->frameArena);
-    size_t i = 0;
     for (auto [tile, data] : tilesReading) {
+        SDL_assert(!tilesLoaded.contains(tile));
+
         if (data.state == TileReadState::Pending) {
+            ZoneScopedN("Reading Tile");
             const std::string tileFilename = std::format("{}/{}/{}_{}.qoi", filename, tile.layer, tile.x, tile.y);
 
-            size_t bufSize;
-            auto* buf = (uint8_t*)SDL_LoadFile(tileFilename.c_str(), &bufSize);
-            SDL_assert(bufSize > 0);
-            SDL_assert(buf);
-
-            SDL_assert(bufSize > 0);
-            SDL_assert(buf != nullptr);
-            SDL_assert(bufSize <= TILE_ENCODED_MAX_SIZE && "Encoded tile larger than buffer");
-            data.encoded = tileTextureEncodedPool.allocate(1);
-            data.encoded->size = bufSize;
-            memcpy(data.encoded->data, buf, bufSize);
-            SDL_free(buf);
-
-            data.state = TileReadState::Read;
-        }
-        if (data.state == TileReadState::Read) {
-            ZoneScopedN("Decoding Tile");
-            qoi_desc desc;
-            auto* buf = (uint8_t*)qoi_decode(&data.encoded->data, static_cast<int>(data.encoded->size), &desc, 4);
-            SDL_assert(buf != nullptr);
-            SDL_assert(desc.channels = 4);
-            SDL_assert(desc.width = TILE_WIDTH);
-            SDL_assert(desc.height = TILE_HEIGHT);
-            data.encoded->size = 0;
-            tileTextureEncodedPool.deallocate(data.encoded, 1);
+            size_t encodedBufSize;
+            auto* encodedBuf = static_cast<std::byte*>(SDL_LoadFile(tileFilename.c_str(), &encodedBufSize));
+            SDL_assert(encodedBufSize > 0);
+            SDL_assert(encodedBuf);
 
             auto slot = app->renderer.ReserveTileTextureUpload(tile);
-            if (!slot) {
+            if (!slot.has_value()) {
                 continue;
             }
             data.rendererSlot = slot.value();
-
             auto& info = app->renderer.GetTileTextureUploadInfo(data.rendererSlot);
-            memcpy(info.data, buf, TILE_SIZE);
-            free(buf);
 
-            data.state = TileReadState::Decoded;
-        }
-        if (data.state == TileReadState::Decoded) {
-            ZoneScopedN("Uploading Tile");
-            auto& info = app->renderer.GetTileTextureUploadInfo(data.rendererSlot);
+            // SDL_assert(encodedBufSize > 0);
+            // SDL_assert(encodedBuf != nullptr);
+            // SDL_assert(encodedBufSize <= TILE_ENCODED_MAX_SIZE && "Encoded tile larger than buffer");
+            // data.encoded = tileTextureEncodedPool.allocate(1);
+            // data.encoded->size = encodedBufSize;
+            // memcpy(data.encoded->data, encodedBuf, encodedBufSize);
+
+            qoi_desc desc{};
+            auto* decodedBuf =
+                static_cast<std::byte*>(qoi_decode(encodedBuf, static_cast<int>(encodedBufSize), &desc, 4));
+            SDL_assert(decodedBuf != nullptr);
+            SDL_assert(desc.channels = 4);
+            SDL_assert(desc.width = TILE_WIDTH);
+            SDL_assert(desc.height = TILE_HEIGHT);
+            // data.encoded->size = 0;
+            // tileTextureEncodedPool.deallocate(data.encoded, 1);
+
+            SDL_free(encodedBuf);
+
+            memcpy(info.data, decodedBuf, TILE_SIZE);
+            free(decodedBuf);
+
             app->renderer.CommitTileTextureUpload(data.rendererSlot);
             data.state = TileReadState::Uploaded;
             tilesUnqueued.push_back(tile);
             tilesLoaded.insert(tile);
         }
-        i++;
     }
     for (const auto& tile : tilesUnqueued) {
         tilesReading.erase(tile);
@@ -575,17 +588,12 @@ bool Canvas::UpdateTileLoading() {
 }
 
 // TODO: Make multithreaded
-bool Canvas::UpdateTileUnloading() {
+bool Canvas::UpdateTileWriting() {
     ZoneScoped;
 
     std::vector<TileCoord, arena_allocator<TileCoord>> tileUnloaded(app->frameArena);
-    size_t i = 0;
     for (auto [tile, data] : tilesWriting) {
-        if (!tilesModified.contains(tile)) {
-            data.state = TileWriteState::Done;
-            tileUnloaded.push_back(tile);
-            continue;
-        }
+        SDL_assert(tilesModified.contains(tile));
 
         if (data.state == TileWriteState::Pending) {
             auto slot = app->renderer.DownloadTileTexture(tile);
@@ -600,24 +608,23 @@ bool Canvas::UpdateTileUnloading() {
                 continue;
             }
             auto& info = app->renderer.GetTileTextureDownloadInfo(data.rendererSlot);
-            ZoneScopedN("Check if tile is empty");
-            bool empty = true;
+            bool empty{true};
             for (size_t i = 0; i < TILE_SIZE; i++) {
-                if (uint8_t(info.data[i]) == 0) {
+                if (static_cast<uint8_t>(info.data[i]) == 0) {
                     empty = false;
                     break;
                 }
             }
             if (empty) {
+                app->renderer.FreeTileTextureDownload(data.rendererSlot);
                 DeleteTile(tile);
-                DestroyTile(tile);
                 data.state = TileWriteState::Done;
             } else {
                 data.state = TileWriteState::Encoding;
             }
         }
         if (data.state == TileWriteState::Encoding) {
-            ZoneScopedN("Encoding tile");
+            ZoneScopedN("Writing tile");
             auto& info = app->renderer.GetTileTextureDownloadInfo(data.rendererSlot);
             const qoi_desc desc = {
                 .width = TILE_WIDTH,
@@ -625,40 +632,37 @@ bool Canvas::UpdateTileUnloading() {
                 .channels = 4,
                 .colorspace = QOI_LINEAR,
             };
-            int outLen = 0;
-            auto* buf = (uint8_t*)qoi_encode(info.data, &desc, &outLen);
-            SDL_assert(outLen > 0);
-            SDL_assert(buf != nullptr);
-            SDL_assert(static_cast<size_t>(outLen) <= TILE_ENCODED_MAX_SIZE && "Encoded tile larger than buffer");
+            int encodedBufSize = 0;
+            auto* encodedBuf = static_cast<std::byte*>(qoi_encode(info.data, &desc, &encodedBufSize));
+            SDL_assert(encodedBufSize > 0);
+            SDL_assert(encodedBuf != nullptr);
+            SDL_assert(static_cast<size_t>(encodedBufSize) <= TILE_ENCODED_MAX_SIZE
+                       && "Encoded tile larger than buffer");
 
-            data.encoded = tileTextureEncodedPool.allocate(1);
-            data.encoded->size = outLen;
-            memcpy(data.encoded->data, buf, outLen);
-            free(buf);
+            app->renderer.FreeTileTextureDownload(data.rendererSlot);
 
-            data.state = TileWriteState::Writting;
-        }
-        if (data.state == TileWriteState::Writting) {
-            ZoneScopedN("Write Tile file");
+            // data.encoded = tileTextureEncodedPool.allocate(1);
+            // data.encoded->size = encodedBufSize;
+            // memcpy(data.encoded->data, encodedBuf, encodedBufSize);
+
             const std::string tileFilename = std::format("{}/{}/{}_{}.qoi", filename, tile.layer, tile.x, tile.y);
 
             SDL_IOStream* fileIo = SDL_IOFromFile(tileFilename.c_str(), "wb");
             SDL_assert(fileIo != nullptr);
-            SDL_WriteIO(fileIo, data.encoded->data, data.encoded->size);
+            SDL_WriteIO(fileIo, encodedBuf, encodedBufSize);
             SDL_CloseIO(fileIo);
 
-            tileTextureEncodedPool.deallocate(data.encoded, 1);
-            data.encoded->size = 0;
+            free(encodedBuf);
 
-            data.state = TileWriteState::Done;
+            // tileTextureEncodedPool.deallocate(data.encoded, 1);
+            // data.encoded->size = 0;
+
             layers.at(tile.layer).tiles.insert(tile);
             tilesModified.erase(tile);
+            data.state = TileWriteState::Done;
         }
         if (data.state == TileWriteState::Done) {
-            if (!tilesLoaded.contains(tile)) {
-                app->renderer.DestroyTileTexture(tile);
-            }
-
+            DestroyTile(tile);
             tileUnloaded.push_back(tile);
         }
     }
@@ -1051,8 +1055,6 @@ void Canvas::StartEraseStroke(StrokePoint point) {
     // TODO: find a better algorithm when erasing on layers. Right now the opacity of the erase brush does not work.
     // TODO: find a way to duplicate the layer this early and instead use a temporary internal layer as the
     // modification source
-    std::vector<TileCoord, arena_allocator<TileCoord>> tileTexturesToSave(strokeArena);
-    tileTexturesToSave.reserve(tilesPos.size());
     for (const auto& tilePos : tilesPos) {
         const TileCoord tile{
             .layer = selectedLayer,
@@ -1065,6 +1067,8 @@ void Canvas::StartEraseStroke(StrokePoint point) {
             currentTileModificationCommand->TrackTile(tile);
         }
     }
+    currentTileModificationCommand->SaveTrackedTilesForPrevious();
+
     previousPoint = point;
     currentToolState = ToolState::Started;
 }
@@ -1073,23 +1077,11 @@ void Canvas::StartEraseStroke(StrokePoint point) {
 void Canvas::UpdateEraseStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(currentTool == Tool::Erase);
-    SDL_assert(currentToolState == ToolState::None);
+    SDL_assert(currentToolState == ToolState::Started);
     SDL_assert(selectedLayer != LAYER_INVALID && "No layer selected");
     SDL_assert(currentTileModificationCommand && "TileModification already started");
 
     const auto distance = glm::distance(previousPoint.position, point.position);
-    const int strokeNum = static_cast<int>(std::floor(distance / eraseBrush.maxPressureSpacing));
-    if (strokeNum == 0) {
-        return;
-    }
-
-    static int round = 0;
-    round = (round + 1) % 4;
-    glm::vec4 debugColor;
-    ImGui::ColorConvertHSVtoRGB((float)round / 4.0f, 0.8f, 1.0f, debugColor.r, debugColor.g, debugColor.b);
-
-    std::vector<TileCoord, arena_allocator<TileCoord>> tileTexturesToSave(strokeArena);
-
     float distanceCovered{};
     while (distanceCovered < distance) {
         ZoneScoped;
@@ -1109,7 +1101,6 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
         distanceCovered += eraseBrush.maxPressureSpacing;
 
         const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint, app->frameArena);
-
         for (const auto& tilePos : tilesPos) {
             const TileCoord tile{
                 .layer = selectedLayer,
@@ -1123,26 +1114,23 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
             }
         }
     }
+    currentTileModificationCommand->SaveTrackedTilesForPrevious();
 }
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::EndEraseStroke(StrokePoint point) {
     ZoneScoped;
     SDL_assert(currentTool == Tool::Erase);
-    SDL_assert(currentToolState == ToolState::None);
-    SDL_assert(strokeLayer != LAYER_INVALID && "Stroke already started");
+    SDL_assert(currentToolState == ToolState::Started);
+    SDL_assert(selectedLayer != LAYER_INVALID && "Stroke already started");
     SDL_assert(currentTileModificationCommand && "TileModification already started");
-
-    currentTileModificationCommand->SaveTrackedTilesForPrevious();
-
-    MergeLayers(strokeLayer, selectedLayer);
-    DeleteLayer(strokeLayer);
 
     currentTileModificationCommand->SaveTrackedTilesForNew();
     canvasCommands.Push(std::move(currentTileModificationCommand));
 
     strokePoints.clear();
     strokeLayer = LAYER_INVALID;
+
     currentToolState = ToolState::None;
 }
 

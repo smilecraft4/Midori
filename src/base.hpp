@@ -1343,7 +1343,7 @@ struct hash_map {
     }
 
     template<typename... Args>
-    Elem& emplace(const Key& key, Args&&... args) {
+    bool emplace(const Key& key, Args&&... args) {
         assert(capacity_ != 0 && "emplace on a zero-capacity hash_map");
 
         const size_t hash = std::hash<Key>{}(key);
@@ -1355,7 +1355,7 @@ struct hash_map {
             const int8_t m = metas_[pos];
             if (m == h2) {
                 if (keys_[pos] == key) {
-                    return elems_[pos];
+                    return true;
                 }
             } else if (m == EMPTY) {
                 const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
@@ -1363,7 +1363,7 @@ struct hash_map {
                 keys_[target] = key;
                 elem_atr::construct(ea_, elems_ + target, std::forward<Args>(args)...);
                 size_++;
-                return elems_[target];
+                return true;
             } else if (m == DELETED && firstDeleted == capacity_) {
                 firstDeleted = pos;
             }
@@ -1375,12 +1375,11 @@ struct hash_map {
             keys_[firstDeleted] = key;
             elem_atr::construct(ea_, elems_ + firstDeleted, std::forward<Args>(args)...);
             size_++;
-            return elems_[firstDeleted];
+            return true;
         }
 
-        // Table full and key absent (no-grow contract): return the last probed slot
-        // so the reference stays in-bounds.
-        return elems_[pos];
+        // Table full and key absent (no-grow contract): nothing was inserted.
+        return false;
     }
 
     bool erase(const Key& key) {

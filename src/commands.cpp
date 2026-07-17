@@ -79,11 +79,14 @@ void TileModificationCommand::TrackTile(TileCoord tile) {
     tileTextures.insert(tile, {.revert = nullptr, .execute = nullptr});
 }
 
-void TileModificationCommand::SaveTrackedTilesForPrevious() {
+void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
     ZoneScoped;
 
     SDL_assert(canvas->app->renderer.BeginCopyPass());
     for (auto [tile, textures] : tileTextures) {
+        if (!overwrite && textures.revert) {
+            continue;
+        }
         if (canvas->app->renderer.tileTextures.contains(tile)) {
             textures.revert = canvas->app->renderer.DuplicateTileTexture(tile);
         }
@@ -91,10 +94,13 @@ void TileModificationCommand::SaveTrackedTilesForPrevious() {
     SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }
 
-void TileModificationCommand::SaveTrackedTilesForNew() {
+void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
     ZoneScoped;
     SDL_assert(canvas->app->renderer.BeginCopyPass());
     for (auto [tile, textures] : tileTextures) {
+        if (!overwrite && textures.execute) {
+            continue;
+        }
         if (canvas->app->renderer.tileTextures.contains(tile)) {
             textures.execute = canvas->app->renderer.DuplicateTileTexture(tile);
         }

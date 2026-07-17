@@ -23,8 +23,8 @@ struct App;
 
 struct Canvas {
     struct TileTextureEncoded {
-        std::byte data[TILE_ENCODED_MAX_SIZE];
         uint32_t size;
+        std::byte data[TILE_ENCODED_MAX_SIZE];
     };
     struct TileTextureRaw {
         std::byte data[TILE_SIZE];
@@ -34,14 +34,14 @@ struct Canvas {
         TileCoord tile;
         TileWriteState state;
         Renderer::TileTextureDownload rendererSlot;
-        TileTextureEncoded* encoded;
+        // TileTextureEncoded* encoded;
     };
 
     struct TileReadData {
         TileCoord tile;
         TileReadState state;
         Renderer::TileTextureUpload rendererSlot;
-        TileTextureEncoded* encoded;
+        // TileTextureEncoded* encoded;
     };
 
     struct StrokePoint {
@@ -63,8 +63,8 @@ struct Canvas {
 
     void Update();
     void UpdateTileVisibility(Viewport& viewport);
-    bool UpdateTileLoading();
-    bool UpdateTileUnloading();
+    bool UpdateTileReading();
+    bool UpdateTileWriting();
 
     bool CanQuit() const;
     bool Open();
