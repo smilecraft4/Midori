@@ -1,23 +1,94 @@
 ﻿#pragma once
 
-#include "layers.h"
-#include "tiles.h"
+#include "defines.hpp"
+#include "tiles.hpp"
+#include "colors.hpp"
 
 #include <SDL3/SDL_gpu.h>
+#include <cstddef>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <cstdint>
-#include <span>
-#include <unordered_set>
-#include <unordered_map>
+#include <optional>
 #include <vector>
 
 namespace Midori {
 
-class App;
+struct App;
 
-class Renderer {
-public:
+struct Renderer {
+    using TileTextureDownload = size_t;
+    using TileTextureUpload = size_t;
+
+    enum class Error : uint8_t {
+        None,
+
+        MissingTexture,
+        UploadSlotMissing,
+        DownloadSlotMissing,
+        OutOfTileMemory,
+        OutOfLayerMemory,
+        OutOfMemory,
+
+        Unknown,
+    };
+
+    enum class TextureDownloadState : uint8_t {
+        None,        // slot available for use
+        Pending,     // waiting to start downloading data
+        Downloading, // retrieving the data, looking at fence to know if it can copied
+    };
+
+    enum class TextureUploadState : uint8_t {
+        None,      // slot available for use
+        Reserved,  // slot assigned to something
+        Pending,   // waiting to be uploaded
+        Uploading, // uploading, when done can be cleared (looking if the fence is nullptr)
+    };
+
+    struct ViewportRenderData {
+        glm::mat4 projection = glm::mat4(1.0f);
+        glm::mat4 view = glm::mat4(1.0f);
+    };
+
+    struct LayerRenderData {
+        float opacity = 1.0f;
+        std::uint32_t blendMode = (uint32_t)BlendMode::Alpha;
+    };
+
+    struct TileRenderData {
+        glm::vec2 position = glm::vec2(0.0f, 0.0f);
+        glm::vec2 size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
+    };
+
+    struct TileTextureDownloadInfo {
+        std::atomic<TextureDownloadState> state{TextureDownloadState::None};
+        TileCoord tile;
+        std::byte* data{};
+        size_t fence;
+    };
+
+    struct TileTextureUploadInfo {
+        std::atomic<TextureUploadState> state{TextureUploadState::None};
+        TileCoord tile;
+        std::byte* data{};
+        size_t fence;
+    };
+
+    struct MergeRenderData {
+        std::uint32_t srcBlendMode;
+        float srcOpacity;
+        glm::ivec2 srcPos;
+        glm::ivec2 srcSize;
+        glm::ivec2 dstPos;
+        glm::ivec2 dstSize;
+        uint8_t pad[8];
+    };
+
+    struct StrokeRenderData {
+        std::uint32_t pointsNum = 0;
+    };
+
     Renderer(const Renderer&) = delete;
     Renderer(Renderer&&) = delete;
     Renderer& operator=(const Renderer&) = delete;
@@ -27,127 +98,101 @@ public:
     ~Renderer() = default;
 
     bool Init();
+    bool Update();
     bool Render();
     bool Resize();
     bool CanQuit();
     void Quit();
 
+    bool UpdateTileTextureUpload();
+    bool UpdateTileTextureDownload();
+    bool UpdateUninitializedTextures();
+    bool UpdateTileEdit();
+
     bool InitLayers();
     bool InitTiles();
+    bool InitMerge();
+    bool InitPaint();
 
     bool CreateLayerTexture(Layer layer);
-    void DeleteLayerTexture(Layer layer);
+    void DestroyLayerTexture(Layer layer);
 
-    enum class TileTextureError : uint8_t {
-        None,
-        MissingTexture,
-        UploadSlotMissing,
+    Error CreateUninitializedTileTexture(TileCoord tile);
+    Error CreateTileTexture(TileCoord tile);
+    void DestroyTileTexture(TileCoord tile);
+    bool MergeTileTextures(TileCoord overTile, TileCoord belowTile);
 
-        Unknwon,
-    };
+    std::optional<TileTextureUpload> ReserveTileTextureUpload(TileCoord tile);
+    bool FreeTileTextureUpload(TileTextureUpload slot);
+    bool CommitTileTextureUpload(TileTextureUpload slot);
+    TileTextureUploadInfo& GetTileTextureUploadInfo(TileTextureUpload slot);
 
-    TileTextureError CreateTileTexture(Tile tile);
-    TileTextureError UploadTileTexture(Tile tile, std::span<uint8_t, TILE_SIZE> pixels);
+    std::optional<TileTextureDownload> DownloadTileTexture(TileCoord tile);
+    bool QueryTileTextureDownload(TileTextureDownload slot);
+    bool FreeTileTextureDownload(TileTextureDownload slot);
+    TileTextureDownloadInfo& GetTileTextureDownloadInfo(TileTextureDownload slot);
 
-    void ReleaseTileTexture(Tile tile);
-    bool MergeTileTextures(Tile overTile, Tile belowTile);
+    bool BeginCopyPass();
+    SDL_GPUTexture* DuplicateTileTexture(TileCoord tile);
+    SDL_GPUTexture* DuplicateTileTexture(SDL_GPUTexture* texture) const;
+    bool EndCopyPass(bool wait);
+    void CancelCopyPass();
+
+    // std::vector<SDL_GPUTexture*> DuplicateTileTextures(std::span<TileCoord> srcTiles);
 
     App* app;
 
-    std::unordered_set<Tile> tileToDraw;
-    std::unordered_set<Layer> layerToDraw;
+    hash_set<TileCoord> tileToDraw{1024};
+    hash_set<Layer> layerToDraw{1024};
 
-    // Common data
-    SDL_GPUDevice* device = nullptr;
+    hash_map<TileCoord, SDL_GPUTexture*> tileTextures{2048};
+
+    hash_set<TileCoord> tileTexturesToInitialize{1024};
+    SDL_GPUFence* tileTexturesToInitializeFence;
+
+    bool viewChanged = false;
+    ViewportRenderData viewportRenderData;
+    LayerRenderData layerRenderData;
+    TileRenderData tileRenderData;
+
+    // SDL3 GPU Renderer
+    SDL_GPUShaderFormat shaderFormat;
+    SDL_GPUDevice* device{};
     SDL_GPUTextureFormat textureFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     SDL_GPUTextureFormat swapchainFormat = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-    SDL_GPUTexture* canvasTexture = nullptr;
+    SDL_GPUTexture* canvasTexture{};
     std::vector<SDL_GPUTexture*> texturesToDelete;
 
-    struct ViewportRenderData {
-        glm::mat4 projection = glm::mat4(1.0f);
-        glm::mat4 view = glm::mat4(1.0f);
-    } viewportRenderData;
-    bool viewChanged = false;
+    SDL_GPUCommandBuffer* currentCommandBuffer{};
+    SDL_GPUCopyPass* currentCopyPass{};
 
-    // Layer data
-    struct LayerRenderData {
-        float opacity = 1.0f;
-        std::uint32_t blendMode = (uint32_t)BlendMode::Alpha;
-    } layerRenderData;
+    SDL_GPUGraphicsPipeline* layerGraphicsPipeline{};
+    SDL_GPUSampler* layerSampler{};
+    hash_map<Layer, SDL_GPUTexture*> layerTextures{1024};
 
-    SDL_GPUShader* layerVertexShader = nullptr;
-    SDL_GPUShader* layerFragmentShader = nullptr;
-    SDL_GPUGraphicsPipeline* layerGraphicsPipeline = nullptr;
-    SDL_GPUSampler* layerSampler = nullptr;
-    std::unordered_map<Layer, SDL_GPUTexture*> layerTextures;
-    size_t lastLayerRenderedNum = 0;
+    SDL_GPUGraphicsPipeline* tileGraphicsPipeline{};
+    SDL_GPUSampler* tileSampler{};
 
-    // Tile data
-    struct TileRenderData {
-        glm::vec2 position = glm::vec2(0.0f, 0.0f);
-        glm::vec2 size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
-    } tileRenderData;
+    SDL_GPUTransferBuffer* tileUploadBuffer{};
+    SDL_GPUTransferBuffer* tileBlankTextureBuffer{};
+    std::byte* tileUploadBufferPtr{};
+    std::array<TileTextureUploadInfo, TILE_MAX_CONCURENT_UPLOADS> tileUploadSlots;
+    std::array<SDL_GPUFence*, TILE_MAX_INFLIGHT_UPLOADS> tileUploadSlotFences{};
 
-    SDL_GPUShader* tileVertexShader = nullptr;
-    SDL_GPUShader* tileFragmentShader = nullptr;
-    SDL_GPUGraphicsPipeline* tileGraphicsPipeline = nullptr;
-    SDL_GPUSampler* tileSampler = nullptr;
-    std::unordered_map<Tile, SDL_GPUTexture*> tileTextures;
-    std::unordered_set<Tile> tileTextureUninitialized;
-    size_t lastRenderedTilesNum = 0;
+    SDL_GPUTransferBuffer* tileDownloadBuffer{};
+    std::byte* tileDownloadBufferPtr{};
+    std::array<TileTextureDownloadInfo, TILE_MAX_CONCURENT_DOWNLOADS> tileDownloadSlots;
+    std::array<SDL_GPUFence*, TILE_MAX_INFLIGHT_DOWNLOADS> tileDownloadSlotFences{};
 
-    // Tile upload
-    SDL_GPUTransferBuffer* tileUploadBuffer = nullptr;
-    SDL_GPUTransferBuffer* tileBlankTextureBuffer = nullptr;
-    uint8_t* tileUploadBufferPtr = nullptr;
-    std::unordered_map<Tile, size_t> allocatedTileUploadOffset;
-    std::vector<size_t> freeTileUploadOffset;
+    SDL_GPUComputePipeline* mergeComputePipeline{};
 
-    // Tile download
-
-    bool DownloadTileTexture(Tile tile);
-    [[nodiscard]] bool IsTileTextureDownloaded(Tile tile) const;
-    bool CopyTileTextureDownloaded(Tile tile, std::span<uint8_t, TILE_SIZE> tileTexture);
-    SDL_GPUTexture* DuplicateTileTexture(SDL_GPUCopyPass* copyPass, SDL_GPUTexture* tileTexture) const;
-
-    SDL_GPUTransferBuffer* tileDownloadBuffer = nullptr;
-    uint8_t* tileDownloadBufferPtr = nullptr;
-    std::unordered_map<Tile, size_t> allocatedTileDownloadOffset;
-    std::unordered_set<Tile> tileDownloaded;
-    std::vector<size_t> freeTileDownloadOffset;
-    SDL_GPUFence* tileDownloadFence = nullptr; // TODO: Use multiple fences
-
-    // OPERATIONS
-
-    // Texture merging
-    bool InitMerge();
-    struct MergeRenderData {
-        std::uint32_t srcBlendMode;
-        float srcOpacity;
-        glm::ivec2 srcPos;
-        glm::ivec2 srcSize;
-
-        std::uint32_t dstBlendMode;
-        float dstOpacity;
-        glm::ivec2 dstPos;
-        glm::ivec2 dstSize;
-    };
-    SDL_GPUComputePipeline* mergeComputePipeline = nullptr;
-
-    bool InitPaint();
-    struct StrokeRenderData {
-        std::uint32_t pointsNum = 0;
-    };
-    static constexpr size_t MAX_PAINT_STROKE_POINTS = 2048;
-    SDL_GPUBuffer* paintStrokePointBuffer = nullptr;
-    SDL_GPUComputePipeline* paintComputePipeline = nullptr;
-    SDL_GPUComputePipeline* eraseComputePipeline = nullptr;
-    SDL_GPUTransferBuffer* paintStrokePointTransferBuffer = nullptr;
-    SDL_GPUTexture* brushTexture = nullptr;
-    SDL_GPUSampler* brushSampler = nullptr;
-    std::uint8_t* paintStrokePointTransferBufferPtr = nullptr;
-
-    SDL_GPUShaderFormat shaderFormat;
+    SDL_GPUBuffer* paintStrokePointBuffer{};
+    SDL_GPUComputePipeline* paintComputePipeline{};
+    SDL_GPUComputePipeline* eraseComputePipeline{};
+    SDL_GPUTransferBuffer* paintStrokePointTransferBuffer{};
+    SDL_GPUTexture* brushTexture{};
+    SDL_GPUSampler* brushSampler{};
+    std::byte* paintStrokePointTransferBufferPtr{};
+    SDL_GPUFence* tileEditFence{};
 };
 } // namespace Midori

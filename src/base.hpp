@@ -230,6 +230,13 @@ constexpr T Pow(T power, T exponent) {
     }
 }
 
+template<Numeric T>
+constexpr T Remap(T value, T low, T high, T dstLow, T dstHigh) {
+    // TODO
+
+    return value;
+}
+
 void Assert(bool cond, const char* msg, const std::source_location& loc = std::source_location::current());
 
 void* Malloc(size_t size);
@@ -261,6 +268,78 @@ struct arena {
         capacity_ = 0;
         head_ = nullptr;
         data_ = nullptr;
+    }
+
+    arena(const arena& other)
+        : alloc_(std::allocator_traits<Alloc>::select_on_container_copy_construction(other.alloc_)),
+          capacity_(other.capacity_) {
+        if (capacity_) {
+            const size_t used = other.size();
+            data_ = alloc_.allocate(capacity_);
+            std::memcpy(data_, other.data_, used);
+            head_ = data_ + used;
+        }
+    }
+
+    arena(arena&& other) noexcept
+        : alloc_(std::move(other.alloc_)), data_(other.data_), head_(other.head_), capacity_(other.capacity_) {
+        other.data_ = nullptr;
+        other.head_ = nullptr;
+        other.capacity_ = 0;
+    }
+
+    arena& operator=(const arena& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        // Release the current buffer with the current allocator first.
+        if (capacity_) {
+            alloc_.deallocate(data_, capacity_);
+        }
+        data_ = nullptr;
+        head_ = nullptr;
+        capacity_ = 0;
+
+        if constexpr (std::allocator_traits<Alloc>::propagate_on_container_copy_assignment::value
+                      && std::is_copy_assignable_v<Alloc>) {
+            alloc_ = other.alloc_;
+        }
+
+        if (other.capacity_) {
+            const size_t used = other.size();
+            data_ = alloc_.allocate(other.capacity_);
+            std::memcpy(data_, other.data_, used);
+            head_ = data_ + used;
+            capacity_ = other.capacity_;
+        }
+
+        return *this;
+    }
+
+    arena& operator=(arena&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+
+        if (capacity_) {
+            alloc_.deallocate(data_, capacity_);
+        }
+
+        if constexpr (std::allocator_traits<Alloc>::propagate_on_container_move_assignment::value
+                      && std::is_move_assignable_v<Alloc>) {
+            alloc_ = std::move(other.alloc_);
+        }
+
+        data_ = other.data_;
+        head_ = other.head_;
+        capacity_ = other.capacity_;
+
+        other.data_ = nullptr;
+        other.head_ = nullptr;
+        other.capacity_ = 0;
+
+        return *this;
     }
 
     [[nodiscard]] size_t size() const { return head_ - data_; }
@@ -380,10 +459,42 @@ struct pool {
 
     ~pool() { clear(); }
 
+    // A pool only tracks its free list, not the chunks currently handed out, so a
+    // meaningful deep copy is not possible; copying is disabled. Moving transfers
+    // ownership of the free list (the mutex is not movable, so a fresh one is used).
+    pool(const pool&) = delete;
+    pool& operator=(const pool&) = delete;
+
+    pool(pool&& other) noexcept : alloc_(std::move(other.alloc_)), free_(other.free_), count_(other.count_.load()) {
+        other.free_ = nullptr;
+        other.count_ = 0;
+    }
+
+    pool& operator=(pool&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+
+        clear();
+
+        if constexpr (std::allocator_traits<chunk_alloc>::propagate_on_container_move_assignment::value
+                      && std::is_move_assignable_v<chunk_alloc>) {
+            alloc_ = std::move(other.alloc_);
+        }
+
+        free_ = other.free_;
+        count_ = other.count_.load();
+
+        other.free_ = nullptr;
+        other.count_ = 0;
+
+        return *this;
+    }
+
     [[nodiscard]] size_t count() const { return count_; }
 
     template<typename... Args>
-    T* Allocate(size_t n, Args&&... args) {
+    T* allocate(size_t n, Args&&... args) {
         if (!count_) {
             throw std::bad_alloc();
         }
@@ -391,7 +502,7 @@ struct pool {
         Chunk* chunk{};
         {
             std::unique_lock lock(mtx_);
-            Chunk* chunk = free_;
+            chunk = free_;
             free_ = free_->next;
         }
         count_--;
@@ -501,6 +612,19 @@ struct hash_set {
             keys_ = ptr + metaCap;
         }
     }
+    template<typename OtherAlloc>
+    hash_set(const hash_set<Key, OtherAlloc>& other, Alloc alloc)
+        : alloc_(alloc), size_(other.size_), capacity_(other.capacity_) {
+        if (capacity_) {
+            const size_t metaCap = (((capacity_ * sizeof(int8_t)) + GROUP_WIDTH - 1) + sizeof(Key) - 1) / sizeof(Key);
+
+            auto* ptr = slab_allocator_traits::allocate(alloc_, capacity_ + metaCap);
+            std::memcpy(ptr, other.metas_, (capacity_ + metaCap) * sizeof(Key));
+
+            metas_ = reinterpret_cast<int8_t*>(ptr);
+            keys_ = ptr + metaCap;
+        }
+    }
 
     hash_set(hash_set&& other) noexcept
         : alloc_(std::move(other.alloc_)),
@@ -516,8 +640,19 @@ struct hash_set {
             return *this;
         }
 
-        Key* newKeys = nullptr;
-        if (other.capacity_) {
+        // Free existing storage with the current allocator before (optionally)
+        // adopting the source allocator.
+        release();
+
+        if constexpr (slab_allocator_traits::propagate_on_container_copy_assignment::value
+                      && std::is_copy_assignable_v<slab_alloc>) {
+            alloc_ = other.alloc_;
+        }
+
+        size_ = other.size_;
+        capacity_ = other.capacity_;
+
+        if (capacity_) {
             const size_t metaCap = (((capacity_ * sizeof(int8_t)) + GROUP_WIDTH - 1) + sizeof(Key) - 1) / sizeof(Key);
 
             auto* ptr = slab_allocator_traits::allocate(alloc_, capacity_ + metaCap);
@@ -525,13 +660,10 @@ struct hash_set {
 
             metas_ = reinterpret_cast<int8_t*>(ptr);
             keys_ = ptr + metaCap;
+        } else {
+            metas_ = nullptr;
+            keys_ = nullptr;
         }
-
-        release();
-
-        keys_ = newKeys;
-        size_ = other.size_;
-        capacity_ = other.capacity_;
 
         return *this;
     }
@@ -543,7 +675,10 @@ struct hash_set {
 
         release();
 
-        alloc_ = std::move(other.alloc_);
+        if constexpr (slab_allocator_traits::propagate_on_container_move_assignment::value
+                      && std::is_move_assignable_v<slab_alloc>) {
+            alloc_ = std::move(other.alloc_);
+        }
         metas_ = other.metas_;
         keys_ = other.keys_;
         size_ = other.size_;
@@ -554,7 +689,7 @@ struct hash_set {
         return *this;
     }
 
-    hash_set(Alloc alloc = std::allocator<Key>()) : alloc_(alloc) {}
+    hash_set(Alloc alloc) : alloc_(alloc) {}
 
     hash_set(size_t capacity = 0, Alloc alloc = std::allocator<Key>()) : capacity_(capacity), alloc_(alloc) {
         if (capacity) {
@@ -621,14 +756,14 @@ struct hash_set {
         if (size_ > 0) {
             // TODO: use iterators instead
             for (size_t pos = 0; pos < capacity_; pos++) {
-                if (metas_[pos] > 0) {
+                if (metas_[pos] >= 0) {
                     const auto key = keys_[pos];
                     auto hash = std::hash<Key>{}(key);
                     const int8_t h2 = hash & 0x7F;
                     size_t newPos = (hash >> 7) % newCapacity;
 
                     bool inserted = false;
-                    for (size_t probed = 0; probed < capacity_; ++probed) {
+                    for (size_t probed = 0; probed < newCapacity; ++probed) {
                         const int8_t m = newMetas[newPos];
                         if (m == EMPTY || m == DELETED) {
                             inserted = true;
@@ -690,32 +825,40 @@ struct hash_set {
     }
 
     bool insert(const Key& key) {
-        if (capacity_ == 0) {
-            return false;
-        }
-        if (capacity_ == size_) {
+        if (capacity_ == 0 || capacity_ == size_) {
             return false;
         }
 
         const size_t hash = std::hash<Key>{}(key);
         const int8_t h2 = hash & 0x7F;        // low 7 bits, high bit clear
         size_t pos = (hash >> 7) % capacity_; // H1: start slot
+        size_t firstDeleted = capacity_;      // sentinel: no tombstone seen yet
 
         for (size_t probed = 0; probed < capacity_; ++probed) {
             const int8_t m = metas_[pos];
-            if (m == h2) {
+            if (m == h2) { // full + H2 match -> candidate
                 if (keys_[pos] == key) {
                     return true;
                 }
-            }
-            if (m == EMPTY || m == DELETED) { // empty -> available to use
-                metas_[pos] = h2;
-                keys_[pos] = key;
+            } else if (m == EMPTY) { // key definitely absent -> insert here (or in a prior tombstone)
+                const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
+                metas_[target] = h2;
+                keys_[target] = key;
                 size_++;
                 return true;
+            } else if (m == DELETED && firstDeleted == capacity_) {
+                firstDeleted = pos; // remember the first tombstone, but keep probing for the key
             }
-            // Deleted tombstone, or full H2 -> keep probing
+            // Tombstone, or full-but-different-H2 -> keep probing
             pos = (pos + 1) % capacity_;
+        }
+
+        // Probed every slot without hitting EMPTY (saturated with tombstones): reuse one.
+        if (firstDeleted != capacity_) {
+            metas_[firstDeleted] = h2;
+            keys_[firstDeleted] = key;
+            size_++;
+            return true;
         }
 
         return false;
@@ -766,7 +909,7 @@ struct hash_set {
                 pos = set->capacity_;
                 return;
             }
-            while (pos < set->capacity_ && set->metas_[pos] <= 0) {
+            while (pos < set->capacity_ && set->metas_[pos] < 0) {
                 pos++;
             }
         }
@@ -782,7 +925,7 @@ struct hash_set {
 
             do {
                 pos++;
-            } while (pos < set->capacity_ && set->metas_[pos] <= 0);
+            } while (pos < set->capacity_ && set->metas_[pos] < 0);
 
             return *this;
         }
@@ -799,7 +942,7 @@ struct hash_set {
             }
 
             pos--;
-            while (pos > 0 && set->metas_[pos] <= 0) {
+            while (pos > 0 && set->metas_[pos] < 0) {
                 pos--;
             }
             return *this;
@@ -850,7 +993,7 @@ struct hash_map {
 
     slab_alloc sa_;
     elem_alloc ea_{sa_};
-    Slab* ptr_;
+    Slab* ptr_{};
     int8_t* metas_{};
     Key* keys_{};
     Elem* elems_{};
@@ -868,11 +1011,19 @@ struct hash_map {
             const size_t elemCap = ((capacity_ * sizeof(Elem)) + sizeof(Slab) - 1) / sizeof(Slab);
 
             ptr_ = slab_atr::allocate(sa_, metaCap + keyCap + elemCap);
-            std::memcpy(ptr_, other.metas_, (metaCap + keyCap + elemCap) * sizeof(Slab));
-
             metas_ = reinterpret_cast<int8_t*>(ptr_);
             keys_ = reinterpret_cast<Key*>(ptr_ + metaCap);
             elems_ = reinterpret_cast<Elem*>(ptr_ + metaCap + keyCap);
+
+            // metas/keys are trivially copyable and can be bulk-copied; Elem may be
+            // non-trivial, so copy-construct only the live slots.
+            std::memcpy(metas_, other.metas_, capacity_ * sizeof(int8_t));
+            std::memcpy(keys_, other.keys_, capacity_ * sizeof(Key));
+            for (size_t pos = 0; pos < capacity_; ++pos) {
+                if (other.metas_[pos] >= 0) {
+                    elem_atr::construct(ea_, elems_ + pos, std::as_const(other.elems_[pos]));
+                }
+            }
         }
     }
 
@@ -893,32 +1044,42 @@ struct hash_map {
             return *this;
         }
 
-        Slab* newPtr{};
-        int8_t* newMetas{};
-        Key* newKeys{};
-        Elem* newElems{};
+        // Destroy live elements and free storage with the current allocator before
+        // (optionally) adopting the source allocator.
+        release();
 
-        if (other.capacity_) {
+        if constexpr (slab_atr::propagate_on_container_copy_assignment::value
+                      && std::is_copy_assignable_v<slab_alloc>) {
+            sa_ = other.sa_;
+            ea_ = elem_alloc(sa_);
+        }
+
+        size_ = other.size_;
+        capacity_ = other.capacity_;
+
+        if (capacity_) {
             const size_t metaCap = (((capacity_ * sizeof(int8_t)) + GROUP_WIDTH - 1) + sizeof(Slab) - 1) / sizeof(Slab);
             const size_t keyCap = ((capacity_ * sizeof(Key)) + sizeof(Slab) - 1) / sizeof(Slab);
             const size_t elemCap = ((capacity_ * sizeof(Elem)) + sizeof(Slab) - 1) / sizeof(Slab);
-            newPtr = slab_atr::allocate(sa_, metaCap + keyCap + elemCap);
 
-            std::memcpy(newPtr, other.ptr_, (metaCap + keyCap + elemCap) * sizeof(Slab));
+            ptr_ = slab_atr::allocate(sa_, metaCap + keyCap + elemCap);
+            metas_ = reinterpret_cast<int8_t*>(ptr_);
+            keys_ = reinterpret_cast<Key*>(ptr_ + metaCap);
+            elems_ = reinterpret_cast<Elem*>(ptr_ + metaCap + keyCap);
 
-            newMetas = reinterpret_cast<int8_t*>(newPtr);
-            newKeys = reinterpret_cast<Key*>(newPtr + metaCap);
-            newElems = reinterpret_cast<Elem*>(newPtr + metaCap + keyCap);
+            std::memcpy(metas_, other.metas_, capacity_ * sizeof(int8_t));
+            std::memcpy(keys_, other.keys_, capacity_ * sizeof(Key));
+            for (size_t pos = 0; pos < capacity_; ++pos) {
+                if (other.metas_[pos] >= 0) {
+                    elem_atr::construct(ea_, elems_ + pos, std::as_const(other.elems_[pos]));
+                }
+            }
+        } else {
+            ptr_ = nullptr;
+            metas_ = nullptr;
+            keys_ = nullptr;
+            elems_ = nullptr;
         }
-
-        release();
-
-        ptr_ = newPtr;
-        metas_ = newMetas;
-        keys_ = newKeys;
-        elems_ = newElems;
-        size_ = other.size_;
-        capacity_ = other.capacity_;
 
         return *this;
     }
@@ -930,8 +1091,11 @@ struct hash_map {
 
         release();
 
-        sa_ = std::move(other.sa_);
-        ea_ = std::move(other.ea_);
+        if constexpr (slab_atr::propagate_on_container_move_assignment::value
+                      && std::is_move_assignable_v<slab_alloc>) {
+            sa_ = std::move(other.sa_);
+            ea_ = std::move(other.ea_);
+        }
         ptr_ = other.ptr_;
         metas_ = other.metas_;
         keys_ = other.keys_;
@@ -971,7 +1135,7 @@ struct hash_map {
         if (size_) {
             size_t pos = 0;
             while (pos < capacity_) {
-                if (metas_[pos] > 0) {
+                if (metas_[pos] >= 0) {
                     elems_[pos].~Elem();
                     size_--;
                     if (size_ == 0) {
@@ -1024,24 +1188,24 @@ struct hash_map {
         auto* newKeys = reinterpret_cast<Key*>(newPtr + metaCap);
         auto* newElems = reinterpret_cast<Elem*>(newPtr + metaCap + keyCap);
 
-        std::memset(newMetas, EMPTY, newCapacity + 1);
-        // newMetas[newCapacity] = SENTINEL;
+        std::memset(newMetas, EMPTY, newCapacity);
 
         size_t newSize{};
         if (size_ > 0) {
             // TODO: use iterators instead
             for (size_t pos = 0; pos < capacity_; pos++) {
-                if (metas_[pos] > 0) {
+                if (metas_[pos] >= 0) {
                     const auto hash = std::hash<Key>{}(keys_[pos]);
-                    const int8_t h2 = H2(hash);
-                    size_t newPos = H1(hash) % newCapacity;
+                    const int8_t h2 = hash & 0x7f;
+                    size_t newPos = (hash >> 7) % newCapacity;
 
-                    for (size_t probed = 0; probed < capacity_; ++probed) {
+                    for (size_t probed = 0; probed < newCapacity; ++probed) {
                         const int8_t m = newMetas[newPos];
                         if (m == EMPTY || m == DELETED) {
                             newMetas[newPos] = h2;
                             newKeys[newPos] = keys_[pos];
-                            newElems[newPos] = elems_[pos]; // may be a copy, bad !!
+                            // Move-construct into the freshly allocated (uninitialized) slot.
+                            elem_atr::construct(ea_, newElems + newPos, std::move(elems_[pos]));
                             newSize++;
                             break;
                         }
@@ -1080,8 +1244,8 @@ struct hash_map {
         }
 
         const size_t hash = std::hash<Key>{}(key);
-        const int8_t h2 = H2(hash);
-        size_t pos = H1(hash) % capacity_;
+        const int8_t h2 = hash & 0x7f;
+        size_t pos = (hash >> 7) % capacity_;
 
         for (size_t probed = 0; probed < capacity_; ++probed) {
             const int8_t m = metas_[pos];
@@ -1106,6 +1270,7 @@ struct hash_map {
         const size_t hash = std::hash<Key>{}(key);
         const int8_t h2 = hash & 0x7f;
         size_t pos = (hash >> 7) % capacity_;
+        size_t firstDeleted = capacity_;
 
         for (size_t probed = 0; probed < capacity_; ++probed) {
             const int8_t m = metas_[pos];
@@ -1113,15 +1278,25 @@ struct hash_map {
                 if (keys_[pos] == key) {
                     return true;
                 }
-            }
-            if (m == EMPTY || m == DELETED) {
-                metas_[pos] = h2;
-                keys_[pos] = key;
-                elems_[pos] = elem;
+            } else if (m == EMPTY) {
+                const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
+                metas_[target] = h2;
+                keys_[target] = key;
+                elem_atr::construct(ea_, elems_ + target, elem);
                 size_++;
                 return true;
+            } else if (m == DELETED && firstDeleted == capacity_) {
+                firstDeleted = pos;
             }
             pos = (pos + 1) % capacity_;
+        }
+
+        if (firstDeleted != capacity_) {
+            metas_[firstDeleted] = h2;
+            keys_[firstDeleted] = key;
+            elem_atr::construct(ea_, elems_ + firstDeleted, elem);
+            size_++;
+            return true;
         }
 
         return false;
@@ -1135,6 +1310,7 @@ struct hash_map {
         const size_t hash = std::hash<Key>{}(key);
         const int8_t h2 = hash & 0x7f;
         size_t pos = (hash >> 7) % capacity_;
+        size_t firstDeleted = capacity_;
 
         for (size_t probed = 0; probed < capacity_; ++probed) {
             const int8_t m = metas_[pos];
@@ -1142,15 +1318,25 @@ struct hash_map {
                 if (keys_[pos] == key) {
                     return true;
                 }
-            }
-            if (m == EMPTY || m == DELETED) {
-                metas_[pos] = h2;
-                keys_[pos] = key;
-                elems_[pos] = elem;
+            } else if (m == EMPTY) {
+                const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
+                metas_[target] = h2;
+                keys_[target] = key;
+                elem_atr::construct(ea_, elems_ + target, std::move(elem));
                 size_++;
                 return true;
+            } else if (m == DELETED && firstDeleted == capacity_) {
+                firstDeleted = pos;
             }
             pos = (pos + 1) % capacity_;
+        }
+
+        if (firstDeleted != capacity_) {
+            metas_[firstDeleted] = h2;
+            keys_[firstDeleted] = key;
+            elem_atr::construct(ea_, elems_ + firstDeleted, std::move(elem));
+            size_++;
+            return true;
         }
 
         return false;
@@ -1158,9 +1344,12 @@ struct hash_map {
 
     template<typename... Args>
     Elem& emplace(const Key& key, Args&&... args) {
+        assert(capacity_ != 0 && "emplace on a zero-capacity hash_map");
+
         const size_t hash = std::hash<Key>{}(key);
         const int8_t h2 = hash & 0x7f;
         size_t pos = (hash >> 7) % capacity_;
+        size_t firstDeleted = capacity_;
 
         for (size_t probed = 0; probed < capacity_; ++probed) {
             const int8_t m = metas_[pos];
@@ -1168,17 +1357,29 @@ struct hash_map {
                 if (keys_[pos] == key) {
                     return elems_[pos];
                 }
-            }
-            if (m == EMPTY || m == DELETED) {
-                metas_[pos] = h2;
-                keys_[pos] = key;
-                elem_atr::construct(ea_, elems_ + pos, std::forward<Args>(args)...);
+            } else if (m == EMPTY) {
+                const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
+                metas_[target] = h2;
+                keys_[target] = key;
+                elem_atr::construct(ea_, elems_ + target, std::forward<Args>(args)...);
                 size_++;
-                return elems_[pos];
+                return elems_[target];
+            } else if (m == DELETED && firstDeleted == capacity_) {
+                firstDeleted = pos;
             }
             pos = (pos + 1) % capacity_;
         }
 
+        if (firstDeleted != capacity_) {
+            metas_[firstDeleted] = h2;
+            keys_[firstDeleted] = key;
+            elem_atr::construct(ea_, elems_ + firstDeleted, std::forward<Args>(args)...);
+            size_++;
+            return elems_[firstDeleted];
+        }
+
+        // Table full and key absent (no-grow contract): return the last probed slot
+        // so the reference stays in-bounds.
         return elems_[pos];
     }
 
@@ -1275,7 +1476,7 @@ struct hash_map {
                 pos = map->capacity_;
                 return;
             }
-            while (pos < map->capacity_ && map->metas_[pos] <= 0) {
+            while (pos < map->capacity_ && map->metas_[pos] < 0) {
                 pos++;
             }
         }
@@ -1291,7 +1492,7 @@ struct hash_map {
 
             do {
                 pos++;
-            } while (pos < ptr->capacity_ && ptr->metas_[pos] <= 0);
+            } while (pos < ptr->capacity_ && ptr->metas_[pos] < 0);
 
             return *this;
         }
@@ -1308,7 +1509,7 @@ struct hash_map {
             }
 
             pos--;
-            while (pos > 0 && ptr->metas_[pos] <= 0) {
+            while (pos > 0 && ptr->metas_[pos] < 0) {
                 pos--;
             }
             return *this;
@@ -1355,17 +1556,116 @@ struct slot_map {
     elem_alloc ea_;
     // KeyAlloc ka;
     // std::queue<uint32_t> freeSlots;
-    Slab* ptr_;
-    Elem* elems_;
-    bool* slots_;
+    Slab* ptr_{};
+    Elem* elems_{};
+    bool* slots_{};
     size_t capacity_{};
     // size_t nextSlot{};
     size_t size_{};
 
-    slot_map(const slot_map&) = delete;
-    slot_map& operator=(const slot_map&) = delete;
-    slot_map(slot_map&&) = delete;
-    slot_map& operator=(slot_map&&) = delete;
+    slot_map(const slot_map& other)
+        : sa_(slab_atr::select_on_container_copy_construction(other.sa_)),
+          ea_(sa_),
+          capacity_(other.capacity_),
+          size_(other.size_) {
+        if (capacity_) {
+            const size_t slotCap = ((capacity_ * sizeof(bool)) + sizeof(Slab) - 1) / sizeof(Slab);
+            const size_t elemCap = ((capacity_ * sizeof(Elem)) + sizeof(Slab) - 1) / sizeof(Slab);
+
+            ptr_ = slab_atr::allocate(sa_, slotCap + elemCap);
+            slots_ = reinterpret_cast<bool*>(ptr_);
+            elems_ = reinterpret_cast<Elem*>(ptr_ + slotCap);
+
+            std::memcpy(slots_, other.slots_, capacity_ * sizeof(bool));
+            for (size_t i = 0; i < capacity_; ++i) {
+                if (slots_[i]) {
+                    elem_atr::construct(ea_, elems_ + i, std::as_const(other.elems_[i]));
+                }
+            }
+        }
+    }
+
+    slot_map(slot_map&& other) noexcept
+        : sa_(std::move(other.sa_)),
+          ea_(std::move(other.ea_)),
+          ptr_(other.ptr_),
+          elems_(other.elems_),
+          slots_(other.slots_),
+          capacity_(other.capacity_),
+          size_(other.size_) {
+        other.ptr_ = nullptr;
+        other.elems_ = nullptr;
+        other.slots_ = nullptr;
+        other.capacity_ = 0;
+        other.size_ = 0;
+    }
+
+    slot_map& operator=(const slot_map& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        release();
+
+        if constexpr (slab_atr::propagate_on_container_copy_assignment::value
+                      && std::is_copy_assignable_v<slab_alloc>) {
+            sa_ = other.sa_;
+            ea_ = elem_alloc(sa_);
+        }
+
+        capacity_ = other.capacity_;
+        size_ = other.size_;
+
+        if (capacity_) {
+            const size_t slotCap = ((capacity_ * sizeof(bool)) + sizeof(Slab) - 1) / sizeof(Slab);
+            const size_t elemCap = ((capacity_ * sizeof(Elem)) + sizeof(Slab) - 1) / sizeof(Slab);
+
+            ptr_ = slab_atr::allocate(sa_, slotCap + elemCap);
+            slots_ = reinterpret_cast<bool*>(ptr_);
+            elems_ = reinterpret_cast<Elem*>(ptr_ + slotCap);
+
+            std::memcpy(slots_, other.slots_, capacity_ * sizeof(bool));
+            for (size_t i = 0; i < capacity_; ++i) {
+                if (slots_[i]) {
+                    elem_atr::construct(ea_, elems_ + i, std::as_const(other.elems_[i]));
+                }
+            }
+        } else {
+            ptr_ = nullptr;
+            slots_ = nullptr;
+            elems_ = nullptr;
+        }
+
+        return *this;
+    }
+
+    slot_map& operator=(slot_map&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+
+        release();
+
+        if constexpr (slab_atr::propagate_on_container_move_assignment::value
+                      && std::is_move_assignable_v<slab_alloc>) {
+            sa_ = std::move(other.sa_);
+            ea_ = std::move(other.ea_);
+        }
+
+        ptr_ = other.ptr_;
+        elems_ = other.elems_;
+        slots_ = other.slots_;
+        capacity_ = other.capacity_;
+        size_ = other.size_;
+
+        other.ptr_ = nullptr;
+        other.elems_ = nullptr;
+        other.slots_ = nullptr;
+        other.capacity_ = 0;
+        other.size_ = 0;
+
+        return *this;
+    }
 
     slot_map(size_t capacity = 0, Alloc alloc = std::allocator<Elem>())
         : sa_(slab_alloc(alloc)), ea_(sa_), capacity_(capacity) {
@@ -1414,6 +1714,13 @@ struct slot_map {
             return false;
         }
 
+        // Empty but possibly already holding a buffer: release it before reallocating.
+        release();
+
+        if (newCapacity == 0) {
+            return true;
+        }
+
         const size_t newSlotCap = ((newCapacity * sizeof(bool)) + sizeof(Slab) - 1) / sizeof(Slab);
         const size_t newElemCap = ((newCapacity * sizeof(Elem)) + sizeof(Slab) - 1) / sizeof(Slab);
 
@@ -1443,58 +1750,81 @@ struct slot_map {
     }
 
     [[nodiscard]] bool contains(Slot slot) const {
-        if (slot < 0 || slot >= capacity_) {
+        if (slot >= capacity_) {
             return false;
         }
         return slots_[slot];
     }
 
-    template<typename... Args>
-    Slot emplace(Args&&... args) {
+    [[nodiscard]] Slot free_slot() const {
         if (!capacity_) {
-            return -1;
+            return static_cast<Slot>(-1);
         }
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
+        }
+        if (slot == capacity_) {
+            return static_cast<Slot>(-1);
+        }
+        return static_cast<Slot>(slot);
+    }
+
+    template<typename... Args>
+    Slot emplace(Args&&... args) {
+        if (!capacity_) {
+            return static_cast<Slot>(-1);
+        }
+        size_t slot = 0;
+        while (slot < capacity_ && slots_[slot]) {
+            slot++;
+        }
+        if (slot == capacity_) { // full: no free slot, avoid an out-of-bounds write
+            return static_cast<Slot>(-1);
         }
         elem_atr::construct(ea_, elems_ + slot, std::forward<Args>(args)...);
         slots_[slot] = true;
         size_++;
 
-        return slot;
+        return static_cast<Slot>(slot);
     }
 
     Slot push(const Elem& elem) {
         if (!capacity_) {
-            return -1;
+            return static_cast<Slot>(-1);
         }
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
         }
-        elems_[slot] = elem;
+        if (slot == capacity_) {
+            return static_cast<Slot>(-1);
+        }
+        elem_atr::construct(ea_, elems_ + slot, elem);
         slots_[slot] = true;
         size_++;
 
-        return slot;
+        return static_cast<Slot>(slot);
     }
 
     Slot push(Elem&& elem) {
         if (!capacity_) {
-            return -1;
+            return static_cast<Slot>(-1);
         }
 
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
         }
+        if (slot == capacity_) {
+            return static_cast<Slot>(-1);
+        }
 
-        elems_[slot] = std::move(elem);
+        elem_atr::construct(ea_, elems_ + slot, std::move(elem));
         slots_[slot] = true;
         size_++;
 
-        return slot;
+        return static_cast<Slot>(slot);
     }
 
     template<typename... Args>
@@ -1514,7 +1844,7 @@ struct slot_map {
             return false;
         }
 
-        elems_[slot] = elem;
+        elem_atr::construct(ea_, elems_ + slot, elem);
         slots_[slot] = true;
         size_++;
         return true;
@@ -1525,7 +1855,7 @@ struct slot_map {
             return false;
         }
 
-        elems_[slot] = std::move(elem);
+        elem_atr::construct(ea_, elems_ + slot, std::move(elem));
         slots_[slot] = true;
         size_++;
         return true;

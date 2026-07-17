@@ -1,7 +1,7 @@
-﻿#include "app.h"
+﻿#include "app.hpp"
+#include "states.hpp"
 
 #include <SDL3/SDL_log.h>
-#include <algorithm>
 #include <backends/imgui_impl_sdl3.h>
 #include <backends/imgui_impl_sdlgpu3.h>
 #include <format>
@@ -93,9 +93,9 @@ static const SDL_DialogFileFilter FILTERS[] = {
 
 void App::Update() {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    const size_t frameArenaUsage = frameArena.Size();
-    const size_t strokeArenaUsage = canvas.strokeArena.Size();
-    frameArena.Reset();
+    const size_t frameArenaUsage = frameArena.size();
+    const size_t strokeArenaUsage = canvas.strokeArena.size();
+    frameArena.reset();
 
     if (windowSize.x > 0 && windowSize.y > 0 && !hidden) {
         { // ImGui Stuff
@@ -109,126 +109,66 @@ void App::Update() {
             if (canvas.strokeLayer > 0) {
                 layer = canvas.strokeLayer;
             }
+
             ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-
-            // DebugTileCulling(glm::vec2(windowSize) / 2.0f, draw_list);
-
-            if (ImGui::Begin("Debug")) {
-                ImGui::SeparatorText("Memory");
-                ImGui::Text("Frame: %.03f/%.03fKB", static_cast<float>(frameArenaUsage) / 1_KB,
-                            static_cast<float>(frameArena.Capacity()) / 1_KB);
-                ImGui::Text("Stroke: %.03f/%.03fKB", static_cast<float>(strokeArenaUsage) / 1_KB,
-                            static_cast<float>(canvas.strokeArena.Capacity()) / 1_KB);
-                ImGui::SeparatorText("IO");
-                ImGui::Text("TexturePool free: %zu", canvas.tileTexturePool.Count());
-                ImGui::SeparatorText("State");
-                stateManager.current->DrawUI();
-            }
-            ImGui::End();
-
             if (uiDebugCulling && layer > 0) {
-                for (const auto& [pos, tile] : canvas.layerTilePos[layer]) {
-                    if (canvas.tileReadQueue.contains(tile)) {
+                for (const auto& tile : canvas.tilesLoaded) {
+                    if (canvas.tilesReading.contains(tile)) {
                         ImU32 col = IM_COL32(255, 0, 0, 64);
                         const char* str{};
-                        switch (canvas.tileReadQueue.at(tile).state) {
-                            case Canvas::TileReadState::Queued:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Queued");
-                                break;
-                            case Canvas::TileReadState::Read:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Read");
-                                break;
-                            case Canvas::TileReadState::Decompressed:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Decompressed");
-                                break;
-                            case Canvas::TileReadState::Uploaded:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Uploaded");
-                                break;
+                        switch (canvas.tilesReading.at(tile).state) {
                             default:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::N/A");
+                                DrawTileDebug({tile.x, tile.y}, drawList, col, "TileReadState::N/A");
                                 break;
                         }
-                    } else if (canvas.tileWriteQueue.contains(tile)) {
+                    } else if (canvas.tilesWriting.contains(tile)) {
                         ImU32 col = IM_COL32(0, 255, 0, 64);
                         const char* str{};
-                        switch (canvas.tileWriteQueue.at(tile).state) {
-                            case Canvas::TileWriteState::Queued:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Queued");
-                                break;
-                            case Canvas::TileWriteState::Downloading:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Downloading");
-                                break;
-                            case Canvas::TileWriteState::Downloaded:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Downloaded");
-                                break;
-                            case Canvas::TileWriteState::Encoded:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Encoded");
-                                break;
-                            case Canvas::TileWriteState::Written:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::Written");
-                                break;
+                        switch (canvas.tilesWriting.at(tile).state) {
                             default:
-                                DrawTileDebug(pos, drawList, col, "TileReadState::N/A");
+                                DrawTileDebug({tile.x, tile.y}, drawList, col, "TileReadState::N/A");
                                 break;
                         }
                     } else {
                         ImU32 col = IM_COL32(0, 0, 0, 64);
-                        DrawTileDebug(pos, drawList, col);
+                        DrawTileDebug({tile.x, tile.y}, drawList, col);
                     }
                 }
             }
+            // DebugTileCulling(glm::vec2(windowSize) / 2.0f, drawList);
 
-            if (!uiFocus) {
-                ImVec2 pos = {};
-                ImVec2 radius = {};
-
-                if (!canvas.strokeStarted) {
-                    pos.x = cursorCurrentPos.x;
-                    pos.y = cursorCurrentPos.y;
-                    if (canvas.brushMode) {
-                        radius.x = canvas.brushOptions.radius * canvas.viewport.Zoom().x;
-                        radius.y = canvas.brushOptions.radius * canvas.viewport.Zoom().y;
-                    } else {
-                        radius.x = canvas.eraserOptions.radius * canvas.viewport.Zoom().x;
-                        radius.y = canvas.eraserOptions.radius * canvas.viewport.Zoom().y;
-                    }
-                    drawList->AddEllipse(pos, radius, ImColor(0, 0, 0, 255));
-                }
+            if (ImGui::Begin("Debug")) {
+                ImGui::SeparatorText("Memory");
+                ImGui::Text("Frame: %.03f/%.03fKB", static_cast<float>(frameArenaUsage) / 1_KB,
+                            static_cast<float>(frameArena.capacity()) / 1_KB);
+                ImGui::Text("Stroke: %.03f/%.03fKB", static_cast<float>(strokeArenaUsage) / 1_KB,
+                            static_cast<float>(canvas.strokeArena.capacity()) / 1_KB);
+                ImGui::SeparatorText("IO");
+                ImGui::Text("TexturePool free: %zu", canvas.tileTextureEncodedPool.count());
+                ImGui::SeparatorText("State");
+                stateManager.current->DrawUI();
             }
+            ImGui::End();
 
             if (!hideUi) {
                 canvas.viewport.UI();
 
                 if (ImGui::Begin("Debug")) {
                     ImGui::Checkbox("view loaded tiles", &uiDebugCulling);
-
-                    size_t tileModified{};
-                    for (const auto& [la, infos] : canvas.layerInfos) {
-                        tileModified += canvas.layerTilesModified.at(la).size();
-                    }
-
-                    ImGui::LabelText("tile loaded", "%zu", canvas.tileInfos.size());
+                    ImGui::LabelText("tile loaded", "%zu", canvas.tilesLoaded.size());
                     ImGui::LabelText("tile textures", "%zu", renderer.tileTextures.size());
-                    ImGui::LabelText("tile modified", "%zu", tileModified);
+                    ImGui::LabelText("tile modified", "%zu", canvas.tilesModified.size());
                 }
                 ImGui::End();
 
                 if (ImGui::Begin("Layers")) {
-                    // Temporary layer stuff
-                    std::vector<LayerInfo> layerInfo;
-                    layerInfo.reserve(canvas.layerInfos.size());
-                    for (auto& [_, info] : canvas.layerInfos) {
-                        layerInfo.push_back(info);
-                    }
-
-                    std::ranges::sort(layerInfo, [](LayerInfo& a, LayerInfo& b) { return a.height > b.height; });
-
                     const ImVec2 imageSize = {
                         (float)windowSize.x / (float)windowSize.y * 50.0f,
                         50.0f,
                     };
-                    for (int i = static_cast<int>(layerInfo.size()) - 1; i >= 0; i--) {
-                        auto& realData = canvas.layerInfos[layerInfo[i].id]; // Wut ??
+                    for (int i = static_cast<int>(canvas.layersTree.size()) - 1; i >= 0; i--) {
+                        auto& realData = canvas.layers.at(canvas.layersTree[i]);
+
                         const std::string title = std::format("-{}: {}", realData.height, realData.name);
                         ImGui::SeparatorText(title.c_str());
                         ImGui::PushID(realData.id);
@@ -239,48 +179,39 @@ void App::Update() {
                         }
                         ImGui::SliderFloat("", &realData.opacity, 0.0f, 1.0f);
 
-                        // ImGui::Image(
-                        //     (ImTextureID)(intptr_t)renderer.layer_textures.at(real_data.layer),
-                        //     image_size);
-
-                        if (realData.height < (canvas.layersCurrentMaxHeight - 1)) {
+                        if (i < (canvas.layersTree.size() - 1)) {
                             ImGui::SameLine();
                             if (ImGui::Button("-")) {
-                                // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
-                                // *this, real_data.layer, real_data.depth, real_data.depth + 1));
-                                canvas.SetLayerHeight(realData.id, realData.height + 1);
+                                canvas.MoveLayer(realData.id, realData.height + 1); // will break
                             }
                         }
                         if (realData.height > 0) {
                             ImGui::SameLine();
                             if (ImGui::Button("+")) {
-                                // canvas.canvasHistory.store(std::make_unique<LayerDepthCommand>(
-                                // *this, real_data.layer, real_data.depth, real_data.depth - 1));
-                                canvas.SetLayerHeight(realData.id, realData.height - 1);
+                                canvas.MoveLayer(realData.id, realData.height - 1); // will break
                             }
                         }
                         if (i != 0) {
                             ImGui::SameLine();
                             if (ImGui::Button("=")) {
-                                // canvas.MergeLayers(real_data.layer, layer_info[i - 1].layer);
-                                // canvas.DeleteLayer(real_data.layer);
+                                auto srcLayer = canvas.layersTree[i];
+                                auto dstLayer = canvas.layersTree[i - 1];
+                                canvas.MergeLayers(srcLayer, dstLayer);
+                                canvas.DeleteLayer(srcLayer); // will break
                             }
                         }
                         ImGui::SameLine();
                         if (ImGui::Button("x")) {
-                            // canvas.canvasHistory.store(std::make_unique<LayerDeleteCommand>(*this, real_data.layer));
                             canvas.DeleteLayer(realData.id);
                         }
 
                         ImGui::PopID();
                     }
                     if (ImGui::Button("+")) {
-                        LayerInfo layerInfo{};
+                        LayerCreateInfo layerInfo{};
                         layerInfo.name = "NewLayer";
                         layerInfo.height = 0;
                         const auto newLayer = canvas.CreateLayer(layerInfo);
-                        // canvas.canvasHistory.store(std::make_unique<LayerCreateCommand>(*this,
-                        // canvas.layerInfos[layer]));
                         canvas.SaveLayer(newLayer);
                     }
                     ImGui::ColorEdit4("Background Color", glm::value_ptr(bgColor));
@@ -288,245 +219,32 @@ void App::Update() {
                 ImGui::End();
 
                 if (ImGui::Begin("Stroke Options")) {
-                    if (ImGui::Checkbox("Eraser", &canvas.eraserMode)) {
-                        canvas.brushMode = !canvas.eraserMode;
+                    bool painting = canvas.currentTool == Tool::Paint;
+                    if (ImGui::Checkbox("Paint", &painting)) {
+                        canvas.currentTool = Tool::Paint;
+                    }
+                    bool erasing = canvas.currentTool == Tool::Erase;
+                    if (ImGui::Checkbox("Erase", &erasing)) {
+                        canvas.currentTool = Tool::Erase;
                     }
 
-                    if (canvas.eraserMode) {
-                        {
-                            ImGui::PushID("Opacity");
-                            if (ImGui::SliderFloat("Opacity", &canvas.eraserOptions.opacity, 0.0f, 1.0f)) {
-                                canvas.eraserOptions.opacity =
-                                    std::ceil(canvas.eraserOptions.opacity * 100.0f) / 100.0f;
-                                canvas.eraserOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.eraserOptions.opacityPressure)) {
-                                canvas.eraserOptionsModified = true;
-                            }
-                            if (canvas.eraserOptions.opacityPressure) {
-                                if (ImGui::SliderFloat2("range",
-                                                        glm::value_ptr(canvas.eraserOptions.opacityPressureRange), 0.0f,
-                                                        1.0f)) {
-                                    canvas.eraserOptions.opacityPressureRange =
-                                        glm::ceil(canvas.eraserOptions.opacityPressureRange * 100.0f) / 100.0f;
-                                    canvas.eraserOptions.opacityPressureRange.x =
-                                        std::min(canvas.eraserOptions.opacityPressureRange.x,
-                                                 canvas.eraserOptions.opacityPressureRange.y);
-                                    canvas.eraserOptions.opacityPressureRange.y =
-                                        std::max(canvas.eraserOptions.opacityPressureRange.x,
-                                                 canvas.eraserOptions.opacityPressureRange.y);
-                                    canvas.eraserOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        {
-                            ImGui::PushID("Radius");
-                            if (ImGui::SliderFloat("Radius", &canvas.eraserOptions.radius, 0.0f, 100.0f)) {
-                                canvas.eraserOptions.radius = std::ceil(canvas.eraserOptions.radius * 100.0f) / 100.0f;
-                                canvas.eraserOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.eraserOptions.radiusPressure)) {
-                                canvas.eraserOptionsModified = true;
-                            }
-                            if (canvas.eraserOptions.radiusPressure) {
-                                if (ImGui::SliderFloat2("Radius Range",
-                                                        glm::value_ptr(canvas.eraserOptions.radiusPressureRange), 0.0f,
-                                                        1.0f)) {
-                                    canvas.eraserOptions.radiusPressureRange =
-                                        glm::ceil(canvas.eraserOptions.radiusPressureRange * 100.0f) / 100.0f;
-                                    canvas.eraserOptions.radiusPressureRange.x =
-                                        std::min(canvas.eraserOptions.radiusPressureRange.x,
-                                                 canvas.eraserOptions.radiusPressureRange.y);
-                                    canvas.eraserOptions.radiusPressureRange.y =
-                                        std::max(canvas.eraserOptions.radiusPressureRange.x,
-                                                 canvas.eraserOptions.radiusPressureRange.y);
-                                    canvas.eraserOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        {
-                            ImGui::PushID("Flow");
-                            if (ImGui::SliderFloat("Flow", &canvas.eraserOptions.flow, 0.01f, 1.0f)) {
-                                canvas.eraserOptions.flow = std::ceil(canvas.eraserOptions.flow * 100.0f) / 100.0f;
-                                canvas.eraserOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.eraserOptions.flowPressure)) {
-                                canvas.eraserOptionsModified = true;
-                            }
-                            if (canvas.eraserOptions.flowPressure) {
-                                if (ImGui::SliderFloat2("range", glm::value_ptr(canvas.eraserOptions.flowPressureRange),
-                                                        0.0f, 1.0f)) {
-                                    canvas.eraserOptions.flowPressureRange =
-                                        glm::ceil(canvas.eraserOptions.flowPressureRange * 100.0f) / 100.0f;
-                                    canvas.eraserOptions.flowPressureRange.x =
-                                        std::min(canvas.eraserOptions.flowPressureRange.x,
-                                                 canvas.eraserOptions.flowPressureRange.y);
-                                    canvas.eraserOptions.flowPressureRange.y =
-                                        std::max(canvas.eraserOptions.flowPressureRange.x,
-                                                 canvas.eraserOptions.flowPressureRange.y);
-                                    canvas.eraserOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        {
-                            ImGui::PushID("Hardness");
-                            if (ImGui::SliderFloat("Hardness", &canvas.eraserOptions.hardness, 0.0f, 1.0f)) {
-                                canvas.eraserOptions.hardness =
-                                    std::ceil(canvas.eraserOptions.hardness * 100.0f) / 100.0f;
-                                canvas.eraserOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.eraserOptions.hardnessPressure)) {
-                                canvas.eraserOptionsModified = true;
-                            }
-                            if (canvas.eraserOptions.hardnessPressure) {
-                                if (ImGui::SliderFloat2("range",
-                                                        glm::value_ptr(canvas.eraserOptions.hardnessPressureRange),
-                                                        0.0f, 1.0f)) {
-                                    canvas.eraserOptions.hardnessPressureRange =
-                                        glm::ceil(canvas.eraserOptions.hardnessPressureRange * 100.0f) / 100.0f;
-                                    canvas.eraserOptions.hardnessPressureRange.x =
-                                        std::min(canvas.eraserOptions.hardnessPressureRange.x,
-                                                 canvas.eraserOptions.hardnessPressureRange.y);
-                                    canvas.eraserOptions.hardnessPressureRange.y =
-                                        std::max(canvas.eraserOptions.hardnessPressureRange.x,
-                                                 canvas.eraserOptions.hardnessPressureRange.y);
-                                    canvas.eraserOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        if (ImGui::SliderFloat("Spacing", &canvas.eraserOptions.spacing, 0.1f, 50.0f)) {
-                            canvas.eraserOptions.spacing = std::ceil(canvas.eraserOptions.spacing * 100.0f) / 100.0f;
-                            canvas.eraserOptionsModified = true;
-                        }
-                        ImGui::Separator();
-                        ImGui::LabelText("Stroke num", "%zu", canvas.strokePoints.size());
-                        ImGui::Checkbox("Using pen", &penInRange);
-                        ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursorCurrentPos.x, cursorCurrentPos.y);
-                        ImGui::LabelText("Pressure", "%.2f", penPressure);
-                    } else if (canvas.brushMode) {
-                        {
-                            ImGui::PushID("Opacity");
-                            if (ImGui::ColorEdit4("Color", glm::value_ptr(canvas.brushOptions.color))) {
-                                canvas.brushOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.brushOptions.opacityPressure)) {
-                                canvas.brushOptionsModified = true;
-                            }
-                            if (canvas.brushOptions.opacityPressure) {
-                                if (ImGui::SliderFloat2("range",
-                                                        glm::value_ptr(canvas.brushOptions.opacityPressureRange), 0.0f,
-                                                        1.0f)) {
-                                    canvas.brushOptions.opacityPressureRange =
-                                        glm::ceil(canvas.brushOptions.opacityPressureRange * 100.0f) / 100.0f;
-                                    canvas.brushOptions.opacityPressureRange.x =
-                                        std::min(canvas.brushOptions.opacityPressureRange.x,
-                                                 canvas.brushOptions.opacityPressureRange.y);
-                                    canvas.brushOptions.opacityPressureRange.y =
-                                        std::max(canvas.brushOptions.opacityPressureRange.x,
-                                                 canvas.brushOptions.opacityPressureRange.y);
-                                    canvas.brushOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        {
-                            ImGui::PushID("Radius");
-                            if (ImGui::SliderFloat("Radius", &canvas.brushOptions.radius, 0.0f, 100.0f)) {
-                                canvas.brushOptions.radius = std::ceil(canvas.brushOptions.radius * 100.0f) / 100.0f;
-                                canvas.brushOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.brushOptions.radiusPressure)) {
-                                canvas.brushOptionsModified = true;
-                            }
-                            if (canvas.brushOptions.radiusPressure) {
-                                if (ImGui::SliderFloat2(
-                                        "range", glm::value_ptr(canvas.brushOptions.radiusPressureRange), 0.0f, 1.0f)) {
-                                    canvas.brushOptions.radiusPressureRange =
-                                        glm::ceil(canvas.brushOptions.radiusPressureRange * 100.0f) / 100.0f;
-                                    canvas.brushOptions.radiusPressureRange.x =
-                                        std::min(canvas.brushOptions.radiusPressureRange.x,
-                                                 canvas.brushOptions.radiusPressureRange.y);
-                                    canvas.brushOptions.radiusPressureRange.y =
-                                        std::max(canvas.brushOptions.radiusPressureRange.x,
-                                                 canvas.brushOptions.radiusPressureRange.y);
-                                    canvas.brushOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        {
-                            ImGui::PushID("Flow");
-                            if (ImGui::SliderFloat("Flow", &canvas.brushOptions.flow, 0.01f, 1.0f)) {
-                                canvas.brushOptions.flow = std::ceil(canvas.brushOptions.flow * 100.0f) / 100.0f;
-                                canvas.brushOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.brushOptions.flowPressure)) {
-                                canvas.brushOptionsModified = true;
-                            }
-                            if (canvas.brushOptions.flowPressure) {
-                                if (ImGui::SliderFloat2("range", glm::value_ptr(canvas.brushOptions.flowPressureRange),
-                                                        0.0f, 1.0f)) {
-                                    canvas.brushOptions.flowPressureRange =
-                                        glm::ceil(canvas.brushOptions.flowPressureRange * 100.0f) / 100.0f;
-                                    canvas.brushOptions.flowPressureRange.x =
-                                        std::min(canvas.brushOptions.flowPressureRange.x,
-                                                 canvas.brushOptions.flowPressureRange.y);
-                                    canvas.brushOptions.flowPressureRange.y =
-                                        std::max(canvas.brushOptions.flowPressureRange.x,
-                                                 canvas.brushOptions.flowPressureRange.y);
-                                    canvas.brushOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        {
-                            ImGui::PushID("Hardness");
-                            if (ImGui::SliderFloat("Hardness", &canvas.brushOptions.hardness, 0.0f, 1.0f)) {
-                                canvas.brushOptions.hardness =
-                                    std::ceil(canvas.brushOptions.hardness * 100.0f) / 100.0f;
-                                canvas.brushOptionsModified = true;
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::Checkbox("Pen", &canvas.brushOptions.hardnessPressure)) {
-                                canvas.brushOptionsModified = true;
-                            }
-                            if (canvas.brushOptions.hardnessPressure) {
-                                if (ImGui::SliderFloat2("range",
-                                                        glm::value_ptr(canvas.brushOptions.hardnessPressureRange), 0.0f,
-                                                        1.0f)) {
-                                    canvas.brushOptions.hardnessPressureRange =
-                                        glm::ceil(canvas.brushOptions.hardnessPressureRange * 100.0f) / 100.0f;
-                                    canvas.brushOptions.hardnessPressureRange.x =
-                                        std::min(canvas.brushOptions.hardnessPressureRange.x,
-                                                 canvas.brushOptions.hardnessPressureRange.y);
-                                    canvas.brushOptions.hardnessPressureRange.y =
-                                        std::max(canvas.brushOptions.hardnessPressureRange.x,
-                                                 canvas.brushOptions.hardnessPressureRange.y);
-                                    canvas.brushOptionsModified = true;
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                        if (ImGui::SliderFloat("Spacing", &canvas.brushOptions.spacing, 0.1f, 50.0f)) {
-                            canvas.brushOptions.spacing = std::ceil(canvas.brushOptions.spacing * 100.0f) / 100.0f;
-                            canvas.brushOptionsModified = true;
-                        }
-                        ImGui::Separator();
-                        ImGui::LabelText("Stroke num", "%zu", canvas.strokePoints.size());
-                        ImGui::Checkbox("Using pen", &penInRange);
-                        ImGui::LabelText("Cursor", "x: %.2f, y: %.2f", cursorCurrentPos.x, cursorCurrentPos.y);
-                        ImGui::LabelText("Pressure", "%.2f", penPressure);
+                    switch (canvas.currentTool) {
+                        case Tool::Paint: {
+                            ImGui::Text("Painting");
+                            ImGui::ColorEdit4("Color", glm::value_ptr(canvas.paintBrush.color));
+                            ImGui::InputFloat("Opacity", &canvas.paintBrush.maxPressureOpacity);
+                            ImGui::InputFloat("Radius", &canvas.paintBrush.maxPressureRadius);
+                            ImGui::SliderFloat("Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f);
+                        } break;
+                        case Tool::Erase: {
+                            ImGui::Text("Erasing");
+                            ImGui::InputFloat("Opacity", &canvas.eraseBrush.maxPressureOpacity);
+                            ImGui::InputFloat("Radius", &canvas.eraseBrush.maxPressureRadius);
+                            ImGui::SliderFloat("Spacing", &canvas.eraseBrush.maxPressureSpacing, 0.1f, 50.0f);
+                        } break;
+                        default: {
+                            ImGui::Text("Unknown");
+                        } break;
                     }
                 }
                 ImGui::End();
@@ -552,6 +270,7 @@ void App::Update() {
                     }
                 }
                 ImGui::End();
+
                 if (ImGui::Begin("View History")) {
                     if (!canvas.viewCommands.Empty()) {
                         if (ImGui::Button("Clear View History")) {
@@ -578,7 +297,7 @@ void App::Update() {
             if (colorPicker) {
                 ImGui::Begin("ColorPicker");
                 ImGui::ColorEdit4("ColorPicker", glm::value_ptr(sampledColor), 0);
-                ImGui::ColorEdit4("BrushColor", glm::value_ptr(canvas.brushOptions.color), 0);
+                ImGui::ColorEdit4("BrushColor", glm::value_ptr(canvas.paintBrush.color), 0);
                 ImGui::End();
             }
 
@@ -592,8 +311,8 @@ void App::Update() {
     }
 
     canvas.Update();
+    renderer.Update();
     renderer.Render();
-    canvas.DeleteUpdate();
 }
 
 bool App::Resize(const int width, const int height) {
@@ -616,30 +335,14 @@ void App::ShouldQuit() {
 
     canvas.canvasCommands.Clear();
 
-    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
-    if (canvas.brushOptionsModified) {
-        canvas.SaveBrush();
-    }
-    if (canvas.eraserOptionsModified) {
-        canvas.SaveEraser();
+    for (const auto& [id, layer] : canvas.layers) {
+        if (layer.modified && !layer.internal) {
+            canvas.SaveLayer(id);
+        }
     }
 
-    for (const auto& layer : layersToSave) {
-        if (canvas.layerInfos[layer].internal) {
-            continue;
-        }
-
-        canvas.SaveLayer(layer);
-    }
-
-    for (const auto& layer : canvas.Layers()) {
-        if (canvas.layerInfos.at(layer).internal) {
-            canvas.DeleteLayer(layer);
-        }
-
-        for (const auto& tile : canvas.LayerTiles(layer)) {
-            canvas.QueueUnloadTile(layer, tile);
-        }
+    for (const auto& tile : canvas.tilesLoaded) {
+        canvas.UnloadTile(tile);
     }
 }
 
@@ -662,289 +365,20 @@ void App::Quit() {
     window = nullptr;
 }
 
-/*
-void App::CursorMove(glm::vec2 new_pos) {
-    // new_pos = canvas.viewport.ScreenToCanvas(new_pos, windowSize);
-
-    static glm::vec2 last_pos = cursorLastPos;
-
-    if (changeCursorSize) {
-        glm::vec2 delta_pos = new_pos - last_pos;
-        last_pos = new_pos;
-
-        canvas.ChangeRadiusSize(delta_pos, shift_pressed);
-        return;
-    }
-
-    cursorLastPos = cursorCurrentPos;
-    cursorCurrentPos = new_pos;
-    cursor_delta_pos = cursorCurrentPos - cursorLastPos;
-    last_pos = cursorLastPos;
-
-    if (!cursor_left_pressed) {
-        canvas.viewCursorStart = new_pos;
-    }
-
-    if (colorPicker) {
-        glm::vec2 delta_pos = new_pos - last_pos;
-        last_pos = new_pos;
-
-        Color color;
-        auto samplePos = new_pos;
-        samplePos.y = static_cast<float>(windowSize.y) - new_pos.y;
-        Midori::Canvas::SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
-        sampledColor.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
-        sampledColor.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
-        sampledColor.b = static_cast<float>(color.b) / static_cast<float>(UINT8_MAX);
-        sampledColor.a = static_cast<float>(color.a) / static_cast<float>(UINT8_MAX);
-    } else if (cursor_left_pressed) {
-        if ((canvas.viewPanning || canvas.viewRotating || canvas.viewZooming) && (glm::length(cursor_delta_pos) > 0) &&
-            canvas.currentViewportChangeCommand == nullptr) {
-            SDL_assert(canvas.currentViewportChangeCommand == nullptr);
-            canvas.currentViewportChangeCommand = std::make_unique<ViewportChangeCommand>(&canvas);
-            canvas.currentViewportChangeCommand->SetPreviousViewport(canvas.viewport);
-        }
-
-        // canvas.ViewUpdateCursor(cursorCurrentPos);
-
-        if (canvas.strokeStarted) {
-            if (canvas.brushMode) {
-                canvas.UpdateBrushStroke(Canvas::StrokePoint{
-                    .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
-                    .radius = canvas.brushOptions.radius,
-                    .flow = canvas.brushOptions.flow,
-                    .hardness = canvas.brushOptions.hardness,
-                });
-            } else if (canvas.eraserMode) {
-                canvas.UpdateEraserStroke(Canvas::StrokePoint{
-                    .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
-                    .radius = canvas.eraserOptions.radius,
-                    .flow = canvas.eraserOptions.flow,
-                    .hardness = canvas.eraserOptions.hardness,
-                });
-            }
-        }
-    }
-
-    canvas.viewCursorPrevious = new_pos;
-
-    cursor_delta_pos = glm::vec2(0.0f);
-}
-
-
-void App::CursorPress(Uint8 button) {
-    if (button == SDL_BUTTON_LEFT) {
-        cursor_left_pressed = true;
-
-        if (colorPicker) {
-            colorPicker = false;
-            canvas.brushOptions.color = sampledColor;
-            return;
-        }
-
-        if (!canvas.viewPanning && !canvas.viewZooming && !canvas.viewRotating && (canvas.selectedLayer != 0) &&
-            !canvas.strokeStarted) {
-            if (canvas.brushMode) {
-                canvas.StartBrushStroke(Canvas::StrokePoint{
-                    .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
-                    .radius = canvas.brushOptions.radius,
-                    .flow = canvas.brushOptions.flow,
-                    .hardness = canvas.brushOptions.hardness,
-                });
-            } else if (canvas.eraserMode) {
-                canvas.StartEraserStroke(Canvas::StrokePoint{
-                    .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
-                    .radius = canvas.eraserOptions.radius,
-                    .flow = canvas.eraserOptions.flow,
-                    .hardness = canvas.eraserOptions.hardness,
-                });
-            }
-        }
-    }
-}
-void App::CursorRelease(Uint8 button) {
-    if (button == SDL_BUTTON_LEFT) {
-        cursor_left_pressed = false;
-        if (!canvas.viewPanning && !canvas.viewZooming && !canvas.viewRotating && (canvas.selectedLayer != 0) &&
-            canvas.strokeStarted) {
-            if (canvas.brushMode) {
-                canvas.EndBrushStroke(Canvas::StrokePoint{
-                    .color = canvas.brushOptions.color,
-                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
-                    .radius = canvas.brushOptions.radius,
-                    .flow = canvas.brushOptions.flow,
-                    .hardness = canvas.brushOptions.hardness,
-                });
-            } else if (canvas.eraserMode) {
-                canvas.EndEraserStroke(Canvas::StrokePoint{
-                    .color = {0.0f, 0.0f, 0.0f, canvas.eraserOptions.opacity},
-                    .position = canvas.viewport.ScreenToCanvas(cursorCurrentPos),
-                    .radius = canvas.eraserOptions.radius,
-                    .flow = canvas.eraserOptions.flow,
-                    .hardness = canvas.eraserOptions.hardness,
-                });
-            }
-        }
-    }
-    if (button == SDL_BUTTON_RIGHT) {
-        cursor_right_pressed = false;
-    }
-}
-
-
-// Need to detect when a mods is disengaged
-void App::KeyPress(SDL_Keycode key, SDL_Keymod mods) {
-    // TODO Move to the correct IState
-    (void)mods;
-    if (key == SDLK_SPACE) {
-        space_pressed = true;
-    }
-    if (key == SDLK_LCTRL || key == SDLK_RCTRL) {
-        ctrl_pressed = true;
-    }
-    if (key == SDLK_LSHIFT || key == SDLK_RSHIFT) {
-        shift_pressed = true;
-    }
-    if (key == SDLK_LALT || key == SDLK_RALT) {
-        alt_pressed = true;
-    }
-
-    if (changeCursorSize) {
-        return;
-    }
-
-    if (key == SDLK_F11) {
-        Fullscreen(!fullscreen);
-    }
-    if (key == SDLK_TAB) {
-        hideUi = !hideUi;
-    }
-    if (key == SDLK_F && space_pressed) {
-        canvas.viewport.FlipHorizontal();
-    }
-    if (key == SDLK_G && alt_pressed) {
-        canvas.viewport.SetRotation(0.0f);
-        canvas.viewport.SetZoom(glm::vec2(0.0f), glm::vec2(1.0f));
-    }
-
-    if (!canvas.strokeStarted) {
-        if (key == SDLK_F && !ctrl_pressed) {
-            changeCursorSize = true;
-        }
-        if (key == SDLK_C && !ctrl_pressed && !shift_pressed && !alt_pressed) {
-            // TODO: Open color wheel at mouse location
-        }
-        if (alt_pressed && canvas.brushMode) {
-            colorPicker = true;
-            canvas.canvasTexture_ = canvas.DownloadCanvasTexture(canvas.canvasTextureSize_);
-            Color color;
-            auto samplePos = cursorCurrentPos;
-            samplePos.y = static_cast<float>(windowSize.y) - cursorCurrentPos.y;
-            Midori::Canvas::SampleTexture(canvas.canvasTexture_, canvas.canvasTextureSize_, samplePos, color);
-            sampledColor.r = static_cast<float>(color.r) / static_cast<float>(UINT8_MAX);
-            sampledColor.g = static_cast<float>(color.g) / static_cast<float>(UINT8_MAX);
-            sampledColor.b = static_cast<float>(color.b) / static_cast<float>(UINT8_MAX);
-            sampledColor.a = static_cast<float>(color.a) / static_cast<float>(UINT8_MAX);
-        }
-
-        if (key == SDLK_B && canvas.eraserMode) {
-            canvas.eraserMode = false;
-            canvas.brushMode = true;
-        }
-        if (key == SDLK_E && canvas.brushMode) {
-            canvas.brushMode = false;
-            canvas.eraserMode = true;
-        }
-
-        if (key == SDLK_Z && ctrl_pressed) {
-            if (shift_pressed) {
-                canvas.canvasCommands.Redo();
-            } else {
-                canvas.canvasCommands.Undo();
-            }
-        }
-
-        if (key == SDLK_LEFT && alt_pressed) {
-            canvas.viewCommands.Undo();
-        }
-        if (key == SDLK_RIGHT && alt_pressed) {
-            canvas.viewCommands.Redo();
-        }
-
-        if (key == SDLK_S && ctrl_pressed && !shift_pressed && !alt_pressed) {
-            Save();
-        }
-    }
-
-    // canvas.ViewUpdateState(cursorCurrentPos);
-}
-
-
-void App::KeyRelease(SDL_Keycode key, SDL_Keymod mods) {
-    (void)mods;
-    if (key == SDLK_SPACE) {
-        space_pressed = false;
-        if (canvas.currentViewportChangeCommand != nullptr) {
-            canvas.currentViewportChangeCommand->SetNewViewport(canvas.viewport);
-            canvas.viewCommands.Push(std::move(canvas.currentViewportChangeCommand));
-            SDL_assert(canvas.currentViewportChangeCommand == nullptr);
-        }
-    }
-    if (key == SDLK_LCTRL || key == SDLK_RCTRL) {
-        ctrl_pressed = false;
-    }
-    if (key == SDLK_LSHIFT || key == SDLK_RSHIFT) {
-        shift_pressed = false;
-    }
-    if (key == SDLK_LALT || key == SDLK_RALT) {
-        alt_pressed = false;
-    }
-
-    if (colorPicker && !alt_pressed) {
-        SDL_assert(canvas.brushMode);
-        colorPicker = false;
-        canvas.canvasTexture_.clear();
-    }
-
-    if (changeCursorSize && key == SDLK_F) {
-        changeCursorSize = false;
-        return;
-    }
-
-    // canvas.ViewUpdateState(cursorCurrentPos);
-}*/
-
 void App::Save() {
     if (saving) {
         return;
     }
     saving = true;
 
-    const std::vector<Layer> layersToSave(canvas.layersModified.begin(), canvas.layersModified.end());
-    if (canvas.brushOptionsModified) {
-        canvas.SaveBrush();
-    }
-    if (canvas.eraserOptionsModified) {
-        canvas.SaveEraser();
-    }
-
-    // TODO: Save the selected layer
-    for (const auto& layer : layersToSave) {
-        if (canvas.layerInfos[layer].internal) {
-            continue;
+    for (const auto& [id, layer] : canvas.layers) {
+        if (layer.modified && !layer.internal) {
+            canvas.SaveLayer(id);
         }
-
-        canvas.SaveLayer(layer);
     }
 
-    for (const auto& layer : canvas.Layers()) {
-        for (const auto& tile : canvas.LayerTiles(layer)) {
-            canvas.QueueSaveTile(layer, tile);
-        }
+    for (const auto& tile : canvas.tilesLoaded) {
+        canvas.SaveTile(tile);
     }
 
     saving = false;
@@ -957,7 +391,7 @@ void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) {
     }
 }
 
-void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) {
+void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) const {
     ImVec2 points[5]{};
     ImVec2 center;
     glm::vec2 offsets[5] = {

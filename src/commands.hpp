@@ -1,14 +1,12 @@
 ﻿#pragma once
 
-#include "layers.h"
-#include "tiles.h"
-#include "viewport.h"
-#include <SDL3/SDL_render.h>
-#include <SDL3/SDL_assert.h>
+#include "base.hpp"
+#include "tiles.hpp"
+#include "viewport.hpp"
+
+#include <SDL3/SDL_gpu.h>
 #include <memory>
-#include <span>
 #include <string>
-#include <unordered_map>
 
 namespace Midori {
 
@@ -46,6 +44,11 @@ struct CommandHistory final {
 };
 
 struct TileModificationCommand final : public ICommand {
+    struct Textures {
+        SDL_GPUTexture* revert{};
+        SDL_GPUTexture* execute{};
+    };
+
     explicit TileModificationCommand(Canvas* canvas, Layer layer);
     ~TileModificationCommand() override;
 
@@ -53,19 +56,13 @@ struct TileModificationCommand final : public ICommand {
     void Execute() override;
     void Revert() override;
 
-    void SavePreviousTilesTexture(std::span<Tile> tiles);
-    void SaveNewTilesTexture(std::span<Tile> tiles);
+    void TrackTile(TileCoord tile);
+    void SaveTrackedTilesForPrevious();
+    void SaveTrackedTilesForNew();
 
     Canvas* canvas;
     Layer layer;
-    std::unordered_map<TileCoord, SDL_GPUTexture*> previousTileTextures;
-    std::unordered_map<TileCoord, SDL_GPUTexture*> newTileTextures;
-
-private:
-    void ApplyTilesTexture(const std::unordered_map<TileCoord, SDL_GPUTexture*>& tileCoordsTexture) const;
-
-    // TODO: Move to the renderer directly
-    [[nodiscard]] std::vector<SDL_GPUTexture*> DuplicateTileTextures(std::span<Tile> tiles) const;
+    hash_map<TileCoord, Textures> tileTextures;
 };
 
 struct ViewportChangeCommand final : public ICommand {

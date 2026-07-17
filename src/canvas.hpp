@@ -1,160 +1,48 @@
 ﻿#pragma once
 
-#include "colors.h"
-#include "commands.h"
+#include "brushes.hpp"
+#include "colors.hpp"
+#include "commands.hpp"
 #include "defines.hpp"
-#include "viewport.h"
+#include "layers.hpp"
+#include "renderer.hpp"
+#include "states.hpp"
+#include "tiles.hpp"
+#include "viewport.hpp"
 #include "base.hpp"
 
 #include <SDL3/SDL_gpu.h>
-#include <array>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/gtx/hash.hpp>
-#include <unordered_map>
-#include <unordered_set>
 #include <cstdint>
+#include <cstddef>
 
 namespace Midori {
 
-class App;
+struct App;
 
-class Canvas {
-    // TODO: Use better state management (Finite State Machine or Hierarchical State Machine)
-
-public:
-    Canvas(const Canvas&) = delete;
-    Canvas(Canvas&&) = delete;
-    Canvas& operator=(const Canvas&) = delete;
-    Canvas& operator=(Canvas&&) = delete;
-
-    Canvas(App* app);
-    ~Canvas() = default;
-
-    void Update();
-    void CullTiles(Viewport& viewport);
-
-    void DeleteUpdate();
-
-    // File Stuff
-    bool CanQuit();
-    bool Open();
-
-    // Viewport Stuff
-    void ViewUpdateState(glm::vec2 cursorPos);
-    void ViewUpdateCursor(glm::vec2 cursorPos);
-    bool viewZooming = false;
-    bool viewPanning = false;
-    bool viewRotating = false;
-    glm::vec2 viewCursorStart = glm::vec2(0.0f);
-    glm::vec2 viewCursorPrevious = glm::vec2(0.0f);
-    Viewport viewport;
-    CommandHistory viewCommands;
-    std::unique_ptr<ViewportChangeCommand> currentViewportChangeCommand;
-
-    [[nodiscard]] bool HasLayer(Layer layer) const;
-    [[nodiscard]] bool LayerHasTile(Layer layer, Tile tile) const;
-    [[nodiscard]] std::vector<Layer> Layers() const;
-    [[nodiscard]] std::vector<Tile> LayerTiles(Layer layer) const;
-
-    Layer CreateLayer(LayerInfo layerInfo);
-    void DeleteLayer(Layer layer);
-    bool SaveLayer(Layer layer);
-    Layer DuplicateLayer(Layer layer, bool temporary = false);
-    void MergeLayer(Layer overLayer, Layer belowLayer);
-    bool SetLayerHeight(Layer layer, LayerHeight height);
-    void CompactLayerHeight();
-
-    [[nodiscard]] Tile GetLoadedTileAt(Layer layer, glm::ivec2 position) const;
-
-    CommandHistory canvasCommands;
-
-    Tile QueueLoadTile(Layer layer, glm::ivec2 position);
-    void QueueUnloadTile(Layer layer, Tile tile);
-    Tile CreateTile(Layer layer, glm::ivec2 position);
-    bool QueueSaveTile(Layer layer, Tile tile);
-    void QueueTileDelete(Layer layer, Tile tile);
-    void MergeTiles(Tile overTile, Tile belowTile);
-
-    App* app;
-
-    LayerHeight layersCurrentMaxHeight = 0;
-    std::unordered_map<Layer, LayerInfo> layerInfos;
-    std::unordered_map<Layer, std::unordered_set<Tile>> layerTiles;
-    std::unordered_map<Layer, std::unordered_map<glm::ivec2, Tile>> layerTilePos;
-    std::unordered_set<Layer> layerToDelete;
-    std::unordered_set<Layer> layersModified;
-    std::vector<Layer> layersHeightSorted; // layer sorted by rendering order
-
-    Layer selectedLayer = 0;
-    Layer strokeLayer = 0;
-
-    Layer layerLastAssigned = 0;
-    std::vector<Layer> layersUnassigned;
-
-    std::unordered_map<Tile, TileCoord> tileInfos;
-    Tile tileLastAssigned = 0;
-    std::vector<Tile> tilesUnassigned;
-    std::unordered_set<Tile> tileToUnload;
-    std::unordered_set<Tile> tileToDelete;
-    std::unordered_map<Layer, std::unordered_set<glm::ivec2>> layerTilesSaved;
-    std::unordered_map<Layer, std::unordered_set<Tile>> layerTilesModified;
-    std::unordered_map<Layer, std::unordered_set<Tile>> allTileModified;
-
-    std::string filename;
-
-    bool strokeStarted = false;
-
-    enum class TileReadState : std::uint8_t {
-        Queued,
-        Read,
-        Decompressed,
-        Uploaded,
+struct Canvas {
+    struct TileTextureEncoded {
+        std::byte data[TILE_ENCODED_MAX_SIZE];
+        uint32_t size;
+    };
+    struct TileTextureRaw {
+        std::byte data[TILE_SIZE];
     };
 
-    struct TileTextureBuffer {
-        std::array<uint8_t, TILE_SIZE> data;
-    };
-    Pool<TileTextureBuffer> tileTexturePool{4};
-
-    // Encoded (QOI) tiles can be larger than the raw TILE_SIZE, so they get their
-    // own worst-case-sized pool. Sharing tileTexturePool would overflow the chunk.
-    struct TileEncodedBuffer {
-        std::array<uint8_t, TILE_ENCODED_MAX_SIZE> data;
-    };
-    Pool<TileEncodedBuffer> tileEncodedPool{4};
-
-    struct TileReadStatus {
-        Layer layer{};
-        Tile tile{};
-        TileReadState state{};
-        TileEncodedBuffer* encodedTexture{};
-        size_t encodedSize{};
-        TileTextureBuffer* rawTexture{};
-    };
-    std::unordered_map<Tile, TileReadStatus> tileReadQueue;
-    void UpdateTileLoading();
-
-    enum class TileWriteState : std::uint8_t {
-        Queued,
-        Downloading,
-        Downloaded,
-        Encoded,
-        Written,
+    struct TileWriteData {
+        TileCoord tile;
+        TileWriteState state;
+        Renderer::TileTextureDownload rendererSlot;
+        TileTextureEncoded* encoded;
     };
 
-    struct TileWriteStatus {
-        Layer layer{};
-        Tile tile{};
-        TileWriteState state{};
-        glm::ivec2 position{};
-        TileEncodedBuffer* encodedTexture{};
-        size_t encodedSize{};
-        TileTextureBuffer* rawTexture{};
+    struct TileReadData {
+        TileCoord tile;
+        TileReadState state;
+        Renderer::TileTextureUpload rendererSlot;
+        TileTextureEncoded* encoded;
     };
-    std::unordered_map<Tile, TileWriteStatus> tileWriteQueue;
-    void UpdateTileUnloading();
 
     struct StrokePoint {
         glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -164,74 +52,98 @@ public:
         float hardness = 0.5f;
         float pad[3];
     };
-    StrokePoint previousPoint = {};
-    Arena<> strokeArena{4_MiB};
-    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};
-    std::vector<Tile, arena_allocator<Tile>> allTileStrokeAffected{strokeArena};
-    std::vector<Tile, arena_allocator<Tile>> strokeTileAffected{strokeArena};
+
+    Canvas(const Canvas&) = delete;
+    Canvas(Canvas&&) = delete;
+    Canvas& operator=(const Canvas&) = delete;
+    Canvas& operator=(Canvas&&) = delete;
+
+    Canvas(App* app);
+    ~Canvas() = default;
+
+    void Update();
+    void UpdateTileVisibility(Viewport& viewport);
+    bool UpdateTileLoading();
+    bool UpdateTileUnloading();
+
+    bool CanQuit() const;
+    bool Open();
+    void SaveBrush();
+    void OpenBrush();
+
+    Layer CreateLayer(LayerCreateInfo createInfo);
+    Layer CreateLayer(LayerCreateInfo createInfo, Layer id);
+    bool DeleteLayer(Layer layer);
+    bool SaveLayer(Layer layer);
+    Layer DuplicateLayer(Layer srcLayer, bool temporary = false);
+    bool MergeLayers(Layer srcLayer, Layer dstLayer);
+    bool MoveLayer(Layer layer, LayerHeight newHeight);
+
+    bool LoadTile(TileCoord tile);
+    bool UnloadTile(TileCoord tile);
+    bool CreateTile(TileCoord tile, bool initialize = true);
+    bool DestroyTile(TileCoord tile);
+    bool SaveTile(TileCoord tile);
+    bool DeleteTile(TileCoord tile);
+    bool MergeTiles(TileCoord srcTile, TileCoord dstTile);
+    bool MoveTile(TileCoord srcTile, TileCoord dstTile);
+
+    // Those should be moved to the state directly instead
+    // They indeed are pretty tighly coupled with the renderer
+    // and it this is a fair concern
+    void SavePaintBrush() {}
+    void OpenPaintBrush() {}
+    void StartPaintStroke(StrokePoint point);
+    void UpdatePaintStroke(StrokePoint point);
+    void EndPaintStroke(StrokePoint point);
+
+    void SaveEraseBrush() {}
+    void OpenEraseBrush() {}
+    void StartEraseStroke(StrokePoint point);
+    void UpdateEraseStroke(StrokePoint point);
+    void EndEraseStroke(StrokePoint point);
+
+    static std::vector<glm::ivec2, arena_allocator<glm::ivec2>> GetTilePosAffectedByStrokePoint(StrokePoint point,
+                                                                                                arena<>& arena);
+
+    App* app;
+    std::string filename;
+
+    arena<> strokeArena{4_MiB};
+    pool<TileTextureEncoded> tileTextureEncodedPool{4};
+
+    Viewport viewport;
+    CommandHistory viewCommands;
+    std::unique_ptr<ViewportChangeCommand> currentViewportChangeCommand;
+
+    CommandHistory canvasCommands;
     std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
-    std::vector<glm::ivec2, arena_allocator<glm::ivec2>> GetTilePosAffectedByStrokePoint(StrokePoint point);
+
+    slot_map<Layer, LayerInfo> layers{1024};
+    std::vector<Layer> layersTree;
+
+    hash_set<TileCoord> tilesLoaded{1024};
+    hash_set<TileCoord> tilesModified{1024};
+    hash_map<TileCoord, TileWriteData> tilesWriting{1024};
+    hash_map<TileCoord, TileReadData> tilesReading{1024};
+
+    Layer selectedLayer = LAYER_INVALID;
+    Layer strokeLayer = LAYER_INVALID;
+
+    Tool currentTool{Tool::Paint};
+    ToolState currentToolState{ToolState::None};
+
+    BrushSettings paintBrush;
+    BrushSettings eraseBrush;
+
+    StrokePoint previousPoint{};
+    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};
+    hash_set<TileCoord, arena_allocator<TileCoord>> strokeTileAffected{strokeArena};
 
     std::vector<Color> canvasTexture;
     glm::ivec2 canvasTextureSize;
     std::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
     static bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
-
-    // TODO: Merge brush and eraser in a single struct with a erase flag
-    bool brushMode = true;
-    bool eraserMode = false;
-
-    // TODO: Move the Brush and Eraser to it's own struct and func
-
-    struct BrushOptions {
-        glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        bool opacityPressure = false;
-        glm::vec2 opacityPressureRange = {0.0f, 1.0f};
-        float flow = 0.5f;
-        bool flowPressure = false;
-        glm::vec2 flowPressureRange = {0.0f, 1.0f};
-        float radius = 8.0f;
-        bool radiusPressure = false;
-        glm::vec2 radiusPressureRange = {0.0f, 1.0f};
-        float hardness = 0.5f;
-        bool hardnessPressure = false;
-        glm::vec2 hardnessPressureRange = {0.0f, 1.0f};
-        float spacing = 1.5f;
-    } brushOptions;
-    bool brushOptionsModified = false;
-    void SaveBrush();
-    void OpenBrush();
-
-    [[nodiscard]] StrokePoint ApplyBrushPressure(StrokePoint point, float pressure) const;
-    void StartBrushStroke(StrokePoint point);
-    void UpdateBrushStroke(StrokePoint point);
-    void EndBrushStroke(StrokePoint point);
-
-    struct EraserOptions {
-        float opacity = 1.0f;
-        bool opacityPressure = false;
-        glm::vec2 opacityPressureRange = {0.0f, 1.0f};
-        float flow = 0.5f;
-        bool flowPressure = false;
-        glm::vec2 flowPressureRange = {0.0f, 1.0f};
-        float radius = 8.0f;
-        bool radiusPressure = false;
-        glm::vec2 radiusPressureRange = {0.0f, 1.0f};
-        float hardness = 0.5f;
-        bool hardnessPressure = false;
-        glm::vec2 hardnessPressureRange = {0.0f, 1.0f};
-        float spacing = 1.5f;
-    } eraserOptions;
-    bool eraserOptionsModified = false;
-    void SaveEraser();
-    void OpenEraser();
-
-    [[nodiscard]] StrokePoint ApplyEraserPressure(StrokePoint point, float pressure) const;
-    void StartEraserStroke(StrokePoint point);
-    void UpdateEraserStroke(StrokePoint point);
-    void EndEraserStroke(StrokePoint point);
-
-    void ChangeRadiusSize(glm::vec2 cursorDelta, bool slowMode);
 };
 
 } // namespace Midori

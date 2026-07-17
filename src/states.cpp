@@ -1,9 +1,12 @@
-#include "states.h"
+#include "states.hpp"
 
-#include "app.h"
+#include "app.hpp"
+#include "defines.hpp"
+
 #include <backends/imgui_impl_sdl3.h>
 #include <imgui.h>
 #include <memory>
+#include <utility>
 
 namespace Midori {
 
@@ -52,28 +55,6 @@ bool IsPointerMove(const App* app, const SDL_Event* event) {
     }
     return !app->penInRange && event->type == SDL_EVENT_MOUSE_MOTION;
 }
-
-Canvas::StrokePoint MakeStrokePoint(App* app, const bool erasing) {
-    if (erasing) {
-        const auto& options = app->canvas.eraserOptions;
-        return Canvas::StrokePoint{
-            .color = glm::vec4(0.0f, 0.0f, 0.0f, options.opacity),
-            .position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos),
-            .radius = options.radius,
-            .flow = options.flow,
-            .hardness = options.hardness,
-        };
-    }
-    const auto& options = app->canvas.brushOptions;
-    return Canvas::StrokePoint{
-        .color = options.color,
-        .position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos),
-        .radius = options.radius,
-        .flow = options.flow,
-        .hardness = options.hardness,
-    };
-}
-
 } // namespace
 
 IState::IState(App* app) : app(app) {}
@@ -88,29 +69,10 @@ void StateManager::OnEvent(const SDL_Event* event) {
     ImGui_ImplSDL3_ProcessEvent(event);
 
     const ImGuiIO& io = ImGui::GetIO();
-    // WantCaptureKeyboard is already true when a UI window merely has nav focus (as on startup),
-    // which would swallow global shortcuts. Only yield the keyboard while typing in a text field.
-    if (io.WantTextInput) {
-        if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
-            return;
-        }
-    }
-    if (io.WantCaptureMouse && !current->CapturesPointer()) {
-        switch (event->type) {
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-            case SDL_EVENT_MOUSE_WHEEL:
-            case SDL_EVENT_MOUSE_MOTION:
-            case SDL_EVENT_PEN_DOWN:
-            case SDL_EVENT_PEN_UP:
-            case SDL_EVENT_PEN_MOTION:
-                return;
-            default:
-                break;
-        }
+    if (io.WantTextInput || io.WantCaptureMouse) {
+        return;
     }
 
-    // Pen tracking
     if (event->type == SDL_EVENT_PEN_PROXIMITY_IN) {
         app->penInRange = true;
     }
@@ -187,13 +149,20 @@ void StateManager::OnEvent(const SDL_Event* event) {
 
 IdleState::IdleState(App* app) : IState(app) {}
 
-std::string IdleState::Name() const {
-    return "Idle";
-}
-
 void IdleState::OnEvent(const SDL_Event* event) {
-    if (IsPointerDown(app, event) && app->canvas.selectedLayer != 0 && !app->canvas.strokeStarted) {
-        app->stateManager.Switch(std::make_unique<StrokeState>(app, app->canvas.eraserMode));
+    if (IsPointerDown(app, event) && app->canvas.selectedLayer != LAYER_INVALID) {
+        switch (app->canvas.currentTool) {
+            case Tool::Paint: {
+                app->stateManager.Switch(std::make_unique<PaintState>(app));
+            } break;
+            case Tool::Erase: {
+                app->stateManager.Switch(std::make_unique<EraseState>(app));
+            } break;
+            default:
+                SDL_assert(false && "Uknown tool");
+                break;
+        }
+
         return;
     }
 
@@ -234,20 +203,18 @@ void IdleState::OnEvent(const SDL_Event* event) {
         return;
     }
     if (IsKeyPressed(event, SDLK_B, SDL_KMOD_NONE)) {
-        app->canvas.brushMode = true;
-        app->canvas.eraserMode = false;
+        app->canvas.currentTool = Tool::Paint;
         return;
     }
     if (IsKeyPressed(event, SDLK_E, SDL_KMOD_NONE)) {
-        app->canvas.brushMode = false;
-        app->canvas.eraserMode = true;
+        app->canvas.currentTool = Tool::Erase;
         return;
     }
 }
 
 void IdleState::DrawUI() const {
     ImGui::Text("IdleState");
-    ImGui::Text("Tool: %s", app->canvas.eraserMode ? "Eraser" : "Brush");
+    ImGui::Text("Tool: %s", TOOL_NAME[std::to_underlying(app->canvas.currentTool)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,10 +222,6 @@ void IdleState::DrawUI() const {
 
 NavigateState::NavigateState(App* app) : IState(app) {
     // TODO: Save the previous view state so leaving the state can push a ViewportChangeCommand
-}
-
-std::string NavigateState::Name() const {
-    return "Navigate";
 }
 
 void NavigateState::OnEvent(const SDL_Event* event) {
@@ -328,44 +291,79 @@ void NavigateState::DrawUI() const {
     }
 }
 
-// ---------------------------------------------------------------------------
-// StrokeState
-
-StrokeState::StrokeState(App* app, const bool erasing) : IState(app), erasing(erasing) {
-    if (erasing) {
-        app->canvas.StartEraserStroke(MakeStrokePoint(app, true));
-    } else {
-        app->canvas.StartBrushStroke(MakeStrokePoint(app, false));
-    }
+PaintState::PaintState(App* app) : IState(app) {
+    Canvas::StrokePoint point{};
+    point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
+    point.radius = app->canvas.paintBrush.maxPressureRadius;
+    point.color = app->canvas.paintBrush.color;
+    point.flow = 1.0f;
+    point.hardness = 0.5f;
+    app->canvas.StartPaintStroke(point);
 }
 
-std::string StrokeState::Name() const {
-    return erasing ? "Stroke (Eraser)" : "Stroke (Brush)";
-}
-
-void StrokeState::OnEvent(const SDL_Event* event) {
+void PaintState::OnEvent(const SDL_Event* event) {
     if (IsPointerMove(app, event)) {
-        if (erasing) {
-            app->canvas.UpdateEraserStroke(MakeStrokePoint(app, true));
-        } else {
-            app->canvas.UpdateBrushStroke(MakeStrokePoint(app, false));
-        }
-        return;
+        Canvas::StrokePoint point{};
+        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
+        point.radius = app->canvas.paintBrush.maxPressureRadius;
+        point.color = app->canvas.paintBrush.color;
+        point.flow = 1.0f;
+        point.hardness = 0.5f;
+        app->canvas.UpdatePaintStroke(point);
     }
 
     if (IsPointerUp(app, event)) {
-        if (erasing) {
-            app->canvas.EndEraserStroke(MakeStrokePoint(app, true));
-        } else {
-            app->canvas.EndBrushStroke(MakeStrokePoint(app, false));
-        }
+        Canvas::StrokePoint point{};
+        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
+        point.radius = app->canvas.paintBrush.maxPressureRadius;
+        point.color = app->canvas.paintBrush.color;
+        point.flow = 1.0f;
+        point.hardness = 0.5f;
+        app->canvas.EndPaintStroke(point);
         app->stateManager.Switch(std::make_unique<IdleState>(app));
     }
 }
 
-void StrokeState::DrawUI() const {
-    ImGui::Text("StrokeState");
+void PaintState::DrawUI() const {
+    ImGui::Text("PaintState");
     ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
 }
 
+EraseState::EraseState(App* app) : IState(app) {
+    Canvas::StrokePoint point{};
+    point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
+    point.radius = app->canvas.paintBrush.maxPressureRadius;
+    point.color = app->canvas.paintBrush.color;
+    point.flow = 1.0f;
+    point.hardness = 0.5f;
+    app->canvas.StartEraseStroke(point);
+}
+
+void EraseState::OnEvent(const SDL_Event* event) {
+    if (IsPointerMove(app, event)) {
+        Canvas::StrokePoint point{};
+        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
+        point.radius = app->canvas.paintBrush.maxPressureRadius;
+        point.color = app->canvas.paintBrush.color;
+        point.flow = 1.0f;
+        point.hardness = 0.5f;
+        app->canvas.UpdateEraseStroke(point);
+    }
+
+    if (IsPointerUp(app, event)) {
+        Canvas::StrokePoint point{};
+        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
+        point.radius = app->canvas.paintBrush.maxPressureRadius;
+        point.color = app->canvas.paintBrush.color;
+        point.flow = 1.0f;
+        point.hardness = 0.5f;
+        app->canvas.EndEraseStroke(point);
+        app->stateManager.Switch(std::make_unique<IdleState>(app));
+    }
+}
+
+void EraseState::DrawUI() const {
+    ImGui::Text("EraseState");
+    ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
+}
 } // namespace Midori

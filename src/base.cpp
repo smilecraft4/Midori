@@ -2,30 +2,6 @@
 #include <format>
 #include <tracy/Tracy.hpp>
 
-// void ArenaAllocator::Reserve(size_t newCapacity, size_t alignment) {
-//     Assert(head == data, "ArenaAllocator still in use");
-//     if (head != data) {
-//         throw std::bad_alloc();
-//     }
-//     if (newCapacity == capacity) {
-//         return;
-//     }
-//     if (newCapacity == 0 && data != nullptr) {
-//         Reset();
-//     }
-//
-//     data = static_cast<std::byte*>(Alloc(newCapacity, alignment));
-//     head = data;
-//     capacity = newCapacity;
-// }
-
-// void ArenaAllocator::Clear() {
-//     Free(data);
-//     capacity = 0;
-//     head = nullptr;
-//     data = nullptr;
-// }
-
 void* Malloc(size_t size) {
     void* mem = std::malloc(size);
     TracyAlloc(mem, size);
@@ -34,7 +10,7 @@ void* Malloc(size_t size) {
 
 void* Calloc(size_t count, size_t size) {
     void* ptr = std::calloc(count, size);
-    TracyAlloc(ptr, size);
+    TracyAlloc(ptr, count * size);
     return ptr;
 }
 
@@ -55,10 +31,28 @@ void* operator new(std::size_t count) {
         count = 1;
     }
     auto* ptr = Malloc(count);
+    if (ptr == nullptr) {
+        throw std::bad_alloc();
+    }
     return ptr;
 }
 
 void operator delete(void* ptr) noexcept {
+    Free(ptr);
+}
+
+void* operator new[](std::size_t count) {
+    if (count == 0) {
+        count = 1;
+    }
+    auto* ptr = Malloc(count);
+    if (ptr == nullptr) {
+        throw std::bad_alloc();
+    }
+    return ptr;
+}
+
+void operator delete[](void* ptr) noexcept {
     Free(ptr);
 }
 

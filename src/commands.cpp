@@ -1,12 +1,9 @@
-#include "commands.h"
+#include "commands.hpp"
 
-#include "SDL3/SDL_gpu.h"
-#include "SDL3/SDL_render.h"
-#include "app.h"
-#include "canvas.h"
-#include "tiles.h"
+#include "app.hpp"
+#include "canvas.hpp"
+#include "tiles.hpp"
 #include <SDL3/SDL_assert.h>
-#include <span>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
@@ -17,14 +14,9 @@ TileModificationCommand::TileModificationCommand(Canvas* canvas, Layer layer) : 
 
 TileModificationCommand::~TileModificationCommand() {
     ZoneScoped;
-    for (const auto& [tile, texture] : previousTileTextures) {
-        SDL_assert(texture && "Texture is invalid");
-        SDL_ReleaseGPUTexture(canvas->app->renderer.device, texture);
-    }
-
-    for (const auto& [coord, texture] : newTileTextures) {
-        SDL_assert(texture && "Texture is invalid");
-        SDL_ReleaseGPUTexture(canvas->app->renderer.device, texture);
+    for (auto [tile, textures] : tileTextures) {
+        SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures.revert);
+        SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures.execute);
     }
 }
 
@@ -34,132 +26,80 @@ std::string TileModificationCommand::Name() const {
 
 void TileModificationCommand::Execute() {
     ZoneScoped;
-    SDL_assert(canvas->HasLayer(layer) && "Layer not found");
+    SDL_assert(canvas->layers.contains(layer) && "Layer not found");
 
-    ApplyTilesTexture(newTileTextures);
-}
-
-void TileModificationCommand::Revert() {
-    ZoneScoped;
-    SDL_assert(canvas->HasLayer(layer) && "Layer not found");
-    ApplyTilesTexture(previousTileTextures);
-}
-
-void TileModificationCommand::SavePreviousTilesTexture(std::span<Tile> tiles) {
-    ZoneScoped;
-
-    const auto textures = DuplicateTileTextures(tiles);
-    for (size_t i = 0; i < tiles.size(); i++) {
-        const auto coord = canvas->tileInfos.at(tiles[i]);
-        if (previousTileTextures.contains(coord)) {
-            SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures[i]);
-            continue;
-        } else {
-            previousTileTextures[coord] = textures[i];
+    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    for (auto [tile, textures] : tileTextures) {
+        SDL_assert(textures.execute && "Texture is invalid");
+        if (!canvas->tilesLoaded.contains(tile)) {
+            if (!canvas->CreateTile(tile, false)) {
+                SDL_assert(false && "Failed to create tile");
+            }
         }
-    }
-}
 
-void TileModificationCommand::SaveNewTilesTexture(std::span<Tile> tiles) {
-    ZoneScoped;
-
-    const auto textures = DuplicateTileTextures(tiles);
-    for (size_t i = 0; i < tiles.size(); i++) {
-        const auto coord = canvas->tileInfos.at(tiles[i]);
-        if (newTileTextures.contains(coord)) {
-            SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures[i]);
-            continue;
-        } else {
-            newTileTextures[coord] = textures[i];
-        }
-    }
-}
-
-void TileModificationCommand::ApplyTilesTexture(
-    const std::unordered_map<TileCoord, SDL_GPUTexture*>& tileCoordsTexture) const {
-    if (tileCoordsTexture.empty()) {
-        return;
-    }
-
-    std::unordered_map<TileCoord, SDL_GPUTexture*> copiedTileToChange(tileCoordsTexture.size());
-
-    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(canvas->app->renderer.device);
-    SDL_assert(cmd && "Failed to create copyPass command buffer");
-    SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
-
-    for (const auto& [tileCoord, texture] : tileCoordsTexture) {
-        auto* const duplicatedTileTexture = canvas->app->renderer.DuplicateTileTexture(copyPass, texture);
-        SDL_assert(duplicatedTileTexture && "Failed to duplicate tile texture");
-        copiedTileToChange[tileCoord] = duplicatedTileTexture;
-    }
-
-    SDL_EndGPUCopyPass(copyPass);
-    auto* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-    SDL_assert(fence && "Failed to submit copyPass command buffer");
-
-    // TODO: Think about a way to make this less blocking. Especialy when
-    // spamming Undo or Redo
-    SDL_WaitForGPUFences(canvas->app->renderer.device, true, &fence, 1);
-    SDL_ReleaseGPUFence(canvas->app->renderer.device, fence);
-
-    for (const auto& [tileCoord, texture] : copiedTileToChange) {
-        SDL_assert(texture && "Texture is invalid");
-        Tile tile = canvas->GetLoadedTileAt(layer, tileCoord.pos);
-        if (tile == TILE_INVALID) {
-            tile = canvas->CreateTile(layer, tileCoord.pos);
-            SDL_assert(tile != TILE_INVALID && "Failed to create tile");
-
-            // We don't need to upload a blank texture to this tile, this could be avoided by providing an override to
-            // CreateTile with the SDL_GPUTexture* as an input, stating this is the texture you will use
-            canvas->app->renderer.tileTextureUninitialized.erase(tile);
-
-            // This tile was originally unloaded, so we unload it as soon as possible, the Tile is still save to use for
-            // the duration of this function
-            canvas->QueueUnloadTile(layer, tile);
-        }
-        SDL_assert(tile != TILE_INVALID && "Failed to create tile");
-
+        SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
         SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
         SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
         SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
 
-        canvas->app->renderer.tileTextures[tile] = texture;
-        canvas->layerTilesModified.at(layer).insert(tile);
+        canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.execute);
+        canvas->tilesModified.insert(tile);
     }
+    SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }
 
-std::vector<SDL_GPUTexture*> TileModificationCommand::DuplicateTileTextures(std::span<Tile> tiles) const {
-    // The textures must be duplicated. The texture saved in the command don't share the same lifetime as the one
-    // loaded/unloaded in runtime. The  textures here should be kept as archive versions only and never used as is to
-    // avoid leaks/crash
+void TileModificationCommand::Revert() {
+    ZoneScoped;
+    SDL_assert(canvas->layers.contains(layer) && "Layer not found");
 
-    std::vector<SDL_GPUTexture*> duplicatedTilesTexture;
-    duplicatedTilesTexture.reserve(tiles.size());
+    // We really should duplicate the texture before applying it
 
-    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(canvas->app->renderer.device);
-    SDL_assert(cmd && "Failed to create copyPass command buffer");
-    SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
+    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    for (auto [tile, textures] : tileTextures) {
+        SDL_assert(textures.revert && "Texture is invalid");
+        if (!canvas->tilesLoaded.contains(tile)) {
+            if (!canvas->CreateTile(tile, false)) {
+                SDL_assert(false && "Failed to create tile");
+            }
+        }
 
-    for (const auto& tile : tiles) {
-        SDL_assert(tile != TILE_INVALID && "Tile is invalid");
-        SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "Tile texture not found");
+        SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
+        SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
+        SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
+        SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
 
-        auto* const tileTexture = canvas->app->renderer.tileTextures.at(tile);
-        auto* const duplicatedTileTexture = canvas->app->renderer.DuplicateTileTexture(copyPass, tileTexture);
-        SDL_assert(duplicatedTileTexture && "Failed to duplicate tile texture");
-        duplicatedTilesTexture.push_back(duplicatedTileTexture);
+        canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.revert);
+        canvas->tilesModified.insert(tile);
     }
+    SDL_assert(canvas->app->renderer.EndCopyPass(true));
+}
 
-    SDL_EndGPUCopyPass(copyPass);
-    auto* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-    SDL_assert(fence && "Failed to submit copyPass command buffer");
+void TileModificationCommand::TrackTile(TileCoord tile) {
+    ZoneScoped;
+    tileTextures.insert(tile, {.revert = nullptr, .execute = nullptr});
+}
 
-    // TODO: Think about a way to make this less blocking. Especialy when
-    // spamming Undo or Redo
-    SDL_WaitForGPUFences(canvas->app->renderer.device, true, &fence, 1);
-    SDL_ReleaseGPUFence(canvas->app->renderer.device, fence);
+void TileModificationCommand::SaveTrackedTilesForPrevious() {
+    ZoneScoped;
 
-    return duplicatedTilesTexture;
+    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    for (auto [tile, textures] : tileTextures) {
+        if (canvas->app->renderer.tileTextures.contains(tile)) {
+            textures.revert = canvas->app->renderer.DuplicateTileTexture(tile);
+        }
+    }
+    SDL_assert(canvas->app->renderer.EndCopyPass(true));
+}
+
+void TileModificationCommand::SaveTrackedTilesForNew() {
+    ZoneScoped;
+    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    for (auto [tile, textures] : tileTextures) {
+        if (canvas->app->renderer.tileTextures.contains(tile)) {
+            textures.execute = canvas->app->renderer.DuplicateTileTexture(tile);
+        }
+    }
+    SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }
 
 CommandHistory::CommandHistory(size_t capacity) : commands(capacity) {}

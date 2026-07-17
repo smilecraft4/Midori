@@ -1,34 +1,70 @@
 #pragma once
 
 #include "defines.hpp"
-#include "layers.h"
-#include <glm/vec2.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/gtx/hash.hpp>
+#include "base.hpp"
+#include <cstdint>
+#include <type_traits>
+#include <utility>
 
 namespace Midori {
 
-// This does not need to be this big because tiles are only assigned an ID when they are loaded. And I never expect to
-// have UINT16_MAX tiles loaded at once
-using Tile = uint16_t;
+enum class TileState : uint8_t {
+    None = 0,
+    Loaded = 1 << 0,   // is loaded and can be showed
+    Visible = 1 << 1,  // is visible
+    Editable = 1 << 2, // can be edited using compute shaders
+    Modified = 1 << 3, // is modified, needs to be downloaded when saving
+};
 
-constexpr Tile TILE_INVALID = TILES_MAX;
+constexpr TileState operator|(TileState lhs, TileState rhs) {
+    return static_cast<TileState>(std::to_underlying(lhs) | std::to_underlying(rhs));
+}
+
+constexpr TileState& operator|=(TileState& lhs, TileState rhs) {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+enum class TileWriteState : uint8_t {
+    Pending,
+    Downloading,
+    Encoding,
+    Writting,
+    Done,
+};
+
+enum class TileReadState : uint8_t {
+    Pending,
+    Read,
+    Decoded,
+    Uploaded,
+    Done,
+};
+
+struct TileInfo {
+    TileState state;
+};
 
 struct TileCoord {
-    Layer layer;
-    glm::ivec2 pos;
+    Layer layer{};
+    TileAxis y{};
+    TileAxis x{};
+    uint8_t pad[2];
 
-    bool operator==(const TileCoord& other) const { return layer == other.layer && pos == other.pos; }
+    bool operator==(const TileCoord& other) const noexcept {
+        return layer == other.layer && y == other.y && x == other.x;
+    }
 };
+static_assert(sizeof(TileCoord) == sizeof(size_t), "Tile coord must be 8bytes");
 
 } // namespace Midori
 
 template<>
 struct std::hash<Midori::TileCoord> {
-    size_t operator()(const Midori::TileCoord& tc) const {
-        // this may create hash too big for what is trully needed
-        size_t h1 = std::hash<Midori::Layer>{}(tc.layer);
-        size_t h2 = std::hash<glm::ivec2>{}(tc.pos);
-        return h1 ^ (h2 * 2654435761u);
+    size_t operator()(const Midori::TileCoord& t) const {
+        size_t hash = static_cast<size_t>(std::make_unsigned_t<Layer>(t.layer)) << 48
+                    | static_cast<size_t>(std::make_unsigned_t<TileAxis>(t.y)) << 32
+                    | static_cast<size_t>(std::make_unsigned_t<TileAxis>(t.x)) << 16;
+        return Splitmix64(hash);
     }
 };

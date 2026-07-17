@@ -1,7 +1,9 @@
-﻿#include "viewport.h"
-#include "SDL3/SDL_assert.h"
+﻿#include "viewport.hpp"
+
 #include "defines.hpp"
-#include "glm/ext/matrix_transform.hpp"
+
+#include <SDL3/SDL_assert.h>
+#include <glm/ext/matrix_transform.hpp>
 #include <imgui.h>
 #include <numbers>
 #include <tracy/Tracy.hpp>
@@ -31,27 +33,18 @@ void Viewport::SetTranslation(glm::vec2 newTranslation) {
 }
 
 void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
-    // origin is the cursor position in screen-centered coordinates.
-    // Remember which canvas point currently sits under the cursor.
     // const glm::vec2 pivotCanvas = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(origin, 0.0f, 1.0f));
     // zoomOrigin = pivotCanvas;
 
-    // Exponential (multiplicative) zoom: `amount` is a log-space increment, so
-    // every drag-pixel is a constant *percentage* change. This makes the zoom
-    // feel uniform/linear at any scale instead of stalling when zoomed in and
-    // over-shooting when zoomed out.
     zoom.x *= std::exp(amount.x);
     zoom.y *= std::exp(amount.y);
 
-    // zoom += amount;
     zoom.x = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.x));
     zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));
 
     viewComputed = false;
     ComputeViewMatrix();
 
-    // The zoom moved the pivot away from the cursor; translate it back so the
-    // canvas point under the cursor stays fixed (zoom centered on the cursor).
     // const glm::vec2 pivotScreen = static_cast<glm::vec2>(ViewMatrix() * glm::vec4(pivotCanvas, 0.0f, 1.0f));
     // Translate(origin - pivotScreen);
 }
@@ -121,8 +114,6 @@ void Viewport::ComputeViewMatrix() {
     vY = glm::vec2(viewMat[1]) * static_cast<float>(TILE_HEIGHT);
     vTrans = glm::vec2(viewMat[3]);
 
-    // TODO: take into account zoom offset;
-
     viewMatInv = glm::inverse(viewMat);
 
     viewComputed = true;
@@ -166,7 +157,7 @@ bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
         && (tMin.y <= (viewSize.y / 2.0f) && tMax.y >= (-viewSize.y / 2.0f));
 }
 
-std::vector<glm::ivec2, arena_allocator<glm::ivec2>> Viewport::VisibleTiles(Arena<>& arena) const {
+std::vector<glm::ivec2, arena_allocator<glm::ivec2>> Viewport::VisibleTiles(arena<>& arena) const {
     SDL_assert(viewComputed);
     constexpr glm::vec2 T_SIZE(TILE_WIDTH, TILE_HEIGHT);
 

@@ -4,23 +4,30 @@
 #include <glm/vec2.hpp>
 #include <cstdint>
 #include <memory>
-#include <string>
 
 namespace Midori {
 
 class App;
 
+enum class Tool : uint8_t {
+    Paint,
+    Erase,
+    Sample,
+};
+
+enum class ToolState : uint8_t {
+    None,
+    Started,
+};
+
+constexpr const char* TOOL_NAME[] = {"Paint", "Erase", "Sample"};
+
 struct IState {
     explicit IState(App* app);
     virtual ~IState() = default;
 
-    [[nodiscard]] virtual std::string Name() const = 0;
     virtual void OnEvent(const SDL_Event* event) = 0;
     virtual void DrawUI() const = 0;
-
-    // When true, pointer events reach the state even while the cursor hovers a UI window.
-    // A stroke must keep updating and must end on release, wherever the cursor is.
-    [[nodiscard]] virtual bool CapturesPointer() const { return false; }
 
     App* app;
 };
@@ -28,10 +35,7 @@ struct IState {
 struct StateManager {
     explicit StateManager(App* app);
 
-    // The new state becomes active after the current OnEvent returns,
-    // so a state can call Switch from inside its own OnEvent.
     void Switch(std::unique_ptr<IState> state);
-
     void OnEvent(const SDL_Event* event);
 
     App* app;
@@ -43,7 +47,6 @@ struct StateManager {
 struct IdleState : IState {
     explicit IdleState(App* app);
 
-    [[nodiscard]] std::string Name() const override;
     void OnEvent(const SDL_Event* event) override;
     void DrawUI() const override;
 };
@@ -52,7 +55,6 @@ struct IdleState : IState {
 struct NavigateState : IState {
     explicit NavigateState(App* app);
 
-    [[nodiscard]] std::string Name() const override;
     void OnEvent(const SDL_Event* event) override;
     void DrawUI() const override;
 
@@ -66,16 +68,25 @@ struct NavigateState : IState {
     bool dragging{false};
 };
 
-// Brush or eraser stroke in progress; entered on pointer down, left on pointer up.
-struct StrokeState : IState {
-    StrokeState(App* app, bool erasing);
+struct PaintState : IState {
+    PaintState(App* app);
 
-    [[nodiscard]] std::string Name() const override;
     void OnEvent(const SDL_Event* event) override;
     void DrawUI() const override;
-    [[nodiscard]] bool CapturesPointer() const override { return true; }
+};
 
-    bool erasing{false};
+struct EraseState : IState {
+    EraseState(App* app);
+
+    void OnEvent(const SDL_Event* event) override;
+    void DrawUI() const override;
+};
+
+struct SampleState : IState {
+    SampleState(App* app);
+
+    void OnEvent(const SDL_Event* event) override;
+    void DrawUI() const override;
 };
 
 } // namespace Midori

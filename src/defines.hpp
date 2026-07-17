@@ -1,6 +1,7 @@
 #pragma once
 
 #include "base.hpp"
+#include <limits>
 
 constexpr size_t WINDOW_WIDTH_MIN = 0;
 constexpr size_t WINDOW_HEIGHT_MIN = 0;
@@ -33,5 +34,17 @@ constexpr size_t TILE_SIZE = TILE_WIDTH * TILE_HEIGHT * TILE_PIXEL_SIZE;
 // plus the 14-byte header and 8-byte end padding. This exceeds TILE_SIZE, so
 // encoded tiles must never share the raw TILE_SIZE buffers.
 constexpr size_t TILE_ENCODED_MAX_SIZE = (TILE_WIDTH * TILE_HEIGHT * (TILE_PIXEL_SIZE + 1)) + 14 + 8;
-constexpr size_t TILE_MAX_CONCURENT_UPLOAD = 32;
-constexpr size_t TILE_MAX_CONCURENT_DOWNLOAD = 32;
+
+constexpr size_t TILE_MAX_INFLIGHT_UPLOADS = 3;
+constexpr size_t TILE_MAX_CONCURENT_UPLOADS = 32;
+constexpr size_t TILE_MAX_INFLIGHT_DOWNLOADS = 3;
+constexpr size_t TILE_MAX_CONCURENT_DOWNLOADS = 32;
+
+constexpr size_t STROKE_MAX_POINTS = 4096;
+
+
+using TileAxis = int16_t;
+using Layer = uint16_t;
+using LayerHeight = uint16_t;
+constexpr Layer LAYER_INVALID = std::numeric_limits<Layer>::max();
+

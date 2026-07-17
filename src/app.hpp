@@ -1,9 +1,10 @@
 ﻿#pragma once
 
-#include "canvas.h"
-#include "renderer.h"
-#include "states.h"
+#include "canvas.hpp"
+#include "renderer.hpp"
+#include "states.hpp"
 #include "base.hpp"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_events.h>
 #include <glm/vec2.hpp>
@@ -44,9 +45,9 @@ public:
 
     // TODO: this should not be there but somewhere else
     void DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList);
-    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "");
+    void DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label = "") const;
 
-    Arena<> frameArena{1_MiB};
+    arena<> frameArena{1_MiB};
 
     SDL_Window* window = nullptr;
     std::vector<std::string> args;
@@ -70,7 +71,6 @@ public:
     glm::ivec2 windowPos = {SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED};
     glm::ivec2 windowSize = {1280, 720};
 
-    /* should this be in canvas space ?? */
     glm::vec2 cursorLastPos = glm::vec2(0.0f);
     glm::vec2 cursorCurrentPos = glm::vec2(0.0f);
     glm::vec2 cursorDeltaPos = glm::vec2(0.0f);

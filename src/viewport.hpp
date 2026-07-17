@@ -27,7 +27,7 @@ public:
     [[nodiscard]] glm::mat4 InverseViewMatrix() const;
     [[nodiscard]] glm::vec2 ScreenToCanvas(glm::vec2 screenPos) const;
     [[nodiscard]] bool IsTileVisible(glm::ivec2 tilePos) const;
-    [[nodiscard]] std::vector<glm::ivec2, arena_allocator<glm::ivec2>> VisibleTiles(Arena<>& arena) const;
+    [[nodiscard]] std::vector<glm::ivec2, arena_allocator<glm::ivec2>> VisibleTiles(arena<>& arena) const;
 
     void ComputeViewMatrix();
 
