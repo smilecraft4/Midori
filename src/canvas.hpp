@@ -82,11 +82,12 @@ struct Canvas {
     bool LoadTile(TileCoord tile);
     bool UnloadTile(TileCoord tile);
     bool CreateTile(TileCoord tile, bool initialize = true);
-    bool DestroyTile(TileCoord tile);
+    void DestroyTile(TileCoord tile);
     bool SaveTile(TileCoord tile);
     bool DeleteTile(TileCoord tile);
     bool MergeTiles(TileCoord srcTile, TileCoord dstTile);
     bool MoveTile(TileCoord srcTile, TileCoord dstTile);
+    void MarkTileDirty(TileCoord tile);
 
     // Those should be moved to the state directly instead
     // They indeed are pretty tighly coupled with the renderer

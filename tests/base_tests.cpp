@@ -321,8 +321,8 @@ TEST_CASE("HashSet tombstone reuse") {
     }
     CHECK(set.size() == 30);
 
-    // Inserting an existing key is a no-op that still reports success.
-    CHECK(set.insert({0, 0}) == true);
+    // Inserting an existing key is a no-op that reports false (no insertion took place).
+    CHECK(set.insert({0, 0}) == false);
     CHECK(set.size() == 30);
 
     size_t counter = 0;
@@ -367,10 +367,10 @@ TEST_CASE("HashMap") {
     CHECK(map.size() == 2);
     CHECK(map.contains(bar2) == true);
 
-    // emplace of an existing key returns the existing element without inserting.
-    Foo& existing = map.emplace(bar1, mt);
+    // emplace of an existing key makes no change and reports false (no insertion).
+    CHECK(map.emplace(bar1, mt) == false);
     CHECK(map.size() == 2);
-    CHECK(existing == foo1);
+    CHECK(map.at(bar1) == foo1);
 
     CHECK(map.reserve(1) == false);
     CHECK(map.capacity() == 128);
@@ -604,11 +604,11 @@ TEST_CASE("SlotMap full") {
     CHECK(foos.emplace(mt) == 1);
     CHECK(foos.size() == 2);
 
-    // Once full, allocating variants must report the sentinel instead of writing
-    // out of bounds.
+    // Once full, allocating variants throw std::bad_alloc instead of writing out
+    // of bounds. free_slot() stays non-throwing and reports the sentinel.
     CHECK(foos.free_slot() == static_cast<size_t>(-1));
-    CHECK(foos.emplace(mt) == static_cast<size_t>(-1));
-    CHECK(foos.push(foo) == static_cast<size_t>(-1));
+    CHECK_THROWS_AS(foos.emplace(mt), std::bad_alloc);
+    CHECK_THROWS_AS(foos.push(foo), std::bad_alloc);
     CHECK(foos.size() == 2);
 
     // Freeing a slot makes room again.
@@ -616,4 +616,81 @@ TEST_CASE("SlotMap full") {
     CHECK(foos.free_slot() == 0);
     CHECK(foos.push(foo) == 0);
     CHECK(foos.size() == 2);
+}
+
+TEST_CASE("Container error handling (STL-style)") {
+    arena arena(64_KiB);
+    std::random_device rd;
+    std::mt19937 mt(rd());
+
+    Bar bar1{.a = 1, .b = 2};
+    Bar bar2{.a = 2, .b = 2};
+
+    SUBCASE("hash_map::at throws std::out_of_range on a missing key") {
+        hash_map<Bar, Foo, arena_allocator<Bar>> map(16, arena);
+        map.insert(bar1, Foo{mt});
+        CHECK_NOTHROW(map.at(bar1));
+        CHECK_THROWS_AS(map.at(bar2), std::out_of_range);
+    }
+
+    SUBCASE("insert reports whether a new element was inserted") {
+        hash_set<Bar, arena_allocator<Bar>> set(16, arena);
+        CHECK(set.insert(bar1) == true);  // newly inserted
+        CHECK(set.insert(bar1) == false); // already present
+        CHECK(set.size() == 1);
+
+        hash_map<Bar, Foo, arena_allocator<Bar>> map(16, arena);
+        CHECK(map.insert(bar1, Foo{mt}) == true);
+        CHECK(map.insert(bar1, Foo{mt}) == false);
+        CHECK(map.emplace(bar1, mt) == false);
+        CHECK(map.size() == 1);
+    }
+
+    SUBCASE("a full table throws std::bad_alloc on a new key") {
+        hash_set<Bar, arena_allocator<Bar>> set(4, arena);
+        CHECK(set.insert({0, 0}) == true);
+        CHECK(set.insert({1, 0}) == true);
+        CHECK(set.insert({2, 0}) == true);
+        CHECK(set.insert({3, 0}) == true);
+        CHECK(set.size() == 4);
+        // Full + absent key -> throw; an existing key still just reports false.
+        CHECK_THROWS_AS(set.insert({4, 0}), std::bad_alloc);
+        CHECK(set.insert({0, 0}) == false);
+        CHECK(set.size() == 4);
+
+        hash_map<Bar, Foo, arena_allocator<Bar>> map(4, arena);
+        CHECK(map.insert({0, 0}, Foo{mt}) == true);
+        CHECK(map.insert({1, 0}, Foo{mt}) == true);
+        CHECK(map.insert({2, 0}, Foo{mt}) == true);
+        CHECK(map.insert({3, 0}, Foo{mt}) == true);
+        CHECK_THROWS_AS(map.insert({4, 0}, Foo{mt}), std::bad_alloc);
+        CHECK_THROWS_AS(map.emplace({5, 0}, mt), std::bad_alloc);
+        CHECK(map.size() == 4);
+    }
+
+    SUBCASE("zero-capacity containers throw on insert") {
+        hash_set<Bar, arena_allocator<Bar>> set(0, arena);
+        CHECK_THROWS_AS(set.insert(bar1), std::bad_alloc);
+
+        hash_map<Bar, Foo, arena_allocator<Bar>> map(0, arena);
+        CHECK_THROWS_AS(map.insert(bar1, Foo{mt}), std::bad_alloc);
+        CHECK_THROWS_AS(map.emplace(bar1, mt), std::bad_alloc);
+    }
+
+    SUBCASE("slot_map::at throws std::out_of_range on an invalid slot") {
+        slot_map<size_t, Foo, arena_allocator<Foo>> foos(4, arena);
+        auto slot = foos.push(Foo{mt});
+        CHECK_NOTHROW(foos.at(slot));
+        CHECK_THROWS_AS(foos.at(3), std::out_of_range);  // in range but empty
+        CHECK_THROWS_AS(foos.at(99), std::out_of_range); // out of range
+    }
+
+    SUBCASE("a full slot_map throws std::bad_alloc") {
+        slot_map<size_t, Foo, arena_allocator<Foo>> foos(2, arena);
+        foos.emplace(mt);
+        foos.emplace(mt);
+        CHECK(foos.free_slot() == static_cast<size_t>(-1)); // non-throwing probe
+        CHECK_THROWS_AS(foos.emplace(mt), std::bad_alloc);
+        CHECK_THROWS_AS(foos.push(Foo{mt}), std::bad_alloc);
+    }
 }

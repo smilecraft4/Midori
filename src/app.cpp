@@ -377,8 +377,13 @@ void App::Save() {
         }
     }
 
-    for (const auto& tile : canvas.tilesLoaded) {
-        canvas.SaveTile(tile);
+    // FIXME Use a tmp vector/iterator to avoid invalidating ptrs
+    for (const auto& tile : canvas.tilesModified) {
+        if (!canvas.tilesLoaded.contains(tile)) {
+            canvas.DeleteTile(tile);
+        } else {
+            canvas.SaveTile(tile);
+        }
     }
 
     saving = false;

@@ -62,7 +62,7 @@ struct TileModificationCommand final : public ICommand {
 
     Canvas* canvas;
     Layer layer;
-    hash_map<TileCoord, Textures> tileTextures;
+    hash_map<TileCoord, Textures> tileTextures{256};
 };
 
 struct ViewportChangeCommand final : public ICommand {

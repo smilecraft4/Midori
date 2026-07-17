@@ -13,11 +13,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 enable_testing()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(TRACY_ENABLE ON)
-else()
-    set(TRACY_ENABLE OFF)
-endif()
+set(TRACY_ENABLE ON)
+# if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+#     set(TRACY_ENABLE ON)
+# else()
+#     set(TRACY_ENABLE OFF)
+# endif()
 
 # Dependencies
 add_subdirectory(deps/SDL EXCLUDE_FROM_ALL)

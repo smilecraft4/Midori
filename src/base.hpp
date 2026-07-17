@@ -824,9 +824,12 @@ struct hash_set {
         return false;
     }
 
+    // std::set-style: returns true if a new element was inserted, false if the
+    // key was already present. Capacity exhaustion is a resource fault, so it
+    // throws std::bad_alloc (like a fixed-capacity container that cannot grow).
     bool insert(const Key& key) {
-        if (capacity_ == 0 || capacity_ == size_) {
-            return false;
+        if (capacity_ == 0) {
+            throw std::bad_alloc();
         }
 
         const size_t hash = std::hash<Key>{}(key);
@@ -838,7 +841,7 @@ struct hash_set {
             const int8_t m = metas_[pos];
             if (m == h2) { // full + H2 match -> candidate
                 if (keys_[pos] == key) {
-                    return true;
+                    return false; // already present -> no insertion took place
                 }
             } else if (m == EMPTY) { // key definitely absent -> insert here (or in a prior tombstone)
                 const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
@@ -861,7 +864,7 @@ struct hash_set {
             return true;
         }
 
-        return false;
+        throw std::bad_alloc(); // table full, key absent: capacity exhausted
     }
 
     bool erase(const Key& key) {
@@ -1262,9 +1265,12 @@ struct hash_map {
         return false;
     }
 
+    // std::map-style: returns true if a new element was inserted, false if the
+    // key was already present (the existing element is left untouched). Throws
+    // std::bad_alloc when the table is full and the key is absent.
     bool insert(const Key& key, const Elem& elem) {
-        if (capacity_ == 0 || capacity_ == size_) {
-            return false;
+        if (capacity_ == 0) {
+            throw std::bad_alloc();
         }
 
         const size_t hash = std::hash<Key>{}(key);
@@ -1276,7 +1282,7 @@ struct hash_map {
             const int8_t m = metas_[pos];
             if (m == h2) {
                 if (keys_[pos] == key) {
-                    return true;
+                    return false; // already present
                 }
             } else if (m == EMPTY) {
                 const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
@@ -1299,12 +1305,12 @@ struct hash_map {
             return true;
         }
 
-        return false;
+        throw std::bad_alloc();
     }
 
     bool insert(const Key& key, Elem&& elem) {
-        if (capacity_ == 0 || capacity_ == size_) {
-            return false;
+        if (capacity_ == 0) {
+            throw std::bad_alloc();
         }
 
         const size_t hash = std::hash<Key>{}(key);
@@ -1316,7 +1322,7 @@ struct hash_map {
             const int8_t m = metas_[pos];
             if (m == h2) {
                 if (keys_[pos] == key) {
-                    return true;
+                    return false; // already present
                 }
             } else if (m == EMPTY) {
                 const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
@@ -1339,12 +1345,17 @@ struct hash_map {
             return true;
         }
 
-        return false;
+        throw std::bad_alloc();
     }
 
+    // std::map-style: returns true if a new element was constructed in place,
+    // false if the key was already present (no construction happens). Throws
+    // std::bad_alloc when the table is full and the key is absent.
     template<typename... Args>
     bool emplace(const Key& key, Args&&... args) {
-        assert(capacity_ != 0 && "emplace on a zero-capacity hash_map");
+        if (capacity_ == 0) {
+            throw std::bad_alloc();
+        }
 
         const size_t hash = std::hash<Key>{}(key);
         const int8_t h2 = hash & 0x7f;
@@ -1355,7 +1366,7 @@ struct hash_map {
             const int8_t m = metas_[pos];
             if (m == h2) {
                 if (keys_[pos] == key) {
-                    return true;
+                    return false; // already present
                 }
             } else if (m == EMPTY) {
                 const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
@@ -1378,8 +1389,7 @@ struct hash_map {
             return true;
         }
 
-        // Table full and key absent (no-grow contract): nothing was inserted.
-        return false;
+        throw std::bad_alloc(); // table full, key absent: capacity exhausted
     }
 
     bool erase(const Key& key) {
@@ -1408,52 +1418,50 @@ struct hash_map {
         return false;
     }
 
+    // std::map-style checked access: throws std::out_of_range if the key is
+    // absent. Use contains()/find-then-branch when a miss is an expected state.
     Elem& at(const Key& key) {
-        if (size_ == 0) {
-            throw std::runtime_error("");
-        }
+        if (size_ != 0) {
+            const size_t hash = std::hash<Key>{}(key);
+            const int8_t h2 = hash & 0x7f;
+            size_t pos = (hash >> 7) % capacity_;
 
-        const size_t hash = std::hash<Key>{}(key);
-        const int8_t h2 = hash & 0x7f;
-        size_t pos = (hash >> 7) % capacity_;
-
-        for (size_t probed = 0; probed < capacity_; ++probed) {
-            const int8_t m = metas_[pos];
-            if (m == h2) {
-                if (keys_[pos] == key) {
-                    return elems_[pos];
+            for (size_t probed = 0; probed < capacity_; ++probed) {
+                const int8_t m = metas_[pos];
+                if (m == h2) {
+                    if (keys_[pos] == key) {
+                        return elems_[pos];
+                    }
+                } else if (m == EMPTY) {
+                    break;
                 }
-            } else if (m == EMPTY) {
-                throw std::runtime_error("");
+                pos = (pos + 1) % capacity_;
             }
-            pos = (pos + 1) % capacity_;
         }
 
-        throw std::runtime_error("");
+        throw std::out_of_range("hash_map::at: key not found");
     }
 
     [[nodiscard]] Elem& at(const Key& key) const {
-        if (size_ == 0) {
-            throw std::runtime_error("");
-        }
+        if (size_ != 0) {
+            const size_t hash = std::hash<Key>{}(key);
+            const int8_t h2 = hash & 0x7f;
+            size_t pos = (hash >> 7) % capacity_;
 
-        const size_t hash = std::hash<Key>{}(key);
-        const int8_t h2 = hash & 0x7f;
-        size_t pos = (hash >> 7) % capacity_;
-
-        for (size_t probed = 0; probed < capacity_; ++probed) {
-            const int8_t m = metas_[pos];
-            if (m == h2) {
-                if (keys_[pos] == key) {
-                    return elems_[pos];
+            for (size_t probed = 0; probed < capacity_; ++probed) {
+                const int8_t m = metas_[pos];
+                if (m == h2) {
+                    if (keys_[pos] == key) {
+                        return elems_[pos];
+                    }
+                } else if (m == EMPTY) {
+                    break;
                 }
-            } else if (m == EMPTY) {
-                throw std::runtime_error("");
+                pos = (pos + 1) % capacity_;
             }
-            pos = (pos + 1) % capacity_;
         }
 
-        throw std::runtime_error("");
+        throw std::out_of_range("hash_map::at: key not found");
     }
 
     struct Iterator {
@@ -1769,17 +1777,17 @@ struct slot_map {
         return static_cast<Slot>(slot);
     }
 
+    // Returns the slot the element was placed in. Throws std::bad_alloc when the
+    // map is full (fixed capacity, cannot grow). Use free_slot() to test for
+    // room without throwing.
     template<typename... Args>
     Slot emplace(Args&&... args) {
-        if (!capacity_) {
-            return static_cast<Slot>(-1);
-        }
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
         }
         if (slot == capacity_) { // full: no free slot, avoid an out-of-bounds write
-            return static_cast<Slot>(-1);
+            throw std::bad_alloc();
         }
         elem_atr::construct(ea_, elems_ + slot, std::forward<Args>(args)...);
         slots_[slot] = true;
@@ -1789,15 +1797,12 @@ struct slot_map {
     }
 
     Slot push(const Elem& elem) {
-        if (!capacity_) {
-            return static_cast<Slot>(-1);
-        }
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
         }
         if (slot == capacity_) {
-            return static_cast<Slot>(-1);
+            throw std::bad_alloc();
         }
         elem_atr::construct(ea_, elems_ + slot, elem);
         slots_[slot] = true;
@@ -1807,16 +1812,12 @@ struct slot_map {
     }
 
     Slot push(Elem&& elem) {
-        if (!capacity_) {
-            return static_cast<Slot>(-1);
-        }
-
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
         }
         if (slot == capacity_) {
-            return static_cast<Slot>(-1);
+            throw std::bad_alloc();
         }
 
         elem_atr::construct(ea_, elems_ + slot, std::move(elem));
@@ -1871,9 +1872,11 @@ struct slot_map {
         return true;
     }
 
+    // std::vector-style checked access: throws std::out_of_range for an
+    // out-of-range or empty slot.
     Elem& at(Slot slot) {
         if (slot >= capacity_ || !slots_[slot]) {
-            throw std::runtime_error("");
+            throw std::out_of_range("slot_map::at: invalid slot");
         }
 
         return elems_[slot];

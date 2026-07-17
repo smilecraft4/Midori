@@ -338,31 +338,24 @@ bool Canvas::CreateTile(TileCoord tile, bool initialize) {
     SDL_assert(!tilesLoaded.contains(tile) && "Tile already loaded");
     SDL_assert(!layers.at(tile.layer).tiles.contains(tile) && "Tile already exists");
 
-    if (!tilesModified.insert(tile)) {
-        return false;
-    }
     if (initialize) {
-        if (app->renderer.CreateTileTexture(tile) != Renderer::Error::None) {
-            return false;
-        }
+        SDL_assert(app->renderer.CreateTileTexture(tile) == Renderer::Error::None);
     } else {
-        if (app->renderer.CreateUninitializedTileTexture(tile) != Renderer::Error::None) {
-            return false;
-        }
+        SDL_assert(app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
     }
 
     tilesLoaded.insert(tile);
+    MarkTileDirty(tile);
+
     return true;
 }
 
-bool Canvas::DestroyTile(TileCoord tile) {
+void Canvas::DestroyTile(TileCoord tile) {
     ZoneScoped;
     SDL_assert(tilesLoaded.contains(tile) && "Tile not found");
 
     app->renderer.DestroyTileTexture(tile);
     tilesLoaded.erase(tile);
-
-    return true;
 }
 
 bool Canvas::UnloadTile(TileCoord tile) {
@@ -373,13 +366,14 @@ bool Canvas::UnloadTile(TileCoord tile) {
     if (tilesModified.contains(tile)) {
         return SaveTile(tile);
     } else {
-        return DestroyTile(tile);
+        DestroyTile(tile);
     }
+
+    return true;
 }
 
 bool Canvas::SaveTile(TileCoord tile) {
     ZoneScoped;
-    SDL_assert(tilesLoaded.contains(tile) && "Tile not found");
 
     if (!tilesModified.contains(tile)) {
         return true;
@@ -494,7 +488,8 @@ bool Canvas::MergeTiles(TileCoord srcTile, TileCoord dstTile) {
 
     if (tilesLoaded.contains(dstTile)) {
         app->renderer.MergeTileTextures(srcTile, dstTile);
-        tilesModified.insert(dstTile);
+
+        MarkTileDirty(dstTile);
     } else {
         if (!MoveTile(srcTile, dstTile)) {
             return false;
@@ -511,7 +506,7 @@ bool Canvas::MoveTile(TileCoord srcTile, TileCoord dstTile) {
     SDL_assert(tilesLoaded.contains(srcTile));
 
     tilesLoaded.insert(dstTile);
-    tilesModified.insert(dstTile);
+    MarkTileDirty(dstTile);
 
     // FIXME Duplicate the texture to avoid weird errors
     const auto& tileTexture = app->renderer.tileTextures.at(srcTile);
@@ -526,6 +521,17 @@ bool Canvas::MoveTile(TileCoord srcTile, TileCoord dstTile) {
     }
 
     return true;
+}
+
+void Canvas::MarkTileDirty(TileCoord tile) {
+    ZoneScoped;
+    if (!layers.contains(tile.layer)) {
+        return;
+    }
+    if (layers.at(tile.layer).internal) {
+        return;
+    }
+    tilesModified.insert(tile);
 }
 
 // TODO: Make multithreaded
@@ -596,7 +602,7 @@ bool Canvas::UpdateTileWriting() {
         SDL_assert(tilesModified.contains(tile));
 
         if (data.state == TileWriteState::Pending) {
-            auto slot = app->renderer.DownloadTileTexture(tile);
+            const auto slot = app->renderer.DownloadTileTexture(tile);
             if (!slot.has_value()) {
                 continue;
             }
@@ -1063,7 +1069,7 @@ void Canvas::StartEraseStroke(StrokePoint point) {
         };
         if (tilesLoaded.contains(tile)) {
             strokeTileAffected.insert(tile);
-            tilesModified.insert(tile);
+            MarkTileDirty(tile);
             currentTileModificationCommand->TrackTile(tile);
         }
     }
@@ -1109,7 +1115,7 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
             };
             if (tilesLoaded.contains(tile)) {
                 strokeTileAffected.insert(tile);
-                tilesModified.insert(tile);
+                MarkTileDirty(tile);
                 currentTileModificationCommand->TrackTile(tile);
             }
         }

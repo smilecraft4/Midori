@@ -30,20 +30,20 @@ void TileModificationCommand::Execute() {
 
     SDL_assert(canvas->app->renderer.BeginCopyPass());
     for (auto [tile, textures] : tileTextures) {
-        SDL_assert(textures.execute && "Texture is invalid");
-        if (!canvas->tilesLoaded.contains(tile)) {
-            if (!canvas->CreateTile(tile, false)) {
-                SDL_assert(false && "Failed to create tile");
+        if (!textures.execute) {
+            canvas->DestroyTile(tile);
+        } else {
+            if (!canvas->tilesLoaded.contains(tile)) {
+                SDL_assert(canvas->CreateTile(tile, false));
             }
+
+            SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
+            SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
+            SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
+            SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
+            canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.execute);
         }
-
-        SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
-        SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
-        SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
-        SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
-
-        canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.execute);
-        canvas->tilesModified.insert(tile);
+        canvas->MarkTileDirty(tile);
     }
     SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }
@@ -52,24 +52,22 @@ void TileModificationCommand::Revert() {
     ZoneScoped;
     SDL_assert(canvas->layers.contains(layer) && "Layer not found");
 
-    // We really should duplicate the texture before applying it
-
     SDL_assert(canvas->app->renderer.BeginCopyPass());
     for (auto [tile, textures] : tileTextures) {
-        SDL_assert(textures.revert && "Texture is invalid");
-        if (!canvas->tilesLoaded.contains(tile)) {
-            if (!canvas->CreateTile(tile, false)) {
-                SDL_assert(false && "Failed to create tile");
+        if (!textures.revert) {
+            canvas->DestroyTile(tile);
+        } else {
+            if (!canvas->tilesLoaded.contains(tile)) {
+                SDL_assert(canvas->CreateTile(tile, false));
             }
+
+            SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
+            SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
+            SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
+            SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
+            canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.revert);
         }
-
-        SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
-        SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
-        SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
-        SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
-
-        canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.revert);
-        canvas->tilesModified.insert(tile);
+        canvas->MarkTileDirty(tile);
     }
     SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }

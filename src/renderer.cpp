@@ -685,6 +685,7 @@ bool Renderer::UpdateUninitializedTextures() {
                 .pixels_per_row = TILE_WIDTH,
                 .rows_per_layer = TILE_HEIGHT,
             };
+            SDL_assert(tileTextures.at(tile) && "Tile texture is null");
             const SDL_GPUTextureRegion textureRegion = {
                 .texture = tileTextures.at(tile),
                 .mip_level = 0,
@@ -809,6 +810,7 @@ bool Renderer::UpdateTileTextureUpload() {
                 .pixels_per_row = TILE_WIDTH,
                 .rows_per_layer = TILE_HEIGHT,
             };
+            SDL_assert(tileTextures.at(slot.tile) && "Tile texture is null");
             const SDL_GPUTextureRegion textureRegion = {
                 .texture = tileTextures.at(slot.tile),
                 .mip_level = 0,
@@ -916,6 +918,7 @@ bool Renderer::UpdateTileTextureDownload() {
                     .pixels_per_row = TILE_WIDTH,
                     .rows_per_layer = TILE_HEIGHT,
                 };
+                SDL_assert(tileTextures.at(slot.tile) && "Tile texture is null");
                 const SDL_GPUTextureRegion source = {
                     .texture = tileTextures.at(slot.tile),
                     .mip_level = 0,
@@ -995,6 +998,7 @@ bool Renderer::UpdateTileEdit() {
                 continue;
             }
 
+            SDL_assert(tileTextures.at(tile) && "Tile texture is null");
             const SDL_GPUStorageTextureReadWriteBinding paintTileBinding[1] = {{
                 .texture = tileTextures.at(tile),
                 .mip_level = 0,
@@ -1108,6 +1112,9 @@ bool Renderer::Render() {
 
                 for (const auto& tile : app->canvas.tilesLoaded) {
                     if (tile.layer != layer) {
+                        continue;
+                    }
+                    if (!tileTextures.at(tile)) {
                         continue;
                     }
 
@@ -1382,6 +1389,7 @@ Renderer::Error Renderer::CreateUninitializedTileTexture(TileCoord tile) {
     };
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &textureCreateInfo);
     if (texture == nullptr) {
+        SDL_assert(false && "Failed to create texture");
         return Error::Unknown;
     } else {
         if (!tileTextures.insert(tile, texture)) {
@@ -1400,13 +1408,7 @@ Renderer::Error Renderer::CreateTileTexture(TileCoord tile) {
         return res;
     }
 
-    if (!tileTexturesToInitialize.insert(tile)) {
-        SDL_ReleaseGPUTexture(device, tileTextures.at(tile));
-        tileTextures.erase(tile);
-        SDL_assert(false && "Failed to insert tile texture for initilisation");
-        return Error::Unknown;
-    }
-
+    tileTexturesToInitialize.insert(tile);
     return Error::None;
 }
 
@@ -1414,16 +1416,22 @@ void Renderer::DestroyTileTexture(TileCoord tile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(tile) && "Tile texture not found");
 
-    SDL_ReleaseGPUTexture(device, tileTextures.at(tile));
+    auto* texture = tileTextures.at(tile);
+    if (texture) {
+        SDL_ReleaseGPUTexture(device, texture);
+    }
+
     tileTextures.erase(tile);
 }
 
-// TODO: transform into a single command buffer action, MergeTileTextures(eastl::vector<std::pair<Tile, Tile>>
-// tileToMerges)
+// TODO Transform into BeginMerge(), MergeTileTextures(), EndMerge()
 bool Renderer::MergeTileTextures(TileCoord overTile, TileCoord belowTile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(overTile));
     SDL_assert(tileTextures.contains(belowTile));
+
+    SDL_assert(tileTextures.at(overTile) && "Over tile textures is empty");
+    SDL_assert(tileTextures.at(belowTile) && "Below tile textures is empty, Prefer a move");
 
     const auto& overLayerInfo = app->canvas.layers.at(overTile.layer);
     const auto& belowLayerInfo = app->canvas.layers.at(belowTile.layer);
@@ -1501,13 +1509,14 @@ bool Renderer::BeginCopyPass() {
 SDL_GPUTexture* Renderer::DuplicateTileTexture(TileCoord tile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(tile));
+    SDL_assert(tileTextures.at(tile) && "Tile texture is null");
     return DuplicateTileTexture(tileTextures.at(tile));
 }
 
 SDL_GPUTexture* Renderer::DuplicateTileTexture(SDL_GPUTexture* texture) const {
     SDL_assert(currentCommandBuffer);
     SDL_assert(currentCopyPass);
-    SDL_assert(!texture);
+    SDL_assert(texture);
 
     const SDL_GPUTextureCreateInfo textureCreateInfo = {
         .type = SDL_GPU_TEXTURETYPE_2D,
