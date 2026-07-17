@@ -42,6 +42,9 @@ struct std::hash<Bar> {
 };
 
 int main() {
+    constexpr size_t N = 2048;
+
+    // ---------------------------------------------------------------- hash_set
     {
         arena arena(1_MiB);
 
@@ -50,9 +53,9 @@ int main() {
         std::uniform_int_distribution<int> keyDist(-16, 16);
         std::uniform_int_distribution<int> opsDist(0, 2);
 
-        std::vector<std::tuple<uint8_t, Bar>> ops(2048);
+        std::vector<std::tuple<uint8_t, Bar>> ops(N);
         for (auto& [type, key] : ops) {
-            type = opsDist(mt);
+            type = static_cast<uint8_t>(opsDist(mt));
             key.a = keyDist(mt);
             key.b = keyDist(mt);
         }
@@ -60,25 +63,25 @@ int main() {
         hash_set<Bar, arena_allocator<Bar>> set(ops.size(), arena);
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Insert", [&] {
-            for (const auto& [_, key] : ops) {
+            for (const auto& [type, key] : ops) {
                 ankerl::nanobench::doNotOptimizeAway(set.insert(key));
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Contains", [&] {
-            for (const auto& [_, key] : ops) {
+            for (const auto& [type, key] : ops) {
                 ankerl::nanobench::doNotOptimizeAway(set.contains(key));
             }
         });
 
-        ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Iterator", [&] {
+        ankerl::nanobench::Bench().batch(set.size()).run("HashSet Iterator", [&] {
             for (const auto& key : set) {
                 ankerl::nanobench::doNotOptimizeAway(key);
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Erase", [&] {
-            for (const auto& [_, key] : ops) {
+            for (const auto& [type, key] : ops) {
                 ankerl::nanobench::doNotOptimizeAway(set.erase(key));
             }
         });
@@ -101,23 +104,24 @@ int main() {
             }
         });
     }
+
+    // ---------------------------------------------------------------- hash_map
     {
         arena arena(1_MiB);
 
         std::random_device rd;
         std::mt19937 mt(rd());
-        std::uniform_real_distribution<float> elemDist(-1.0f, 1.0f);
         std::uniform_int_distribution<int> keyDist(-16, 16);
         std::uniform_int_distribution<int> opsDist(0, 3);
 
         std::vector<std::tuple<uint8_t, Bar, Foo>> ops;
-        ops.reserve(2048);
+        ops.reserve(N);
         for (size_t i = 0; i < ops.capacity(); i++) {
-            ops.emplace_back(std::tuple{opsDist(mt), Bar{.a = keyDist(mt), .b = keyDist(mt)}, Foo{mt}});
+            ops.emplace_back(static_cast<uint8_t>(opsDist(mt)), Bar{.a = keyDist(mt), .b = keyDist(mt)}, Foo{mt});
         }
 
         std::vector<Bar> em;
-        em.reserve(2048);
+        em.reserve(N);
         for (size_t i = 0; i < em.capacity(); i++) {
             em.emplace_back(Bar{.a = keyDist(mt), .b = keyDist(mt)});
         }
@@ -125,24 +129,24 @@ int main() {
         hash_map<Bar, Foo, arena_allocator<Bar>> map(ops.size(), arena);
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Insert", [&] {
-            for (const auto& [ops, key, elem] : ops) {
+            for (const auto& [op, key, elem] : ops) {
                 ankerl::nanobench::doNotOptimizeAway(map.insert(key, elem));
             }
         });
 
-        ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Emplace", [&] {
+        ankerl::nanobench::Bench().batch(em.size()).run("HashMap Emplace", [&] {
             for (const auto& key : em) {
                 ankerl::nanobench::doNotOptimizeAway(map.emplace(key, mt));
             }
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Contains", [&] {
-            for (const auto& [ops, key, elem] : ops) {
+            for (const auto& [op, key, elem] : ops) {
                 ankerl::nanobench::doNotOptimizeAway(map.contains(key));
             }
         });
 
-        ankerl::nanobench::Bench().batch(ops.size()).run("HashSet Iterator", [&] {
+        ankerl::nanobench::Bench().batch(map.size()).run("HashMap Iterator", [&] {
             for (auto [key, elem] : map) {
                 ankerl::nanobench::doNotOptimizeAway(key);
                 ankerl::nanobench::doNotOptimizeAway(elem);
@@ -150,7 +154,7 @@ int main() {
         });
 
         ankerl::nanobench::Bench().batch(ops.size()).run("HashMap Erase", [&] {
-            for (const auto& [ops, key, elem] : ops) {
+            for (const auto& [op, key, elem] : ops) {
                 ankerl::nanobench::doNotOptimizeAway(map.erase(key));
             }
         });
@@ -173,6 +177,54 @@ int main() {
                     default:
                         break;
                 }
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------- slot_map
+    {
+        arena arena(4_MiB);
+
+        std::random_device rd;
+        std::mt19937 mt(rd());
+
+        slot_map<uint32_t, Foo, arena_allocator<Foo>> slots(N, arena);
+
+        ankerl::nanobench::Bench().batch(N).run("SlotMap Emplace", [&] {
+            for (size_t i = 0; i < N; i++) {
+                ankerl::nanobench::doNotOptimizeAway(slots.emplace(mt));
+            }
+        });
+
+        // Collect the live handles for the lookup benchmarks.
+        std::vector<uint32_t> handles;
+        handles.reserve(slots.size());
+        for (auto [slot, elem] : slots) {
+            handles.push_back(slot);
+        }
+
+        ankerl::nanobench::Bench().batch(handles.size()).run("SlotMap At", [&] {
+            for (auto handle : handles) {
+                ankerl::nanobench::doNotOptimizeAway(slots.at(handle));
+            }
+        });
+
+        ankerl::nanobench::Bench().batch(handles.size()).run("SlotMap Contains", [&] {
+            for (auto handle : handles) {
+                ankerl::nanobench::doNotOptimizeAway(slots.contains(handle));
+            }
+        });
+
+        ankerl::nanobench::Bench().batch(slots.size()).run("SlotMap Iterator", [&] {
+            for (auto [slot, elem] : slots) {
+                ankerl::nanobench::doNotOptimizeAway(slot);
+                ankerl::nanobench::doNotOptimizeAway(elem);
+            }
+        });
+
+        ankerl::nanobench::Bench().batch(handles.size()).run("SlotMap Erase", [&] {
+            for (auto handle : handles) {
+                ankerl::nanobench::doNotOptimizeAway(slots.erase(handle));
             }
         });
     }

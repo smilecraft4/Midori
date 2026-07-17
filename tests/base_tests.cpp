@@ -57,6 +57,56 @@ TEST_CASE("Arena Allocator") {
     CHECK(arena.capacity() == 4_KiB);
 }
 
+TEST_CASE("Arena Copy/Move") {
+    arena a(4_KiB);
+    auto* buf = static_cast<int*>(a.allocate(sizeof(int) * 4));
+    buf[0] = 42;
+    buf[3] = 7;
+    CHECK(a.size() == sizeof(int) * 4);
+
+    SUBCASE("copy constructor allocates an independent buffer") {
+        arena b(a);
+        CHECK(b.capacity() == a.capacity());
+        CHECK(b.size() == a.size());
+        CHECK(b.data_ != a.data_);
+        CHECK(reinterpret_cast<int*>(b.data_)[0] == 42);
+        CHECK(reinterpret_cast<int*>(b.data_)[3] == 7);
+        // The original is untouched.
+        CHECK(reinterpret_cast<int*>(a.data_)[0] == 42);
+    }
+
+    SUBCASE("move constructor steals the buffer") {
+        std::byte* data = a.data_;
+        arena c(std::move(a));
+        CHECK(c.data_ == data);
+        CHECK(c.size() == sizeof(int) * 4);
+        CHECK(c.capacity() == 4_KiB);
+        CHECK(a.data_ == nullptr);
+        CHECK(a.capacity() == 0);
+        CHECK(a.size() == 0);
+    }
+
+    SUBCASE("copy assignment") {
+        arena d(1_KiB);
+        d = a;
+        CHECK(d.capacity() == a.capacity());
+        CHECK(d.size() == a.size());
+        CHECK(d.data_ != a.data_);
+        CHECK(reinterpret_cast<int*>(d.data_)[3] == 7);
+    }
+
+    SUBCASE("move assignment") {
+        arena e(1_KiB);
+        std::byte* data = a.data_;
+        e = std::move(a);
+        CHECK(e.data_ == data);
+        CHECK(e.size() == sizeof(int) * 4);
+        CHECK(e.capacity() == 4_KiB);
+        CHECK(a.capacity() == 0);
+        CHECK(a.size() == 0);
+    }
+}
+
 TEST_CASE("Arena vector") {
     arena arena(10_KiB);
 
@@ -86,26 +136,62 @@ TEST_CASE("Pool Allocator") {
     std::mt19937 mt(rd());
 
     {
-        auto* foo1 = fooPool.Allocate(1, mt);
-        foo1->data[127] = 0.1f;
+        auto* foo1 = fooPool.allocate(1, mt);
+        foo1->data[31] = 0.1f;
 
-        auto* foo2 = fooPool.Allocate(1, mt);
-        foo2->data[127] = 0.1f;
+        auto* foo2 = fooPool.allocate(1, mt);
+        foo2->data[31] = 0.1f;
+
+        CHECK(foo1 != nullptr);
+        CHECK(foo2 != nullptr);
+        CHECK(foo1 != foo2);
 
         fooPool.deallocate(foo1, 1);
         fooPool.deallocate(foo2, 1);
     }
 
     {
-        auto* foo1 = fooPool.Allocate(1, mt);
-        foo1->data[127] = 0.1f;
+        auto* foo1 = fooPool.allocate(1, mt);
+        foo1->data[31] = 0.1f;
 
-        auto* foo2 = fooPool.Allocate(1, mt);
-        foo2->data[127] = 0.1f;
+        auto* foo2 = fooPool.allocate(1, mt);
+        foo2->data[31] = 0.1f;
 
         fooPool.deallocate(foo1, 1);
         fooPool.deallocate(foo2, 1);
     }
+}
+
+TEST_CASE("Pool Move") {
+    arena arena(1_MiB);
+
+    std::random_device rd;
+    std::mt19937 mt(rd());
+
+    pool<Foo, arena_allocator<Foo>> pool1(4, arena);
+
+    auto* foo1 = pool1.allocate(1, mt);
+    foo1->data[0] = 1.0f;
+
+    // move constructor: pool1's free list is transferred to pool2
+    pool<Foo, arena_allocator<Foo>> pool2(std::move(pool1));
+
+    auto* foo2 = pool2.allocate(1, mt);
+    foo2->data[0] = 2.0f;
+    CHECK(foo2 != nullptr);
+    CHECK(foo1 != foo2);
+
+    pool2.deallocate(foo1, 1);
+    pool2.deallocate(foo2, 1);
+
+    // move assignment
+    pool<Foo, arena_allocator<Foo>> pool3(2, arena);
+    pool3 = std::move(pool2);
+
+    auto* foo3 = pool3.allocate(1, mt);
+    foo3->data[0] = 3.0f;
+    CHECK(foo3 != nullptr);
+    pool3.deallocate(foo3, 1);
 }
 
 TEST_CASE("HashSet") {
@@ -151,6 +237,7 @@ TEST_CASE("HashSet") {
     CHECK(set.insert({10, -9}) == true);
     CHECK(set.insert({10, -3}) == true);
     CHECK(set.insert({10, -1}) == true);
+    CHECK(set.size() == 4);
 
     counter = 0;
     for (const auto& key : set) {
@@ -166,10 +253,84 @@ TEST_CASE("HashSet") {
     }
     CHECK(counter == set.size());
 
-    // move constructor
-    // copy constructor
-    // move assignment
-    // copy assignment
+    SUBCASE("copy constructor") {
+        hash_set<Bar, arena_allocator<Bar>> copy(set);
+        CHECK(copy.size() == set.size());
+        for (const auto& key : set) {
+            CHECK(copy.contains(key));
+        }
+        for (const auto& key : copy) {
+            CHECK(set.contains(key));
+        }
+        // Independent: mutating the copy leaves the source alone.
+        CHECK(copy.erase({5, 9}) == true);
+        CHECK(copy.contains({5, 9}) == false);
+        CHECK(set.contains({5, 9}) == true);
+    }
+
+    SUBCASE("copy assignment") {
+        hash_set<Bar, arena_allocator<Bar>> copy(8, arena);
+        CHECK(copy.insert({99, 99}) == true);
+        copy = set;
+        CHECK(copy.size() == set.size());
+        CHECK(copy.contains({99, 99}) == false); // old contents are dropped
+        for (const auto& key : set) {
+            CHECK(copy.contains(key));
+        }
+    }
+
+    SUBCASE("move constructor") {
+        const size_t size = set.size();
+        hash_set<Bar, arena_allocator<Bar>> moved(std::move(set));
+        CHECK(moved.size() == size);
+        CHECK(set.size() == 0);
+        CHECK(set.capacity() == 0);
+        CHECK(moved.contains({5, 9}));
+        CHECK(moved.contains({10, -1}));
+    }
+
+    SUBCASE("move assignment") {
+        const size_t size = set.size();
+        hash_set<Bar, arena_allocator<Bar>> moved(8, arena);
+        CHECK(moved.insert({77, 77}) == true);
+        moved = std::move(set);
+        CHECK(moved.size() == size);
+        CHECK(set.size() == 0);
+        CHECK(moved.contains({77, 77}) == false);
+        CHECK(moved.contains({5, 9}));
+    }
+}
+
+TEST_CASE("HashSet tombstone reuse") {
+    arena arena(64_KiB);
+    hash_set<Bar, arena_allocator<Bar>> set(128, arena);
+
+    for (int i = 0; i < 30; i++) {
+        CHECK(set.insert({i, 0}) == true);
+    }
+    CHECK(set.size() == 30);
+
+    for (int i = 0; i < 30; i++) {
+        CHECK(set.erase({i, 0}) == true);
+    }
+    CHECK(set.size() == 0);
+
+    // Re-inserting the same keys must reuse tombstones without creating duplicates.
+    for (int i = 0; i < 30; i++) {
+        CHECK(set.insert({i, 0}) == true);
+    }
+    CHECK(set.size() == 30);
+
+    // Inserting an existing key is a no-op that still reports success.
+    CHECK(set.insert({0, 0}) == true);
+    CHECK(set.size() == 30);
+
+    size_t counter = 0;
+    for (const auto& key : set) {
+        CHECK(set.contains(key));
+        counter++;
+    }
+    CHECK(counter == 30);
 }
 
 TEST_CASE("HashMap") {
@@ -205,6 +366,11 @@ TEST_CASE("HashMap") {
     map.emplace(bar2, mt);
     CHECK(map.size() == 2);
     CHECK(map.contains(bar2) == true);
+
+    // emplace of an existing key returns the existing element without inserting.
+    Foo& existing = map.emplace(bar1, mt);
+    CHECK(map.size() == 2);
+    CHECK(existing == foo1);
 
     CHECK(map.reserve(1) == false);
     CHECK(map.capacity() == 128);
@@ -245,10 +411,89 @@ TEST_CASE("HashMap") {
         counter++;
     }
     CHECK(counter == map.size());
+
+    // At this point map holds { bar1 -> foo3, bar2 -> foo3 }.
+    SUBCASE("copy constructor") {
+        hash_map<Bar, Foo, arena_allocator<Bar>> copy(map);
+        CHECK(copy.size() == map.size());
+        for (auto [key, elem] : map) {
+            CHECK(copy.contains(key));
+            CHECK(copy.at(key) == elem);
+        }
+        // Independent element storage.
+        copy.at(bar1) = foo1;
+        CHECK(copy.at(bar1) == foo1);
+        CHECK(map.at(bar1) == foo3);
+    }
+
+    SUBCASE("copy assignment") {
+        hash_map<Bar, Foo, arena_allocator<Bar>> copy(4, arena);
+        CHECK(copy.insert(bar3, foo1) == true);
+        copy = map;
+        CHECK(copy.size() == map.size());
+        CHECK(copy.contains(bar3) == false);
+        for (auto [key, elem] : map) {
+            CHECK(copy.at(key) == elem);
+        }
+    }
+
+    SUBCASE("move constructor") {
+        const size_t size = map.size();
+        hash_map<Bar, Foo, arena_allocator<Bar>> moved(std::move(map));
+        CHECK(moved.size() == size);
+        CHECK(map.size() == 0);
+        CHECK(map.capacity() == 0);
+        CHECK(moved.contains(bar1));
+        CHECK(moved.contains(bar2));
+        CHECK(moved.at(bar1) == foo3);
+    }
+
+    SUBCASE("move assignment") {
+        const size_t size = map.size();
+        hash_map<Bar, Foo, arena_allocator<Bar>> moved(4, arena);
+        CHECK(moved.insert(bar3, foo2) == true);
+        moved = std::move(map);
+        CHECK(moved.size() == size);
+        CHECK(map.size() == 0);
+        CHECK(moved.contains(bar3) == false);
+        CHECK(moved.contains(bar1));
+        CHECK(moved.contains(bar2));
+    }
+}
+
+TEST_CASE("HashMap tombstone reuse") {
+    arena arena(1_MiB);
+    std::random_device rd;
+    std::mt19937 mt(rd());
+
+    hash_map<Bar, Foo, arena_allocator<Bar>> map(128, arena);
+
+    for (int i = 0; i < 30; i++) {
+        CHECK(map.insert({i, 0}, Foo{mt}) == true);
+    }
+    CHECK(map.size() == 30);
+
+    for (int i = 0; i < 30; i++) {
+        CHECK(map.erase({i, 0}) == true);
+    }
+    CHECK(map.size() == 0);
+
+    // Re-inserting the same keys must reuse tombstones without creating duplicates.
+    for (int i = 0; i < 30; i++) {
+        CHECK(map.insert({i, 0}, Foo{mt}) == true);
+    }
+    CHECK(map.size() == 30);
+
+    size_t counter = 0;
+    for (auto [key, elem] : map) {
+        CHECK(map.contains(key));
+        counter++;
+    }
+    CHECK(counter == 30);
 }
 
 TEST_CASE("SlotMap") {
-    arena arena(32_KiB);
+    arena arena(64_KiB);
 
     std::random_device rd;
     std::mt19937 mt(rd());
@@ -299,4 +544,76 @@ TEST_CASE("SlotMap") {
         counter++;
     }
     CHECK(counter == foos.size());
+
+    // foos now holds live elements at slots 2 and 4 (both == foo4).
+    SUBCASE("copy constructor") {
+        slot_map<size_t, Foo, arena_allocator<Foo>> copy(foos);
+        CHECK(copy.size() == foos.size());
+        CHECK(copy.contains(2));
+        CHECK(copy.contains(4));
+        CHECK(copy.at(2) == foos.at(2));
+        // Independent storage.
+        copy.at(2) = foo1;
+        CHECK(copy.at(2) == foo1);
+        CHECK(foos.at(2) == foo4);
+    }
+
+    SUBCASE("copy assignment") {
+        slot_map<size_t, Foo, arena_allocator<Foo>> copy(4, arena);
+        CHECK(copy.insert(0, foo1));
+        copy = foos;
+        CHECK(copy.size() == foos.size());
+        CHECK(copy.contains(0) == false);
+        CHECK(copy.contains(2));
+        CHECK(copy.contains(4));
+    }
+
+    SUBCASE("move constructor") {
+        const size_t size = foos.size();
+        slot_map<size_t, Foo, arena_allocator<Foo>> moved(std::move(foos));
+        CHECK(moved.size() == size);
+        CHECK(foos.size() == 0);
+        CHECK(foos.capacity() == 0);
+        CHECK(moved.contains(2));
+        CHECK(moved.contains(4));
+    }
+
+    SUBCASE("move assignment") {
+        const size_t size = foos.size();
+        slot_map<size_t, Foo, arena_allocator<Foo>> moved(4, arena);
+        CHECK(moved.insert(0, foo1));
+        moved = std::move(foos);
+        CHECK(moved.size() == size);
+        CHECK(foos.size() == 0);
+        CHECK(moved.contains(0) == false);
+        CHECK(moved.contains(2));
+        CHECK(moved.contains(4));
+    }
+}
+
+TEST_CASE("SlotMap full") {
+    arena arena(32_KiB);
+
+    std::random_device rd;
+    std::mt19937 mt(rd());
+
+    Foo foo{mt};
+
+    slot_map<size_t, Foo, arena_allocator<Foo>> foos(2, arena);
+    CHECK(foos.emplace(mt) == 0);
+    CHECK(foos.emplace(mt) == 1);
+    CHECK(foos.size() == 2);
+
+    // Once full, allocating variants must report the sentinel instead of writing
+    // out of bounds.
+    CHECK(foos.free_slot() == static_cast<size_t>(-1));
+    CHECK(foos.emplace(mt) == static_cast<size_t>(-1));
+    CHECK(foos.push(foo) == static_cast<size_t>(-1));
+    CHECK(foos.size() == 2);
+
+    // Freeing a slot makes room again.
+    CHECK(foos.erase(0) == true);
+    CHECK(foos.free_slot() == 0);
+    CHECK(foos.push(foo) == 0);
+    CHECK(foos.size() == 2);
 }
