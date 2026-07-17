@@ -1,6 +1,7 @@
 #include "states.hpp"
 
 #include "app.hpp"
+#include "brushes.hpp"
 #include "defines.hpp"
 
 #include <backends/imgui_impl_sdl3.h>
@@ -75,9 +76,11 @@ void StateManager::OnEvent(const SDL_Event* event) {
 
     if (event->type == SDL_EVENT_PEN_PROXIMITY_IN) {
         app->penInRange = true;
+        app->penPressure = 0.0f;
     }
     if (event->type == SDL_EVENT_PEN_PROXIMITY_OUT) {
         app->penInRange = false;
+        app->penPressure = 1.0f;
     }
     if (event->type == SDL_EVENT_PEN_AXIS && event->paxis.axis == SDL_PEN_AXIS_PRESSURE) {
         app->penPressure = event->paxis.value;
@@ -291,34 +294,30 @@ void NavigateState::DrawUI() const {
     }
 }
 
-PaintState::PaintState(App* app) : IState(app) {
+Canvas::StrokePoint MakeStrokePoint(const App* app, BrushSettings settings) {
     Canvas::StrokePoint point{};
     point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-    point.radius = app->canvas.paintBrush.maxPressureRadius;
     point.color = app->canvas.paintBrush.color;
-    point.flow = 1.0f;
-    point.hardness = 0.5f;
+    point.color.a = std::lerp(settings.minPressureOpacity, settings.maxPressureOpacity, app->penPressure);
+    point.radius = std::lerp(settings.minPressureRadius, settings.maxPressureRadius, app->penPressure);
+    point.hardness = std::lerp(settings.minPressureHardness, settings.maxPressureHardness, app->penPressure);
+    point.flow = std::lerp(settings.minPressureFlow, settings.maxPressureFlow, app->penPressure);
+    return point;
+}
+
+PaintState::PaintState(App* app) : IState(app) {
+    const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
     app->canvas.StartPaintStroke(point);
 }
 
 void PaintState::OnEvent(const SDL_Event* event) {
     if (IsPointerMove(app, event)) {
-        Canvas::StrokePoint point{};
-        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-        point.radius = app->canvas.paintBrush.maxPressureRadius;
-        point.color = app->canvas.paintBrush.color;
-        point.flow = 1.0f;
-        point.hardness = 0.5f;
+        const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
         app->canvas.UpdatePaintStroke(point);
     }
 
     if (IsPointerUp(app, event)) {
-        Canvas::StrokePoint point{};
-        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-        point.radius = app->canvas.paintBrush.maxPressureRadius;
-        point.color = app->canvas.paintBrush.color;
-        point.flow = 1.0f;
-        point.hardness = 0.5f;
+        const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
         app->canvas.EndPaintStroke(point);
         app->stateManager.Switch(std::make_unique<IdleState>(app));
     }
@@ -330,33 +329,18 @@ void PaintState::DrawUI() const {
 }
 
 EraseState::EraseState(App* app) : IState(app) {
-    Canvas::StrokePoint point{};
-    point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-    point.radius = app->canvas.paintBrush.maxPressureRadius;
-    point.color = app->canvas.paintBrush.color;
-    point.flow = 1.0f;
-    point.hardness = 0.5f;
+    const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
     app->canvas.StartEraseStroke(point);
 }
 
 void EraseState::OnEvent(const SDL_Event* event) {
     if (IsPointerMove(app, event)) {
-        Canvas::StrokePoint point{};
-        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-        point.radius = app->canvas.paintBrush.maxPressureRadius;
-        point.color = app->canvas.paintBrush.color;
-        point.flow = 1.0f;
-        point.hardness = 0.5f;
+        const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
         app->canvas.UpdateEraseStroke(point);
     }
 
     if (IsPointerUp(app, event)) {
-        Canvas::StrokePoint point{};
-        point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-        point.radius = app->canvas.paintBrush.maxPressureRadius;
-        point.color = app->canvas.paintBrush.color;
-        point.flow = 1.0f;
-        point.hardness = 0.5f;
+        const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
         app->canvas.EndEraseStroke(point);
         app->stateManager.Switch(std::make_unique<IdleState>(app));
     }

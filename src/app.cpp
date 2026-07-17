@@ -232,15 +232,29 @@ void App::Update() {
                         case Tool::Paint: {
                             ImGui::Text("Painting");
                             ImGui::ColorEdit4("Color", glm::value_ptr(canvas.paintBrush.color));
-                            ImGui::InputFloat("Opacity", &canvas.paintBrush.maxPressureOpacity);
-                            ImGui::InputFloat("Radius", &canvas.paintBrush.maxPressureRadius);
-                            ImGui::SliderFloat("Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f);
+                            ImGui::SliderFloat("Min Opacity", &canvas.paintBrush.minPressureOpacity, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Max Opacity", &canvas.paintBrush.maxPressureOpacity, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Min Radius", &canvas.paintBrush.minPressureRadius, 0.0f, 25.0f);
+                            ImGui::SliderFloat("Max Radius", &canvas.paintBrush.maxPressureRadius, 0.0f, 25.0f);
+                            ImGui::SliderFloat("Min Flow", &canvas.paintBrush.minPressureFlow, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Max Flow", &canvas.paintBrush.maxPressureFlow, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Min Hardness", &canvas.paintBrush.minPressureHardness, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Max Hardness", &canvas.paintBrush.maxPressureHardness, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Min Spacing", &canvas.paintBrush.minPressureSpacing, 0.1f, 50.0f);
+                            ImGui::SliderFloat("Max Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f);
                         } break;
                         case Tool::Erase: {
                             ImGui::Text("Erasing");
-                            ImGui::InputFloat("Opacity", &canvas.eraseBrush.maxPressureOpacity);
-                            ImGui::InputFloat("Radius", &canvas.eraseBrush.maxPressureRadius);
-                            ImGui::SliderFloat("Spacing", &canvas.eraseBrush.maxPressureSpacing, 0.1f, 50.0f);
+                            ImGui::SliderFloat("Min Opacity", &canvas.eraseBrush.minPressureOpacity, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Max Opacity", &canvas.eraseBrush.maxPressureOpacity, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Min Radius", &canvas.eraseBrush.minPressureRadius, 0.0f, 25.0f);
+                            ImGui::SliderFloat("Max Radius", &canvas.eraseBrush.maxPressureRadius, 0.0f, 25.0f);
+                            ImGui::SliderFloat("Min Flow", &canvas.eraseBrush.minPressureFlow, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Max Flow", &canvas.eraseBrush.maxPressureFlow, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Min Hardness", &canvas.eraseBrush.minPressureHardness, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Max Hardness", &canvas.eraseBrush.maxPressureHardness, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Min Spacing", &canvas.eraseBrush.minPressureSpacing, 0.1f, 50.0f);
+                            ImGui::SliderFloat("Max Spacing", &canvas.eraseBrush.maxPressureSpacing, 0.1f, 50.0f);
                         } break;
                         default: {
                             ImGui::Text("Unknown");

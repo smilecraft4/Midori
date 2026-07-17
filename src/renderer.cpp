@@ -4,6 +4,7 @@
 #include "base.hpp"
 #include "canvas.hpp"
 #include "defines.hpp"
+#include "states.hpp"
 #include "tiles.hpp"
 
 #include "../deps/qoi.h"
@@ -954,12 +955,12 @@ bool Renderer::UpdateTileTextureDownload() {
 
 bool Renderer::UpdateTileEdit() {
     ZoneScoped;
-    if (app->canvas.strokeLayer == LAYER_INVALID) {
+
+    if (app->canvas.currentToolState != ToolState::Started) {
         return true;
     }
 
     if (!app->canvas.strokePoints.empty() && !app->canvas.strokeTileAffected.empty()) {
-        const auto paintingLayer = app->canvas.strokeLayer;
         std::memset(paintStrokePointTransferBufferPtr, 0, STROKE_MAX_POINTS * sizeof(Canvas::StrokePoint));
         std::memcpy(paintStrokePointTransferBufferPtr, app->canvas.strokePoints.data(),
                     app->canvas.strokePoints.size() * sizeof(Canvas::StrokePoint));
