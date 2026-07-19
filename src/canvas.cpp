@@ -787,7 +787,8 @@ void Canvas::UpdatePaintStroke(StrokePoint point) {
     SDL_assert(layers.contains(strokeLayer));
     SDL_assert(currentTileModificationCommand);
 
-    const auto distance = glm::distance(previousPoint.position, point.position);
+    const StrokePoint startPoint = previousPoint;
+    const auto distance = glm::distance(startPoint.position, point.position);
     const int strokeNum = static_cast<int>(std::floor(distance / paintBrush.maxPressureSpacing));
     if (strokeNum == 0) {
         return;
@@ -799,11 +800,11 @@ void Canvas::UpdatePaintStroke(StrokePoint point) {
         const float t = distanceCovered / distance;
 
         StrokePoint newPoint;
-        newPoint.position = glm::mix(previousPoint.position, point.position, t);
-        newPoint.color = glm::mix(previousPoint.color, point.color, t);
-        newPoint.flow = std::lerp(previousPoint.flow, point.flow, t);
-        newPoint.radius = std::lerp(previousPoint.radius, point.radius, t);
-        newPoint.hardness = std::lerp(previousPoint.hardness, point.hardness, t);
+        newPoint.position = glm::mix(startPoint.position, point.position, t);
+        newPoint.color = glm::mix(startPoint.color, point.color, t);
+        newPoint.flow = std::lerp(startPoint.flow, point.flow, t);
+        newPoint.radius = std::lerp(startPoint.radius, point.radius, t);
+        newPoint.hardness = std::lerp(startPoint.hardness, point.hardness, t);
 
         strokePoints.push_back(newPoint);
         previousPoint = newPoint;
@@ -1034,7 +1035,8 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
     SDL_assert(selectedLayer != LAYER_INVALID && "No layer selected");
     SDL_assert(currentTileModificationCommand && "TileModification already started");
 
-    const auto distance = glm::distance(previousPoint.position, point.position);
+    const StrokePoint startPoint = previousPoint;
+    const auto distance = glm::distance(startPoint.position, point.position);
     float distanceCovered{eraseBrush.maxPressureSpacing};
     while (distanceCovered < distance) {
         ZoneScoped;
@@ -1042,11 +1044,11 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
         const float t = distanceCovered / distance;
 
         StrokePoint newPoint;
-        newPoint.position = glm::mix(previousPoint.position, point.position, t);
-        newPoint.color = glm::mix(previousPoint.color, point.color, t);
-        newPoint.flow = std::lerp(previousPoint.flow, point.flow, t);
-        newPoint.radius = std::lerp(previousPoint.radius, point.radius, t);
-        newPoint.hardness = std::lerp(previousPoint.hardness, point.hardness, t);
+        newPoint.position = glm::mix(startPoint.position, point.position, t);
+        newPoint.color = glm::mix(startPoint.color, point.color, t);
+        newPoint.flow = std::lerp(startPoint.flow, point.flow, t);
+        newPoint.radius = std::lerp(startPoint.radius, point.radius, t);
+        newPoint.hardness = std::lerp(startPoint.hardness, point.hardness, t);
 
         strokePoints.push_back(newPoint);
         previousPoint = newPoint;
