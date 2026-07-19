@@ -12,6 +12,7 @@
 #include "base.hpp"
 
 #include <SDL3/SDL_gpu.h>
+#include <array>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <cstdint>
@@ -29,13 +30,13 @@ struct Canvas {
     };
 
     struct TileWriteData {
-        TileCoord tile;
+        Tile tile;
         TileWriteState state;
         Renderer::TileTextureDownload rendererSlot;
     };
 
     struct TileReadData {
-        TileCoord tile;
+        Tile tile;
         TileReadState state;
         Renderer::TileTextureUpload rendererSlot;
     };
@@ -73,15 +74,15 @@ struct Canvas {
     bool MergeLayers(Layer srcLayer, Layer dstLayer);
     bool MoveLayer(Layer layer, LayerHeight newHeight);
 
-    bool LoadTile(TileCoord tile);
-    bool UnloadTile(TileCoord tile);
-    bool CreateTile(TileCoord tile, bool initialize = true);
-    bool DestroyTile(TileCoord tile);
-    bool SaveTile(TileCoord tile);
-    bool DeleteTile(TileCoord tile);
-    bool MergeTiles(TileCoord srcTile, TileCoord dstTile);
-    bool MoveTile(TileCoord srcTile, TileCoord dstTile);
-    void MarkTileDirty(TileCoord tile);
+    bool LoadTile(Tile tile);
+    bool UnloadTile(Tile tile);
+    bool CreateTile(Tile tile, bool initialize = true);
+    bool DestroyTile(Tile tile);
+    bool SaveTile(Tile tile);
+    bool DeleteTile(Tile tile);
+    bool MergeTiles(Tile srcTile, Tile dstTile);
+    bool MoveTile(Tile srcTile, Tile dstTile);
+    void MarkTileDirty(Tile tile);
 
     // Those should be moved to the state directly instead
     // They indeed are pretty tighly coupled with the renderer
@@ -108,18 +109,18 @@ struct Canvas {
 
     Viewport viewport;
     CommandHistory viewCommands;
-    std::unique_ptr<ViewportChangeCommand> currentViewportChangeCommand;
+    std::optional<ViewportChangeCommand> currentViewportChangeCommand;
 
     CommandHistory canvasCommands;
-    std::unique_ptr<TileModificationCommand> currentTileModificationCommand;
+    std::optional<TileModificationCommand> currentTileModificationCommand;
 
     slot_map<Layer, LayerInfo> layers{1024};
     std::vector<Layer> layersTree;
 
-    hash_set<TileCoord> tilesLoaded{1024};
-    hash_set<TileCoord> tilesModified{1024};
-    hash_map<TileCoord, TileWriteData> tilesWriting{1024};
-    hash_map<TileCoord, TileReadData> tilesReading{1024};
+    hash_set<Tile> tilesLoaded{1024};
+    hash_set<Tile> tilesModified{1024};
+    hash_map<Tile, TileWriteData> tilesWriting{1024};
+    hash_map<Tile, TileReadData> tilesReading{1024};
 
     Layer selectedLayer = LAYER_INVALID;
     Layer strokeLayer = LAYER_INVALID;
@@ -134,12 +135,69 @@ struct Canvas {
 
     StrokePoint previousPoint{};
     std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};
-    hash_set<TileCoord, arena_allocator<TileCoord>> strokeTileAffected{strokeArena};
+    hash_set<Tile, arena_allocator<Tile>> strokeTileAffected{strokeArena};
 
     std::vector<Color> canvasTexture;
     glm::ivec2 canvasTextureSize;
     std::vector<Color> DownloadCanvasTexture(glm::ivec2& size) const;
     static bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
+};
+
+struct CanvasFile;
+struct CanvasView;
+struct Window;
+
+struct CanvasFile {
+    CanvasFile(const CanvasFile&) = delete;
+    CanvasFile(CanvasFile&&) = delete;
+    CanvasFile& operator=(const CanvasFile&) = delete;
+    CanvasFile& operator=(CanvasFile&&) = delete;
+
+    CanvasFile(App* app);
+    ~CanvasFile() = default;
+
+    void Init();
+    void Update();
+    void Quit();
+
+    Layer NewLayer(LayerCreateInfo createInfo);
+    bool DeleteLayer(Layer layer);
+    bool RenameLayer(Layer layer, std::string newName);
+    bool MoveLayer(Layer layer, LayerHeight newHeight);
+
+    bool NewTile(Tile tile);
+    bool DeleteTile(Tile tile);
+    bool ReadTile(Tile tile);
+    bool WriteTile(Tile tile);
+
+    App* app;
+    std::array<CanvasView*, 16> canvasViews;
+};
+
+struct CanvasView {
+    CanvasView(const CanvasView&) = delete;
+    CanvasView(CanvasView&&) = delete;
+    CanvasView& operator=(const CanvasView&) = delete;
+    CanvasView& operator=(CanvasView&&) = delete;
+
+    CanvasView(App* app);
+    ~CanvasView() = default;
+
+    void Init();
+    void Update();
+    void Render();
+    void Quit();
+
+    bool HideLayer(Layer layer, bool hide);
+    bool LockLayer(Layer layer, bool lock);
+    bool SelectLayer(Layer layer);
+
+    bool LoadTile();
+    bool UnloadTile();
+
+    App* app;
+    Window* window;
+    CanvasFile* canvasFile;
 };
 
 } // namespace Midori

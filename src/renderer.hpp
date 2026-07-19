@@ -63,14 +63,14 @@ struct Renderer {
 
     struct TileTextureDownloadInfo {
         std::atomic<TextureDownloadState> state{TextureDownloadState::None};
-        TileCoord tile;
+        Tile tile;
         std::byte* data{};
         size_t fence;
     };
 
     struct TileTextureUploadInfo {
         std::atomic<TextureUploadState> state{TextureUploadState::None};
-        TileCoord tile;
+        Tile tile;
         std::byte* data{};
         size_t fence;
     };
@@ -117,23 +117,23 @@ struct Renderer {
     bool CreateLayerTexture(Layer layer);
     void DestroyLayerTexture(Layer layer);
 
-    Error CreateUninitializedTileTexture(TileCoord tile);
-    Error CreateTileTexture(TileCoord tile);
-    void DestroyTileTexture(TileCoord tile);
-    bool MergeTileTextures(TileCoord overTile, TileCoord belowTile);
+    Error CreateUninitializedTileTexture(Tile tile);
+    Error CreateTileTexture(Tile tile);
+    void DestroyTileTexture(Tile tile);
+    bool MergeTileTextures(Tile overTile, Tile belowTile);
 
-    std::optional<TileTextureUpload> ReserveTileTextureUpload(TileCoord tile);
+    std::optional<TileTextureUpload> ReserveTileTextureUpload(Tile tile);
     bool FreeTileTextureUpload(TileTextureUpload slot);
     bool CommitTileTextureUpload(TileTextureUpload slot);
     TileTextureUploadInfo& GetTileTextureUploadInfo(TileTextureUpload slot);
 
-    std::optional<TileTextureDownload> DownloadTileTexture(TileCoord tile);
+    std::optional<TileTextureDownload> DownloadTileTexture(Tile tile);
     bool QueryTileTextureDownload(TileTextureDownload slot);
     bool FreeTileTextureDownload(TileTextureDownload slot);
     TileTextureDownloadInfo& GetTileTextureDownloadInfo(TileTextureDownload slot);
 
     bool BeginCopyPass();
-    SDL_GPUTexture* DuplicateTileTexture(TileCoord tile);
+    SDL_GPUTexture* DuplicateTileTexture(Tile tile);
     SDL_GPUTexture* DuplicateTileTexture(SDL_GPUTexture* texture) const;
     bool EndCopyPass(bool wait);
     void CancelCopyPass();
@@ -142,12 +142,12 @@ struct Renderer {
 
     App* app;
 
-    hash_set<TileCoord> tileToDraw{1024};
+    hash_set<Tile> tileToDraw{1024};
     hash_set<Layer> layerToDraw{1024};
 
-    hash_map<TileCoord, SDL_GPUTexture*> tileTextures{2048};
+    hash_map<Tile, SDL_GPUTexture*> tileTextures{2048};
 
-    hash_set<TileCoord> tileTexturesToInitialize{1024};
+    hash_set<Tile> tileTexturesToInitialize{1024};
     SDL_GPUFence* tileTexturesToInitializeFence;
 
     bool viewChanged = false;

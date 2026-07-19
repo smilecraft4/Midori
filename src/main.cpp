@@ -5,10 +5,16 @@
 
 #include "app.hpp"
 
+static Uint32 SDLCALL Heartbeat(void*, SDL_TimerID, Uint32 interval) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_USER;
+    SDL_PushEvent(&event);
+    return interval;
+}
+
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
-    // SDL_SetMemoryFunctions(Midori::Malloc, Midori::Calloc, Midori::Realloc, Midori::Free);
-    // SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent"); // Keep checking every 15Hz to see if everything is
-    // finished
+    SDL_SetMemoryFunctions(Malloc, Calloc, Realloc, Free);
+    SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent");
 
     auto* app = new Midori::App(argc, argv);
     *appstate = app;
@@ -16,6 +22,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
     if (!app->Init()) {
         return SDL_APP_FAILURE;
     }
+
+    SDL_AddTimer(250, Heartbeat, nullptr);
 
     return SDL_APP_CONTINUE;
 }

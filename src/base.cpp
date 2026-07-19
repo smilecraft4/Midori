@@ -3,9 +3,9 @@
 #include <tracy/Tracy.hpp>
 
 void* Malloc(size_t size) {
-    void* mem = std::malloc(size);
-    TracyAlloc(mem, size);
-    return mem;
+    void* ptr = std::malloc(size);
+    TracyAlloc(ptr, size);
+    return ptr;
 }
 
 void* Calloc(size_t count, size_t size) {
@@ -16,9 +16,9 @@ void* Calloc(size_t count, size_t size) {
 
 void* Realloc(void* ptr, size_t size) {
     TracyFree(ptr);
-    void* newMem = std::realloc(ptr, size);
-    TracyAlloc(newMem, size);
-    return newMem;
+    void* newPtr = std::realloc(ptr, size);
+    TracyAlloc(newPtr, size);
+    return newPtr;
 }
 
 void Free(void* ptr) {

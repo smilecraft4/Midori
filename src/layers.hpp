@@ -25,7 +25,7 @@ struct LayerInfo {
     bool hidden;
     bool internal;
     bool modified;
-    hash_set<TileCoord> tiles; // To use later, currently we use the file system
+    hash_set<Tile> tiles; // To use later, currently we use the file system
 };
 
 } // namespace Midori

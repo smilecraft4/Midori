@@ -8,6 +8,7 @@
 #include <imgui.h>
 #include <memory>
 #include <utility>
+#include <variant>
 
 namespace Midori {
 
@@ -58,11 +59,9 @@ bool IsPointerMove(const App* app, const SDL_Event* event) {
 }
 } // namespace
 
-IState::IState(App* app) : app(app) {}
+StateManager::StateManager(App* app) : app(app), current(IdleState(app)) {}
 
-StateManager::StateManager(App* app) : app(app), current(std::make_unique<IdleState>(app)) {}
-
-void StateManager::Switch(std::unique_ptr<IState> state) {
+void StateManager::Switch(State&& state) {
     next = std::move(state);
 }
 
@@ -140,26 +139,43 @@ void StateManager::OnEvent(const SDL_Event* event) {
         return;
     }
 
-    current->OnEvent(event);
+    std::visit(
+        [event](auto&& state) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(state)>, std::monostate>) {
+                state.OnEvent(event);
+            }
+        },
+        current);
 
-    if (next != nullptr) {
-        current = std::move(next);
+    if (!std::holds_alternative<std::monostate>(next)) {
+        current = next;
+        next = std::monostate();
     }
+}
+
+void StateManager::DrawUI() const {
+    std::visit(
+        [](auto&& state) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(state)>, std::monostate>) {
+                state.DrawUI();
+            }
+        },
+        current);
 }
 
 // ---------------------------------------------------------------------------
 // IdleState
 
-IdleState::IdleState(App* app) : IState(app) {}
+IdleState::IdleState(App* app) : app(app) {}
 
 void IdleState::OnEvent(const SDL_Event* event) {
     if (IsPointerDown(app, event) && app->canvas.selectedLayer != LAYER_INVALID) {
         switch (app->canvas.currentTool) {
             case Tool::Paint: {
-                app->stateManager.Switch(std::make_unique<PaintState>(app));
+                app->stateManager.Switch(PaintState(app));
             } break;
             case Tool::Erase: {
-                app->stateManager.Switch(std::make_unique<EraseState>(app));
+                app->stateManager.Switch(EraseState(app));
             } break;
             default:
                 SDL_assert(false && "Uknown tool");
@@ -174,7 +190,7 @@ void IdleState::OnEvent(const SDL_Event* event) {
     }
 
     if (event->key.key == SDLK_SPACE && !event->key.repeat) {
-        app->stateManager.Switch(std::make_unique<NavigateState>(app));
+        app->stateManager.Switch(NavigateState(app));
         return;
     }
     if (IsKeyPressed(event, SDLK_S, SDL_KMOD_CTRL)) {
@@ -223,13 +239,13 @@ void IdleState::DrawUI() const {
 // ---------------------------------------------------------------------------
 // NavigateState
 
-NavigateState::NavigateState(App* app) : IState(app) {
+NavigateState::NavigateState(App* app) : app(app) {
     // TODO: Save the previous view state so leaving the state can push a ViewportChangeCommand
 }
 
 void NavigateState::OnEvent(const SDL_Event* event) {
     if (event->type == SDL_EVENT_KEY_UP && event->key.key == SDLK_SPACE) {
-        app->stateManager.Switch(std::make_unique<IdleState>(app));
+        app->stateManager.Switch(IdleState(app));
         return;
     }
 
@@ -305,7 +321,7 @@ Canvas::StrokePoint MakeStrokePoint(const App* app, BrushSettings settings) {
     return point;
 }
 
-PaintState::PaintState(App* app) : IState(app) {
+PaintState::PaintState(App* app) : app(app) {
     const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
     app->canvas.StartPaintStroke(point);
 }
@@ -319,7 +335,7 @@ void PaintState::OnEvent(const SDL_Event* event) {
     if (IsPointerUp(app, event)) {
         const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
         app->canvas.EndPaintStroke(point);
-        app->stateManager.Switch(std::make_unique<IdleState>(app));
+        app->stateManager.Switch(IdleState(app));
     }
 }
 
@@ -328,7 +344,7 @@ void PaintState::DrawUI() const {
     ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
 }
 
-EraseState::EraseState(App* app) : IState(app) {
+EraseState::EraseState(App* app) : app(app) {
     const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
     app->canvas.StartEraseStroke(point);
 }
@@ -342,7 +358,7 @@ void EraseState::OnEvent(const SDL_Event* event) {
     if (IsPointerUp(app, event)) {
         const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
         app->canvas.EndEraseStroke(point);
-        app->stateManager.Switch(std::make_unique<IdleState>(app));
+        app->stateManager.Switch(IdleState(app));
     }
 }
 

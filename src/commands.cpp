@@ -5,6 +5,7 @@
 #include "tiles.hpp"
 #include <SDL3/SDL_assert.h>
 #include <tracy/Tracy.hpp>
+#include <variant>
 
 namespace Midori {
 
@@ -20,7 +21,7 @@ TileModificationCommand::~TileModificationCommand() {
     }
 }
 
-std::string TileModificationCommand::Name() const {
+std::string TileModificationCommand::Name() {
     return "Tile Modification";
 }
 
@@ -28,14 +29,16 @@ void TileModificationCommand::Execute() {
     ZoneScoped;
     SDL_assert(canvas->layers.contains(layer) && "Layer not found");
 
-    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!textures.execute) {
             canvas->DestroyTile(tile);
             canvas->DeleteTile(tile);
         } else {
             if (!canvas->tilesLoaded.contains(tile)) {
-                SDL_assert(canvas->app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
+                const Renderer::Error err = canvas->app->renderer.CreateUninitializedTileTexture(tile);
+                SDL_assert(err == Renderer::Error::None);
                 canvas->tilesLoaded.insert(tile);
             }
 
@@ -47,21 +50,24 @@ void TileModificationCommand::Execute() {
             canvas->MarkTileDirty(tile);
         }
     }
-    SDL_assert(canvas->app->renderer.EndCopyPass(true));
+    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    SDL_assert(copyPassEnded);
 }
 
 void TileModificationCommand::Revert() {
     ZoneScoped;
     SDL_assert(canvas->layers.contains(layer) && "Layer not found");
 
-    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!textures.revert) {
             canvas->DestroyTile(tile);
             canvas->DeleteTile(tile);
         } else {
             if (!canvas->tilesLoaded.contains(tile)) {
-                SDL_assert(canvas->app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
+                const Renderer::Error err = canvas->app->renderer.CreateUninitializedTileTexture(tile);
+                SDL_assert(err == Renderer::Error::None);
                 canvas->tilesLoaded.insert(tile);
             }
 
@@ -73,10 +79,11 @@ void TileModificationCommand::Revert() {
             canvas->MarkTileDirty(tile);
         }
     }
-    SDL_assert(canvas->app->renderer.EndCopyPass(true));
+    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    SDL_assert(copyPassEnded);
 }
 
-void TileModificationCommand::TrackTile(TileCoord tile) {
+void TileModificationCommand::TrackTile(Tile tile) {
     ZoneScoped;
     tileTextures.insert(tile, {.revert = nullptr, .execute = nullptr});
 }
@@ -84,7 +91,8 @@ void TileModificationCommand::TrackTile(TileCoord tile) {
 void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
     ZoneScoped;
 
-    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!overwrite && textures.revert) {
             continue;
@@ -93,12 +101,14 @@ void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
             textures.revert = canvas->app->renderer.DuplicateTileTexture(tile);
         }
     }
-    SDL_assert(canvas->app->renderer.EndCopyPass(true));
+    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    SDL_assert(copyPassEnded);
 }
 
 void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
     ZoneScoped;
-    SDL_assert(canvas->app->renderer.BeginCopyPass());
+    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!overwrite && textures.execute) {
             continue;
@@ -107,7 +117,8 @@ void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
             textures.execute = canvas->app->renderer.DuplicateTileTexture(tile);
         }
     }
-    SDL_assert(canvas->app->renderer.EndCopyPass(true));
+    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    SDL_assert(copyPassEnded);
 }
 
 CommandHistory::CommandHistory(size_t capacity) : commands(capacity) {}
@@ -118,7 +129,14 @@ void CommandHistory::Undo() {
     if (position == 0) {
         return;
     }
-    commands[Index(position)]->Revert();
+
+    std::visit(
+        [](auto&& command) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(command)>, std::monostate>) {
+                command.Revert();
+            }
+        },
+        commands[Index(position)]);
     position--;
 }
 
@@ -128,7 +146,14 @@ void CommandHistory::Redo() {
     }
     SDL_assert(position < count);
     position++;
-    commands[Index(position)]->Execute();
+
+    std::visit(
+        [](auto&& command) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(command)>, std::monostate>) {
+                command.Execute();
+            }
+        },
+        commands[Index(position)]);
 }
 
 void CommandHistory::Clear() {
@@ -145,10 +170,10 @@ size_t CommandHistory::Index(size_t pos) const {
     return (start + (pos - 1)) % commands.capacity();
 }
 
-void CommandHistory::Push(std::unique_ptr<ICommand> command) {
+void CommandHistory::Push(Command&& command) {
     if (position < count) {
         for (int pos = static_cast<int>(count) - 1; pos > position; pos--) {
-            commands[Index(pos)].reset();
+            commands[Index(position)] = std::monostate();
         }
     }
 
@@ -162,9 +187,9 @@ void CommandHistory::Push(std::unique_ptr<ICommand> command) {
     commands[Index(position)] = std::move(command);
 }
 
-const ICommand* CommandHistory::Get(size_t index) const {
+const Command* CommandHistory::Get(size_t index) const {
     SDL_assert(index < count);
-    return commands[Index(index + 1)].get();
+    return &commands[Index(index + 1)];
 }
 
 size_t CommandHistory::Empty() const {
@@ -175,11 +200,38 @@ size_t CommandHistory::Count() const {
     return count;
 }
 
+void CommandHistory::DrawUI() {
+    if (Empty()) {
+        ImGui::TextColored(ImColor(0, 0, 128), "Nothing");
+
+    } else {
+        if (ImGui::Button("Clear History")) {
+            Clear();
+        }
+        for (int pos = static_cast<int>(Count()) - 1; pos >= 0; pos--) {
+            std::visit(
+                [this, pos](auto&& command) {
+                    if constexpr (!std::is_same_v<std::decay_t<decltype(command)>, std::monostate>) {
+                        const auto name = command.Name();
+                        if ((pos + 1) < position) {
+                            ImGui::TextColored(ImColor(0, 0, 0), "[%d]: %s", pos, name.c_str());
+                        } else if ((pos + 1) == position) {
+                            ImGui::TextColored(ImColor(0, 128, 0), "[%d]: %s", pos, name.c_str());
+                        } else if ((pos + 1) > position) {
+                            ImGui::TextColored(ImColor(0, 0, 128), "[%d]: %s", pos, name.c_str());
+                        }
+                    }
+                },
+                commands[Index(pos + 1)]);
+        }
+    }
+}
+
 ViewportChangeCommand::ViewportChangeCommand(Canvas* canvas) : canvas(canvas) {}
 
 ViewportChangeCommand::~ViewportChangeCommand() = default;
 
-std::string ViewportChangeCommand::Name() const {
+std::string ViewportChangeCommand::Name() {
     return "View change";
 }
 

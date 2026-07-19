@@ -45,23 +45,23 @@ struct TileInfo {
     TileState state;
 };
 
-struct TileCoord {
+struct Tile {
     Layer layer{};
     TileAxis y{};
     TileAxis x{};
     uint8_t pad[2];
 
-    bool operator==(const TileCoord& other) const noexcept {
+    bool operator==(const Tile& other) const noexcept {
         return layer == other.layer && y == other.y && x == other.x;
     }
 };
-static_assert(sizeof(TileCoord) == sizeof(size_t), "Tile coord must be 8bytes");
+static_assert(sizeof(Tile) == sizeof(size_t), "Tile coord must be 8bytes");
 
 } // namespace Midori
 
 template<>
-struct std::hash<Midori::TileCoord> {
-    size_t operator()(const Midori::TileCoord& t) const {
+struct std::hash<Midori::Tile> {
+    size_t operator()(const Midori::Tile& t) const {
         size_t hash = static_cast<size_t>(std::make_unsigned_t<Layer>(t.layer)) << 48
                     | static_cast<size_t>(std::make_unsigned_t<TileAxis>(t.y)) << 32
                     | static_cast<size_t>(std::make_unsigned_t<TileAxis>(t.x)) << 16;

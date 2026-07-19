@@ -726,7 +726,7 @@ bool Renderer::UpdateUninitializedTextures() {
     return true;
 }
 
-std::optional<Renderer::TileTextureUpload> Renderer::ReserveTileTextureUpload(TileCoord tile) {
+std::optional<Renderer::TileTextureUpload> Renderer::ReserveTileTextureUpload(Tile tile) {
     ZoneScoped;
     for (size_t i = 0; i < tileUploadSlots.size(); i++) {
         if (tileUploadSlots[i].state.load(std::memory_order_relaxed) == TextureUploadState::None) {
@@ -849,7 +849,7 @@ bool Renderer::UpdateTileTextureUpload() {
     return true;
 }
 
-std::optional<Renderer::TileTextureDownload> Renderer::DownloadTileTexture(TileCoord tile) {
+std::optional<Renderer::TileTextureDownload> Renderer::DownloadTileTexture(Tile tile) {
     ZoneScoped;
     for (size_t i = 0; i < tileDownloadSlots.size(); i++) {
         if (tileDownloadSlots[i].state.load(std::memory_order_relaxed) == TextureDownloadState::None) {
@@ -1377,7 +1377,7 @@ void Renderer::DestroyLayerTexture(const Layer layer) {
     layerTextures.erase(layer);
 }
 
-Renderer::Error Renderer::CreateUninitializedTileTexture(TileCoord tile) {
+Renderer::Error Renderer::CreateUninitializedTileTexture(Tile tile) {
     ZoneScoped;
     SDL_assert(!tileTextures.contains(tile));
 
@@ -1406,7 +1406,7 @@ Renderer::Error Renderer::CreateUninitializedTileTexture(TileCoord tile) {
     return Error::None;
 }
 
-Renderer::Error Renderer::CreateTileTexture(TileCoord tile) {
+Renderer::Error Renderer::CreateTileTexture(Tile tile) {
     ZoneScoped;
     if (auto res = CreateUninitializedTileTexture(tile); res != Error::None) {
         return res;
@@ -1416,7 +1416,7 @@ Renderer::Error Renderer::CreateTileTexture(TileCoord tile) {
     return Error::None;
 }
 
-void Renderer::DestroyTileTexture(TileCoord tile) {
+void Renderer::DestroyTileTexture(Tile tile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(tile) && "Tile texture not found");
 
@@ -1429,7 +1429,7 @@ void Renderer::DestroyTileTexture(TileCoord tile) {
 }
 
 // TODO Transform into BeginMerge(), MergeTileTextures(), EndMerge()
-bool Renderer::MergeTileTextures(TileCoord overTile, TileCoord belowTile) {
+bool Renderer::MergeTileTextures(Tile overTile, Tile belowTile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(overTile));
     SDL_assert(tileTextures.contains(belowTile));
@@ -1510,7 +1510,7 @@ bool Renderer::BeginCopyPass() {
     return true;
 }
 
-SDL_GPUTexture* Renderer::DuplicateTileTexture(TileCoord tile) {
+SDL_GPUTexture* Renderer::DuplicateTileTexture(Tile tile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(tile));
     SDL_assert(tileTextures.at(tile) && "Tile texture is null");

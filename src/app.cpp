@@ -141,7 +141,7 @@ void App::Update() {
                             static_cast<float>(canvas.strokeArena.capacity()) / 1_KB);
                 ImGui::SeparatorText("IO");
                 ImGui::SeparatorText("State");
-                stateManager.current->DrawUI();
+                stateManager.DrawUI();
             }
             ImGui::End();
 
@@ -261,7 +261,7 @@ void App::Update() {
                             if (ImGui::SliderFloat("Max Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f)) {
                                 canvas.paintBrushModified = true;
                             }
-                            if(ImGui::SliderFloat("Smoothing", &canvas.paintBrush.smoothing, 0.0f, 1.0f)) {
+                            if (ImGui::SliderFloat("Smoothing", &canvas.paintBrush.smoothing, 0.0f, 1.0f)) {
                                 canvas.paintBrushModified = true;
                             }
                         } break;
@@ -308,46 +308,12 @@ void App::Update() {
                 ImGui::End();
 
                 if (ImGui::Begin("Canvas History")) {
-                    if (!canvas.canvasCommands.Empty()) {
-                        if (ImGui::Button("Clear Canvas History")) {
-                            canvas.canvasCommands.Clear();
-                        }
-                        for (int pos = static_cast<int>(canvas.canvasCommands.Count()) - 1; pos >= 0; pos--) {
-                            const ICommand* command = canvas.canvasCommands.Get(pos);
-                            const auto name = command->Name();
-                            if ((pos + 1) < canvas.canvasCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 0), "[%d]: %s", pos, name.c_str());
-                            } else if ((pos + 1) == canvas.canvasCommands.position) {
-                                ImGui::TextColored(ImColor(0, 128, 0), "[%d]: %s", pos, name.c_str());
-                            } else if ((pos + 1) > canvas.canvasCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 128), "[%d]: %s", pos, name.c_str());
-                            }
-                        }
-                    } else {
-                        ImGui::TextColored(ImColor(0, 0, 128), "Nothing");
-                    }
+                    canvas.canvasCommands.DrawUI();
                 }
                 ImGui::End();
 
                 if (ImGui::Begin("View History")) {
-                    if (!canvas.viewCommands.Empty()) {
-                        if (ImGui::Button("Clear View History")) {
-                            canvas.viewCommands.Clear();
-                        }
-                        for (int pos = static_cast<int>(canvas.viewCommands.Count()) - 1; pos >= 0; pos--) {
-                            const ICommand* command = canvas.viewCommands.Get(pos);
-                            const auto name = command->Name();
-                            if ((pos + 1) < canvas.viewCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 0), "[%d]: %s", pos, name.c_str());
-                            } else if ((pos + 1) == canvas.viewCommands.position) {
-                                ImGui::TextColored(ImColor(0, 128, 0), "[%d]: %s", pos, name.c_str());
-                            } else if ((pos + 1) > canvas.viewCommands.position) {
-                                ImGui::TextColored(ImColor(0, 0, 128), "[%d]: %s", pos, name.c_str());
-                            }
-                        }
-                    } else {
-                        ImGui::TextColored(ImColor(0, 0, 128), "Nothing");
-                    }
+                    canvas.viewCommands.DrawUI();
                 }
                 ImGui::End();
             }
@@ -478,11 +444,11 @@ void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const s
             * glm::vec4(static_cast<glm::vec2>(pos) * glm::vec2(TILE_WIDTH, TILE_HEIGHT) + offsets[i], 0.0f, 1.0f);
 
         points[i] = ImVec2{
-            (static_cast<float>(windowSize.x) / 2.0f) + p.x,
-            (static_cast<float>(windowSize.y) / 2.0f) + p.y,
+            std::floor((static_cast<float>(windowSize.x) / 2.0f) + p.x),
+            std::floor((static_cast<float>(windowSize.y) / 2.0f) + p.y),
         };
-        center.x += points[i].x / 5.0f;
-        center.y += points[i].y / 5.0f;
+        center.x += std::floor(points[i].x / 5.0f);
+        center.y += std::floor(points[i].y / 5.0f);
     }
 
     const auto text = std::format("[{},{}]", pos.x, pos.y);
