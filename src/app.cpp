@@ -430,25 +430,39 @@ void App::DebugTileCulling(glm::vec2 viewportSize, ImDrawList* drawList) {
 
 void App::DrawTileDebug(glm::ivec2 pos, ImDrawList* drawList, ImU32 col, const std::string& label) const {
     ImVec2 points[5]{};
-    ImVec2 center;
     glm::vec2 offsets[5] = {
-        {1.0f, 1.0f},
-        {static_cast<float>(TILE_WIDTH), 0.0f},
-        {static_cast<float>(TILE_HEIGHT), static_cast<float>(TILE_WIDTH)},
-        {1.0f, static_cast<float>(TILE_HEIGHT)},
-        {1.0f, 1.0f},
+        {canvas.viewport.ViewMatrix()
+         * glm::vec4((static_cast<glm::vec2>(pos) + glm::vec2(0.0f, 0.0f)) * glm::vec2(TILE_WIDTH, TILE_HEIGHT), 0.0f,
+                     1.0f)},
+        {canvas.viewport.ViewMatrix()
+         * glm::vec4((static_cast<glm::vec2>(pos) + glm::vec2(1.0f, 0.0f)) * glm::vec2(TILE_WIDTH, TILE_HEIGHT), 0.0f,
+                     1.0f)},
+        {canvas.viewport.ViewMatrix()
+         * glm::vec4((static_cast<glm::vec2>(pos) + glm::vec2(1.0f, 1.0f)) * glm::vec2(TILE_WIDTH, TILE_HEIGHT), 0.0f,
+                     1.0f)},
+        {canvas.viewport.ViewMatrix()
+         * glm::vec4((static_cast<glm::vec2>(pos) + glm::vec2(0.0f, 1.0f)) * glm::vec2(TILE_WIDTH, TILE_HEIGHT), 0.0f,
+                     1.0f)},
+        {canvas.viewport.ViewMatrix()
+         * glm::vec4((static_cast<glm::vec2>(pos) + glm::vec2(0.0f, 0.0f)) * glm::vec2(TILE_WIDTH, TILE_HEIGHT), 0.0f,
+                     1.0f)},
     };
-    for (size_t i = 0; i < 5; i++) {
-        glm::vec4 p =
-            canvas.viewport.ViewMatrix()
-            * glm::vec4(static_cast<glm::vec2>(pos) * glm::vec2(TILE_WIDTH, TILE_HEIGHT) + offsets[i], 0.0f, 1.0f);
 
-        points[i] = ImVec2{
-            std::floor((static_cast<float>(windowSize.x) / 2.0f) + p.x),
-            std::floor((static_cast<float>(windowSize.y) / 2.0f) + p.y),
-        };
-        center.x += std::floor(points[i].x / 5.0f);
-        center.y += std::floor(points[i].y / 5.0f);
+    points[0] = ImVec2(std::floor(static_cast<float>(windowSize.x) / 2.0f) + offsets[0].x,
+                       std::floor(static_cast<float>(windowSize.y) / 2.0f) + offsets[0].y);
+    points[1] = ImVec2(std::ceil(static_cast<float>(windowSize.x) / 2.0f) + offsets[1].x,
+                       std::floor(static_cast<float>(windowSize.y) / 2.0f) + offsets[1].y);
+    points[2] = ImVec2(std::ceil(static_cast<float>(windowSize.x) / 2.0f) + offsets[2].x,
+                       std::ceil(static_cast<float>(windowSize.y) / 2.0f) + offsets[2].y);
+    points[3] = ImVec2(std::floor(static_cast<float>(windowSize.x) / 2.0f) + offsets[3].x,
+                       std::ceil(static_cast<float>(windowSize.y) / 2.0f) + offsets[3].y);
+    points[4] = ImVec2(std::floor(static_cast<float>(windowSize.x) / 2.0f) + offsets[4].x,
+                       std::floor(static_cast<float>(windowSize.y) / 2.0f) + offsets[4].y);
+
+    ImVec2 center;
+    for (auto& point : points) {
+        center.x += std::floor(point.x / 5.0f);
+        center.y += std::floor(point.y / 5.0f);
     }
 
     const auto text = std::format("[{},{}]", pos.x, pos.y);
