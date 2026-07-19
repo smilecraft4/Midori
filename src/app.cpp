@@ -104,7 +104,7 @@ void App::Update() {
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
-            static bool uiDebugCulling = false;
+            static bool uiDebugCulling = true;
             auto layer = canvas.selectedLayer;
             if (canvas.strokeLayer > 0) {
                 layer = canvas.strokeLayer;
@@ -113,22 +113,18 @@ void App::Update() {
             ImDrawList* drawList = ImGui::GetBackgroundDrawList();
             if (uiDebugCulling && layer > 0) {
                 for (const auto& tile : canvas.tilesLoaded) {
-                    if (canvas.tilesReading.contains(tile)) {
+                    if (canvas.tilesModified.contains(tile)) {
+                        ImU32 col = IM_COL32(0, 0, 255, 64);
+                        const char* str{};
+                        DrawTileDebug({tile.x, tile.y}, drawList, col, "Modified");
+                    } else if (canvas.tilesReading.contains(tile)) {
                         ImU32 col = IM_COL32(255, 0, 0, 64);
                         const char* str{};
-                        switch (canvas.tilesReading.at(tile).state) {
-                            default:
-                                DrawTileDebug({tile.x, tile.y}, drawList, col, "TileReadState::N/A");
-                                break;
-                        }
+                        DrawTileDebug({tile.x, tile.y}, drawList, col, "Reading");
                     } else if (canvas.tilesWriting.contains(tile)) {
                         ImU32 col = IM_COL32(0, 255, 0, 64);
                         const char* str{};
-                        switch (canvas.tilesWriting.at(tile).state) {
-                            default:
-                                DrawTileDebug({tile.x, tile.y}, drawList, col, "TileReadState::N/A");
-                                break;
-                        }
+                        DrawTileDebug({tile.x, tile.y}, drawList, col, "Writing");
                     } else {
                         ImU32 col = IM_COL32(0, 0, 0, 64);
                         DrawTileDebug({tile.x, tile.y}, drawList, col);
@@ -144,7 +140,6 @@ void App::Update() {
                 ImGui::Text("Stroke: %.03f/%.03fKB", static_cast<float>(strokeArenaUsage) / 1_KB,
                             static_cast<float>(canvas.strokeArena.capacity()) / 1_KB);
                 ImGui::SeparatorText("IO");
-                ImGui::Text("TexturePool free: %zu", canvas.tileTextureEncodedPool.count());
                 ImGui::SeparatorText("State");
                 stateManager.current->DrawUI();
             }
@@ -231,30 +226,76 @@ void App::Update() {
                     switch (canvas.currentTool) {
                         case Tool::Paint: {
                             ImGui::Text("Painting");
-                            ImGui::ColorEdit4("Color", glm::value_ptr(canvas.paintBrush.color));
-                            ImGui::SliderFloat("Min Opacity", &canvas.paintBrush.minPressureOpacity, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Max Opacity", &canvas.paintBrush.maxPressureOpacity, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Min Radius", &canvas.paintBrush.minPressureRadius, 0.0f, 25.0f);
-                            ImGui::SliderFloat("Max Radius", &canvas.paintBrush.maxPressureRadius, 0.0f, 25.0f);
-                            ImGui::SliderFloat("Min Flow", &canvas.paintBrush.minPressureFlow, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Max Flow", &canvas.paintBrush.maxPressureFlow, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Min Hardness", &canvas.paintBrush.minPressureHardness, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Max Hardness", &canvas.paintBrush.maxPressureHardness, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Min Spacing", &canvas.paintBrush.minPressureSpacing, 0.1f, 50.0f);
-                            ImGui::SliderFloat("Max Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f);
+                            if (ImGui::ColorEdit4("Color", glm::value_ptr(canvas.paintBrush.color))) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Opacity", &canvas.paintBrush.minPressureOpacity, 0.0f, 1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Opacity", &canvas.paintBrush.maxPressureOpacity, 0.0f, 1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Radius", &canvas.paintBrush.minPressureRadius, 0.0f, 25.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Radius", &canvas.paintBrush.maxPressureRadius, 0.0f, 25.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Flow", &canvas.paintBrush.minPressureFlow, 0.0f, 1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Flow", &canvas.paintBrush.maxPressureFlow, 0.0f, 1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Hardness", &canvas.paintBrush.minPressureHardness, 0.0f,
+                                                   1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Hardness", &canvas.paintBrush.maxPressureHardness, 0.0f,
+                                                   1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Spacing", &canvas.paintBrush.minPressureSpacing, 0.1f, 50.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
                         } break;
                         case Tool::Erase: {
                             ImGui::Text("Erasing");
-                            ImGui::SliderFloat("Min Opacity", &canvas.eraseBrush.minPressureOpacity, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Max Opacity", &canvas.eraseBrush.maxPressureOpacity, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Min Radius", &canvas.eraseBrush.minPressureRadius, 0.0f, 25.0f);
-                            ImGui::SliderFloat("Max Radius", &canvas.eraseBrush.maxPressureRadius, 0.0f, 25.0f);
-                            ImGui::SliderFloat("Min Flow", &canvas.eraseBrush.minPressureFlow, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Max Flow", &canvas.eraseBrush.maxPressureFlow, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Min Hardness", &canvas.eraseBrush.minPressureHardness, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Max Hardness", &canvas.eraseBrush.maxPressureHardness, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Min Spacing", &canvas.eraseBrush.minPressureSpacing, 0.1f, 50.0f);
-                            ImGui::SliderFloat("Max Spacing", &canvas.eraseBrush.maxPressureSpacing, 0.1f, 50.0f);
+                            if (ImGui::SliderFloat("Min Opacity", &canvas.eraseBrush.minPressureOpacity, 0.0f, 1.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Opacity", &canvas.eraseBrush.maxPressureOpacity, 0.0f, 1.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Radius", &canvas.eraseBrush.minPressureRadius, 0.0f, 25.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Radius", &canvas.eraseBrush.maxPressureRadius, 0.0f, 25.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Flow", &canvas.eraseBrush.minPressureFlow, 0.0f, 1.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Flow", &canvas.eraseBrush.maxPressureFlow, 0.0f, 1.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Hardness", &canvas.eraseBrush.minPressureHardness, 0.0f,
+                                                   1.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Hardness", &canvas.eraseBrush.maxPressureHardness, 0.0f,
+                                                   1.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Min Spacing", &canvas.eraseBrush.minPressureSpacing, 0.1f, 50.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
+                            if (ImGui::SliderFloat("Max Spacing", &canvas.eraseBrush.maxPressureSpacing, 0.1f, 50.0f)) {
+                                canvas.eraseBrushModified = true;
+                            }
                         } break;
                         default: {
                             ImGui::Text("Unknown");
@@ -384,6 +425,14 @@ void App::Save() {
         return;
     }
     saving = true;
+
+    if (canvas.eraseBrushModified) {
+        canvas.SaveEraseBrush();
+    }
+
+    if (canvas.paintBrushModified) {
+        canvas.SavePaintBrush();
+    }
 
     for (const auto& [id, layer] : canvas.layers) {
         if (layer.modified && !layer.internal) {

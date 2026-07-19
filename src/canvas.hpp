@@ -15,33 +15,29 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <cstdint>
-#include <cstddef>
 
 namespace Midori {
 
 struct App;
 
 struct Canvas {
-    struct TileTextureEncoded {
-        uint32_t size;
-        std::byte data[TILE_ENCODED_MAX_SIZE];
-    };
-    struct TileTextureRaw {
-        std::byte data[TILE_SIZE];
+    enum class Error : uint8_t {
+        None,
+        LayerNotFound,
+        TileNotFound,
+        Unknown,
     };
 
     struct TileWriteData {
         TileCoord tile;
         TileWriteState state;
         Renderer::TileTextureDownload rendererSlot;
-        // TileTextureEncoded* encoded;
     };
 
     struct TileReadData {
         TileCoord tile;
         TileReadState state;
         Renderer::TileTextureUpload rendererSlot;
-        // TileTextureEncoded* encoded;
     };
 
     struct StrokePoint {
@@ -66,10 +62,8 @@ struct Canvas {
     bool UpdateTileReading();
     bool UpdateTileWriting();
 
-    bool CanQuit() const;
+    [[nodiscard]] bool CanQuit() const;
     bool Open();
-    void SaveBrush();
-    void OpenBrush();
 
     Layer CreateLayer(LayerCreateInfo createInfo);
     Layer CreateLayer(LayerCreateInfo createInfo, Layer id);
@@ -82,7 +76,7 @@ struct Canvas {
     bool LoadTile(TileCoord tile);
     bool UnloadTile(TileCoord tile);
     bool CreateTile(TileCoord tile, bool initialize = true);
-    void DestroyTile(TileCoord tile);
+    bool DestroyTile(TileCoord tile);
     bool SaveTile(TileCoord tile);
     bool DeleteTile(TileCoord tile);
     bool MergeTiles(TileCoord srcTile, TileCoord dstTile);
@@ -92,14 +86,14 @@ struct Canvas {
     // Those should be moved to the state directly instead
     // They indeed are pretty tighly coupled with the renderer
     // and it this is a fair concern
-    void SavePaintBrush() {}
-    void OpenPaintBrush() {}
+    void SavePaintBrush();
+    void OpenPaintBrush();
     void StartPaintStroke(StrokePoint point);
     void UpdatePaintStroke(StrokePoint point);
     void EndPaintStroke(StrokePoint point);
 
-    void SaveEraseBrush() {}
-    void OpenEraseBrush() {}
+    void SaveEraseBrush();
+    void OpenEraseBrush();
     void StartEraseStroke(StrokePoint point);
     void UpdateEraseStroke(StrokePoint point);
     void EndEraseStroke(StrokePoint point);
@@ -111,7 +105,6 @@ struct Canvas {
     std::string filename;
 
     arena<> strokeArena{4_MiB};
-    pool<TileTextureEncoded> tileTextureEncodedPool{4};
 
     Viewport viewport;
     CommandHistory viewCommands;
@@ -135,7 +128,9 @@ struct Canvas {
     ToolState currentToolState{ToolState::None};
 
     BrushSettings paintBrush;
+    bool paintBrushModified{};
     BrushSettings eraseBrush;
+    bool eraseBrushModified{};
 
     StrokePoint previousPoint{};
     std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};

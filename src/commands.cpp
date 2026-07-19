@@ -32,6 +32,7 @@ void TileModificationCommand::Execute() {
     for (auto [tile, textures] : tileTextures) {
         if (!textures.execute) {
             canvas->DestroyTile(tile);
+            canvas->DeleteTile(tile);
         } else {
             if (!canvas->tilesLoaded.contains(tile)) {
                 SDL_assert(canvas->app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
@@ -43,8 +44,8 @@ void TileModificationCommand::Execute() {
             SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
             SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
             canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.execute);
+            canvas->MarkTileDirty(tile);
         }
-        canvas->MarkTileDirty(tile);
     }
     SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }
@@ -57,6 +58,7 @@ void TileModificationCommand::Revert() {
     for (auto [tile, textures] : tileTextures) {
         if (!textures.revert) {
             canvas->DestroyTile(tile);
+            canvas->DeleteTile(tile);
         } else {
             if (!canvas->tilesLoaded.contains(tile)) {
                 SDL_assert(canvas->app->renderer.CreateUninitializedTileTexture(tile) == Renderer::Error::None);
@@ -68,8 +70,8 @@ void TileModificationCommand::Revert() {
             SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
             SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
             canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.revert);
+            canvas->MarkTileDirty(tile);
         }
-        canvas->MarkTileDirty(tile);
     }
     SDL_assert(canvas->app->renderer.EndCopyPass(true));
 }

@@ -681,6 +681,9 @@ bool Renderer::UpdateUninitializedTextures() {
         SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(commandBuffer);
 
         for (const auto& tile : tileTexturesToInitialize) {
+            if(!tileTextures.contains(tile)) {
+                continue;
+            }
             const SDL_GPUTextureTransferInfo transferInfo = {
                 .transfer_buffer = tileBlankTextureBuffer,
                 .pixels_per_row = TILE_WIDTH,

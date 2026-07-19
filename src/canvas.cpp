@@ -122,6 +122,14 @@ bool Canvas::Open() {
     OpenEraseBrush();
     OpenPaintBrush();
 
+    if (paintBrushModified) {
+        SavePaintBrush();
+    }
+
+    if (eraseBrushModified) {
+        SaveEraseBrush();
+    }
+
     return true;
 }
 
@@ -350,12 +358,16 @@ bool Canvas::CreateTile(TileCoord tile, bool initialize) {
     return true;
 }
 
-void Canvas::DestroyTile(TileCoord tile) {
+bool Canvas::DestroyTile(TileCoord tile) {
     ZoneScoped;
-    SDL_assert(tilesLoaded.contains(tile) && "Tile not found");
+    if (!tilesLoaded.contains(tile)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Tried to destroy tile not loaded");
+        return false;
+    }
 
     app->renderer.DestroyTileTexture(tile);
     tilesLoaded.erase(tile);
+    return true;
 }
 
 bool Canvas::UnloadTile(TileCoord tile) {
@@ -425,7 +437,11 @@ bool Canvas::LoadTile(TileCoord tile) {
 
 bool Canvas::DeleteTile(TileCoord tile) {
     ZoneScoped;
-    SDL_assert(layers.contains(tile.layer) && "Layer not found");
+    if (!layers.at(tile.layer).tiles.contains(tile)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Tried to delete tile not saved");
+        return false;
+    }
+
     SDL_assert(!tilesReading.contains(tile) && "Haven't figured this out yet :/");
 
     tilesModified.erase(tile);
@@ -616,12 +632,13 @@ bool Canvas::UpdateTileWriting() {
             auto& info = app->renderer.GetTileTextureDownloadInfo(data.rendererSlot);
             bool empty{true};
             for (size_t i = 0; i < TILE_SIZE; i++) {
-                if (static_cast<uint8_t>(info.data[i]) == 0) {
+                if (static_cast<uint8_t>(info.data[i]) != 0) {
                     empty = false;
                     break;
                 }
             }
             if (empty) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Detected empty tile");
                 app->renderer.FreeTileTextureDownload(data.rendererSlot);
                 DeleteTile(tile);
                 data.state = TileWriteState::Done;
@@ -776,7 +793,7 @@ void Canvas::UpdatePaintStroke(StrokePoint point) {
         return;
     }
 
-    float distanceCovered{0.0f};
+    float distanceCovered{paintBrush.maxPressureSpacing};
     while (distanceCovered < distance) {
         ZoneScoped;
         const float t = distanceCovered / distance;
@@ -836,210 +853,140 @@ void Canvas::EndPaintStroke(StrokePoint point) {
     strokePoints.clear();
     currentToolState = ToolState::None;
 }
-/*
-// void Canvas::SaveBrush() {
-// #ifdef NDEBUG
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori");
-// #else
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
-// #endif
-//     const std::string brushPath = std::format("{}brushes", path);
-//     SDL_CreateDirectory(brushPath.c_str());
 
-//     nlohmann::json brushJson = {
-//         {"color",
-//          {
-//              brushOptions.color.r,
-//              brushOptions.color.g,
-//              brushOptions.color.b,
-//              brushOptions.color.a,
-//          }},
-//         {"opacityPressure", brushOptions.opacityPressure},
-//         {"opacityPressureRange",
-//          {
-//              brushOptions.opacityPressureRange.x,
-//              brushOptions.opacityPressureRange.y,
-//          }},
-//         {"flow", brushOptions.flow},
-//         {"flowPressure", brushOptions.flowPressure},
-//         {"flowPressureRange",
-//          {
-//              brushOptions.flowPressureRange.x,
-//              brushOptions.flowPressureRange.y,
-//          }},
-//         {"radius", brushOptions.radius},
-//         {"radiusPressure", brushOptions.radiusPressure},
-//         {"radiusPressureRange",
-//          {
-//              brushOptions.radiusPressureRange.x,
-//              brushOptions.radiusPressureRange.y,
-//          }},
-//         {"hardness", brushOptions.hardness},
-//         {
-//             "hardnessPressure",
-//             brushOptions.hardnessPressure,
-//         },
-//         {"hardnessPressureRange",
-//          {
-//              brushOptions.hardnessPressureRange.x,
-//              brushOptions.hardnessPressureRange.y,
-//          }},
-//         {"spacing", brushOptions.spacing},
-//     };
+void Canvas::OpenPaintBrush() {
+#ifdef NDEBUG
+    const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
+    const std::string file = std::format("{}brushes/paintBrush.json", path);
 
-//     const std::string brushJsonDump = brushJson.dump(4);
+    size_t size;
+    char* buf = (char*)SDL_LoadFile(file.c_str(), &size);
+    if (size == 0) {
+        paintBrushModified = true;
+        return;
+    }
 
-//     const std::string file = std::format("{}brushes/brush.json", path);
-//     SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
-//     SDL_assert(fileIo != nullptr);
-//     SDL_WriteIO(fileIo, brushJsonDump.data(), brushJsonDump.size());
-//     SDL_CloseIO(fileIo);
-//     brushOptionsModified = false;
-// }
+    auto brushJson = nlohmann::json::parse(buf);
+    SDL_free(buf);
 
-// void Canvas::OpenBrush() {
-// #ifdef NDEBUG
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori");
-// #else
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
-// #endif
-//     const std::string file = std::format("{}brushes/brush.json", path);
+    paintBrush.color.r = brushJson.at("color")[0];
+    paintBrush.color.g = brushJson.at("color")[1];
+    paintBrush.color.b = brushJson.at("color")[2];
+    paintBrush.color.a = brushJson.at("color")[3];
+    paintBrush.minPressureOpacity = brushJson.at("minOpacity");
+    paintBrush.maxPressureOpacity = brushJson.at("maxOpacity");
+    paintBrush.minPressureFlow = brushJson.at("minFlow");
+    paintBrush.maxPressureFlow = brushJson.at("maxFlow");
+    paintBrush.minPressureRadius = brushJson.at("minRadius");
+    paintBrush.maxPressureRadius = brushJson.at("maxRadius");
+    paintBrush.minPressureHardness = brushJson.at("minHardness");
+    paintBrush.maxPressureHardness = brushJson.at("maxHardness");
+    paintBrush.minPressureSpacing = brushJson.at("minSpacing");
+    paintBrush.maxPressureSpacing = brushJson.at("maxSpacing");
+    paintBrushModified = false;
+}
 
-//     size_t size;
-//     char* buf = (char*)SDL_LoadFile(file.c_str(), &size);
-//     if (size == 0) {
-//         brushOptionsModified = true;
-//         return;
-//     }
+void Canvas::SavePaintBrush() {
+#ifdef NDEBUG
+    const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
+    const std::string brushPath = std::format("{}brushes", path);
+    SDL_CreateDirectory(brushPath.c_str());
 
-//     auto layerJson = nlohmann::json::parse(buf);
-//     SDL_free(buf);
+    nlohmann::json brushJson = {
+        {"color", {paintBrush.color.r, paintBrush.color.b, paintBrush.color.g, paintBrush.color.a}},
+        {"minOpacity", paintBrush.minPressureOpacity},
+        {"maxOpacity", paintBrush.maxPressureOpacity},
+        {"minFlow", paintBrush.minPressureFlow},
+        {"maxFlow", paintBrush.maxPressureFlow},
+        {"minRadius", paintBrush.minPressureRadius},
+        {"maxRadius", paintBrush.maxPressureRadius},
+        {"minHardness", paintBrush.minPressureHardness},
+        {"maxHardness", paintBrush.maxPressureHardness},
+        {"minSpacing", paintBrush.minPressureSpacing},
+        {"maxSpacing", paintBrush.maxPressureSpacing},
+    };
+    const std::string brushJsonDump = brushJson.dump(4);
 
-//     brushOptions.color.r = layerJson.at("color")[0];
-//     brushOptions.color.g = layerJson.at("color")[1];
-//     brushOptions.color.b = layerJson.at("color")[2];
-//     brushOptions.color.a = layerJson.at("color")[3];
+    const std::string file = std::format("{}brushes/paintBrush.json", path);
+    SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
+    SDL_assert(fileIo != nullptr);
+    SDL_WriteIO(fileIo, brushJsonDump.data(), brushJsonDump.size());
+    SDL_CloseIO(fileIo);
+    paintBrushModified = false;
+}
 
-//     brushOptions.opacityPressure = layerJson.at("opacityPressure");
-//     brushOptions.opacityPressureRange.x = layerJson.at("opacityPressureRange")[0];
-//     brushOptions.opacityPressureRange.y = layerJson.at("opacityPressureRange")[1];
+void Canvas::OpenEraseBrush() {
+#ifdef NDEBUG
+    const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
+    const std::string file = std::format("{}brushes/eraseBrush.json", path);
 
-//     brushOptions.flow = layerJson.at("flow");
-//     brushOptions.flowPressure = layerJson.at("flowPressure");
-//     brushOptions.flowPressureRange.x = layerJson.at("flowPressureRange")[0];
-//     brushOptions.flowPressureRange.y = layerJson.at("flowPressureRange")[1];
+    size_t size;
+    char* buf = (char*)SDL_LoadFile(file.c_str(), &size);
+    if (size == 0) {
+        eraseBrushModified = true;
+        return;
+    }
 
-//     brushOptions.radius = layerJson.at("radius");
-//     brushOptions.radiusPressure = layerJson.at("radiusPressure");
-//     brushOptions.radiusPressureRange.x = layerJson.at("radiusPressureRange")[0];
-//     brushOptions.radiusPressureRange.y = layerJson.at("radiusPressureRange")[1];
+    auto brushJson = nlohmann::json::parse(buf);
+    SDL_free(buf);
 
-//     brushOptions.hardness = layerJson.at("hardness");
-//     brushOptions.hardnessPressure = layerJson.at("hardnessPressure");
-//     brushOptions.hardnessPressureRange.x = layerJson.at("hardnessPressureRange")[0];
-//     brushOptions.hardnessPressureRange.y = layerJson.at("hardnessPressureRange")[1];
+    eraseBrush.color.r = brushJson.at("color")[0];
+    eraseBrush.color.g = brushJson.at("color")[1];
+    eraseBrush.color.b = brushJson.at("color")[2];
+    eraseBrush.color.a = brushJson.at("color")[3];
+    eraseBrush.minPressureOpacity = brushJson.at("minOpacity");
+    eraseBrush.maxPressureOpacity = brushJson.at("maxOpacity");
+    eraseBrush.minPressureFlow = brushJson.at("minFlow");
+    eraseBrush.maxPressureFlow = brushJson.at("maxFlow");
+    eraseBrush.minPressureRadius = brushJson.at("minRadius");
+    eraseBrush.maxPressureRadius = brushJson.at("maxRadius");
+    eraseBrush.minPressureHardness = brushJson.at("minHardness");
+    eraseBrush.maxPressureHardness = brushJson.at("maxHardness");
+    eraseBrush.minPressureSpacing = brushJson.at("minSpacing");
+    eraseBrush.maxPressureSpacing = brushJson.at("maxSpacing");
+    eraseBrushModified = false;
+}
 
-//     brushOptions.spacing = layerJson.at("spacing");
-// }
+void Canvas::SaveEraseBrush() {
+#ifdef NDEBUG
+    const std::string path = SDL_GetPrefPath(nullptr, "midori");
+#else
+    const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
+#endif
+    const std::string brushPath = std::format("{}brushes", path);
+    SDL_CreateDirectory(brushPath.c_str());
 
-// void Canvas::SaveEraser() {
-// #ifdef NDEBUG
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori");
-// #else
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
-// #endif
-//     const std::string eraserPath = std::format("{}brushes", path);
-//     SDL_CreateDirectory(eraserPath.c_str());
+    nlohmann::json brushJson = {
+        {"color", {eraseBrush.color.r, eraseBrush.color.b, eraseBrush.color.g, eraseBrush.color.a}},
+        {"minOpacity", eraseBrush.minPressureOpacity},
+        {"maxOpacity", eraseBrush.maxPressureOpacity},
+        {"minFlow", eraseBrush.minPressureFlow},
+        {"maxFlow", eraseBrush.maxPressureFlow},
+        {"minRadius", eraseBrush.minPressureRadius},
+        {"maxRadius", eraseBrush.maxPressureRadius},
+        {"minHardness", eraseBrush.minPressureHardness},
+        {"maxHardness", eraseBrush.maxPressureHardness},
+        {"minSpacing", eraseBrush.minPressureSpacing},
+        {"maxSpacing", eraseBrush.maxPressureSpacing},
+    };
+    const std::string brushJsonDump = brushJson.dump(4);
 
-//     nlohmann::json eraserJson = {
-//         {"opacity", eraserOptions.opacity},
-//         {"opacityPressure", eraserOptions.opacityPressure},
-//         {"opacityPressureRange",
-//          {
-//              eraserOptions.opacityPressureRange.x,
-//              eraserOptions.opacityPressureRange.y,
-//          }},
-//         {"flow", eraserOptions.flow},
-//         {"flowPressure", eraserOptions.flowPressure},
-//         {"flowPressureRange",
-//          {
-//              eraserOptions.flowPressureRange.x,
-//              eraserOptions.flowPressureRange.y,
-//          }},
-//         {"radius", eraserOptions.radius},
-//         {"radiusPressure", eraserOptions.radiusPressure},
-//         {"radiusPressureRange",
-//          {
-//              eraserOptions.radiusPressureRange.x,
-//              eraserOptions.radiusPressureRange.y,
-//          }},
-//         {"hardness", eraserOptions.hardness},
-//         {
-//             "hardnessPressure",
-//             eraserOptions.hardnessPressure,
-//         },
-//         {"hardnessPressureRange",
-//          {
-//              eraserOptions.hardnessPressureRange.x,
-//              eraserOptions.hardnessPressureRange.y,
-//          }},
-//         {"spacing", eraserOptions.spacing},
-//     };
-
-//     const std::string eraserJsonDump = eraserJson.dump(4);
-
-//     const std::string file = std::format("{}brushes/eraser.json", path);
-//     SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
-//     SDL_assert(fileIo != nullptr);
-//     SDL_WriteIO(fileIo, eraserJsonDump.data(), eraserJsonDump.size());
-//     SDL_CloseIO(fileIo);
-//     eraserOptionsModified = false;
-// }
-
-// void Canvas::OpenEraser() {
-// #ifdef NDEBUG
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori");
-// #else
-//     const std::string path = SDL_GetPrefPath(nullptr, "midori-dev");
-// #endif
-//     const std::string file = std::format("{}brushes/eraser.json", path);
-
-//     size_t size;
-//     char* buf = (char*)SDL_LoadFile(file.c_str(), &size);
-//     if (size == 0) {
-//         eraserOptionsModified = true;
-//         return;
-//     }
-
-//     auto layerJson = nlohmann::json::parse(buf);
-//     SDL_free(buf);
-
-//     eraserOptions.opacity = layerJson.at("opacity");
-
-//     eraserOptions.opacityPressure = layerJson.at("opacityPressure");
-//     eraserOptions.opacityPressureRange.x = layerJson.at("opacityPressureRange")[0];
-//     eraserOptions.opacityPressureRange.y = layerJson.at("opacityPressureRange")[1];
-
-//     eraserOptions.flow = layerJson.at("flow");
-//     eraserOptions.flowPressure = layerJson.at("flowPressure");
-//     eraserOptions.flowPressureRange.x = layerJso
-    SDL_assert(currentTool == Tool::Paint);
-    SDL_assert(currentToolState == ToolState::Started);n.at("flowPressureRange")[0];
-//     eraserOptions.flowPressureRange.y = layerJson.at("flowPressureRange")[1];
-
-//     eraserOptions.radius = layerJson.at("radius");
-//     eraserOptions.radiusPressure = layerJson.at("radiusPressure");
-//     eraserOptions.radiusPressureRange.x = layerJson.at("radiusPressureRange")[0];
-//     eraserOptions.radiusPressureRange.y = layerJson.at("radiusPressureRange")[1];
-
-//     eraserOptions.hardness = layerJson.at("hardness");
-//     eraserOptions.hardnessPressure = layerJson.at("hardnessPressure");
-//     eraserOptions.hardnessPressureRange.x = layerJson.at("hardnessPressureRange")[0];
-//     eraserOptions.hardnessPressureRange.y = layerJson.at("hardnessPressureRange")[1];
-
-//     eraserOptions.spacing = layerJson.at("spacing");
-// }
-*/
+    const std::string file = std::format("{}brushes/eraseBrush.json", path);
+    SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
+    SDL_assert(fileIo != nullptr);
+    SDL_WriteIO(fileIo, brushJsonDump.data(), brushJsonDump.size());
+    SDL_CloseIO(fileIo);
+    eraseBrushModified = false;
+}
 
 // This assumes every painted tiles are not going to be culled
 void Canvas::StartEraseStroke(StrokePoint point) {
@@ -1088,7 +1035,7 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
     SDL_assert(currentTileModificationCommand && "TileModification already started");
 
     const auto distance = glm::distance(previousPoint.position, point.position);
-    float distanceCovered{};
+    float distanceCovered{eraseBrush.maxPressureSpacing};
     while (distanceCovered < distance) {
         ZoneScoped;
 
@@ -1120,7 +1067,10 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
             }
         }
     }
-    currentTileModificationCommand->SaveTrackedTilesForPrevious();
+    // overwrite=false: the erase compute pass has already modified the tiles tracked in previous
+    // frames, so only capture the original content of newly tracked tiles. Overwriting here would
+    // clobber the pre-erase image saved in StartEraseStroke, making undo a no-op.
+    currentTileModificationCommand->SaveTrackedTilesForPrevious(false);
 }
 
 // This assumes every painted tiles are not going to be culled
