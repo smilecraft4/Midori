@@ -720,13 +720,14 @@ std::vector<glm::ivec2, arena_allocator<glm::ivec2>> Canvas::GetTilePosAffectedB
     return tilesPos;
 }
 
-// void Canvas::SavePaintBrush() {
-//     ZoneScoped;
-// }
-
-// void Canvas::OpenPaintBrush() {
-//     ZoneScoped;
-// }
+Canvas::StrokePoint LerpStrokePoint(Canvas::StrokePoint start, Canvas::StrokePoint end, float t) {
+    start.position = glm::mix(start.position, end.position, t);
+    start.color = glm::mix(start.color, end.color, t);
+    start.flow = std::lerp(start.flow, end.flow, t);
+    start.radius = std::lerp(start.radius, end.radius, t);
+    start.hardness = std::lerp(start.hardness, end.hardness, t);
+    return start;
+}
 
 void Canvas::StartPaintStroke(StrokePoint point) {
     ZoneScoped;
@@ -798,16 +799,10 @@ void Canvas::UpdatePaintStroke(StrokePoint point) {
     while (distanceCovered < distance) {
         ZoneScoped;
         const float t = distanceCovered / distance;
-
-        StrokePoint newPoint;
-        newPoint.position = glm::mix(startPoint.position, point.position, t);
-        newPoint.color = glm::mix(startPoint.color, point.color, t);
-        newPoint.flow = std::lerp(startPoint.flow, point.flow, t);
-        newPoint.radius = std::lerp(startPoint.radius, point.radius, t);
-        newPoint.hardness = std::lerp(startPoint.hardness, point.hardness, t);
-
-        strokePoints.push_back(newPoint);
-        previousPoint = newPoint;
+        const StrokePoint newPoint = LerpStrokePoint(startPoint, point, t);
+        const StrokePoint smoothedPoint = LerpStrokePoint(newPoint, previousPoint, paintBrush.smoothing);
+        strokePoints.push_back(smoothedPoint);
+        previousPoint = smoothedPoint;
         distanceCovered += paintBrush.maxPressureSpacing;
 
         const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint, app->frameArena);
@@ -887,6 +882,7 @@ void Canvas::OpenPaintBrush() {
     paintBrush.maxPressureHardness = brushJson.at("maxHardness");
     paintBrush.minPressureSpacing = brushJson.at("minSpacing");
     paintBrush.maxPressureSpacing = brushJson.at("maxSpacing");
+    paintBrush.smoothing = brushJson.at("smoothing");
     paintBrushModified = false;
 }
 
@@ -911,6 +907,7 @@ void Canvas::SavePaintBrush() {
         {"maxHardness", paintBrush.maxPressureHardness},
         {"minSpacing", paintBrush.minPressureSpacing},
         {"maxSpacing", paintBrush.maxPressureSpacing},
+        {"smoothing", paintBrush.smoothing},
     };
     const std::string brushJsonDump = brushJson.dump(4);
 
@@ -954,6 +951,7 @@ void Canvas::OpenEraseBrush() {
     eraseBrush.maxPressureHardness = brushJson.at("maxHardness");
     eraseBrush.minPressureSpacing = brushJson.at("minSpacing");
     eraseBrush.maxPressureSpacing = brushJson.at("maxSpacing");
+    eraseBrush.smoothing = brushJson.at("smoothing");
     eraseBrushModified = false;
 }
 
@@ -978,6 +976,7 @@ void Canvas::SaveEraseBrush() {
         {"maxHardness", eraseBrush.maxPressureHardness},
         {"minSpacing", eraseBrush.minPressureSpacing},
         {"maxSpacing", eraseBrush.maxPressureSpacing},
+        {"smoothing", eraseBrush.smoothing},
     };
     const std::string brushJsonDump = brushJson.dump(4);
 
@@ -1042,17 +1041,9 @@ void Canvas::UpdateEraseStroke(StrokePoint point) {
         ZoneScoped;
 
         const float t = distanceCovered / distance;
-
-        StrokePoint newPoint;
-        newPoint.position = glm::mix(startPoint.position, point.position, t);
-        newPoint.color = glm::mix(startPoint.color, point.color, t);
-        newPoint.flow = std::lerp(startPoint.flow, point.flow, t);
-        newPoint.radius = std::lerp(startPoint.radius, point.radius, t);
-        newPoint.hardness = std::lerp(startPoint.hardness, point.hardness, t);
-
+        const StrokePoint newPoint = LerpStrokePoint(startPoint, point, t);
         strokePoints.push_back(newPoint);
         previousPoint = newPoint;
-
         distanceCovered += eraseBrush.maxPressureSpacing;
 
         const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint, app->frameArena);

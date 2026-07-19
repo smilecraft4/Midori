@@ -261,6 +261,9 @@ void App::Update() {
                             if (ImGui::SliderFloat("Max Spacing", &canvas.paintBrush.maxPressureSpacing, 0.1f, 50.0f)) {
                                 canvas.paintBrushModified = true;
                             }
+                            if(ImGui::SliderFloat("Smoothing", &canvas.paintBrush.smoothing, 0.0f, 1.0f)) {
+                                canvas.paintBrushModified = true;
+                            }
                         } break;
                         case Tool::Erase: {
                             ImGui::Text("Erasing");
