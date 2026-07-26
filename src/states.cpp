@@ -187,7 +187,7 @@ void IdleState::OnEvent(const SDL_Event* event) {
                     app->stateManager.Switch(EraseState(app));
                 } break;
                 default:
-                    SDL_assert(false && "Uknown tool");
+                    SDL_assert(false && "Unknown tool");
                     break;
             }
 
@@ -249,10 +249,10 @@ void IdleState::DrawUI() const {
 
 NavigateState::NavigateState(App* app) : app(app) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
 
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
-    SDL_assert(!canvasView.currentViewportCommand.has_value());
+    SDL_assert(!canvasView.currentViewportCommand.has_value() && "A viewport change is already in progress");
 
     canvasView.currentViewportCommand = ViewportChangeCommand(app, app->currentCanvasView.value());
     canvasView.currentViewportCommand->SetPreviousViewport(canvasView.viewport);
@@ -260,7 +260,7 @@ NavigateState::NavigateState(App* app) : app(app) {
 
 void NavigateState::OnEvent(const SDL_Event* event) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
 
     if (event->type == SDL_EVENT_KEY_UP && event->key.key == SDLK_SPACE) {
@@ -337,7 +337,7 @@ void NavigateState::DrawUI() const {
 
 StrokePoint MakeStrokePoint(const App* app, BrushSettings settings) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
 
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
     auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
@@ -374,15 +374,15 @@ std::vector<glm::ivec2, arena_allocator<glm::ivec2>> GetTilePosAffectedByStrokeP
 
 PaintState::PaintState(App* app) : app(app), strokePoints(app->strokeArena), strokeTileAffected(app->strokeArena) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
 
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
     auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
 
-    SDL_assert(app->currentTool == Tool::Paint);
-    SDL_assert(app->currentToolState == ToolState::None);
-    SDL_assert(canvasView.selectedLayer.has_value());
-    SDL_assert(!canvasFile.currentTileCommand.has_value());
+    SDL_assert(app->currentTool == Tool::Paint && "PaintState is active but the paint tool is not selected");
+    SDL_assert(app->currentToolState == ToolState::None && "A stroke is already in progress");
+    SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
+    SDL_assert(!canvasFile.currentTileCommand.has_value() && "TileModification already started");
 
     app->strokeArena.reset();
     std::construct_at(&strokePoints, app->strokeArena);
@@ -424,7 +424,9 @@ PaintState::PaintState(App* app) : app(app), strokePoints(app->strokeArena), str
             .y = static_cast<TileAxis>(tilePos.y),
             .x = static_cast<TileAxis>(tilePos.x),
         };
-        canvasFile.currentTileCommand->TrackTile(underTile);
+        if (auto err = canvasFile.currentTileCommand->TrackTile(underTile); err != Error::None) {
+            SDL_assert(false && "Failed to track a tile for undo; the stroke will not fully revert");
+        }
     }
 
     strokePoints.push_back(point);
@@ -434,19 +436,19 @@ PaintState::PaintState(App* app) : app(app), strokePoints(app->strokeArena), str
 
 void PaintState::OnEvent(const SDL_Event* event) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
 
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
     auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
 
     if (IsPointerMove(app, event)) {
         const auto point = MakeStrokePoint(app, app->paintBrush);
-        SDL_assert(app->currentTool == Tool::Paint);
-        SDL_assert(app->currentToolState == ToolState::None);
-        SDL_assert(canvasView.selectedLayer.has_value());
-        SDL_assert(canvasFile.currentTileCommand.has_value());
-        SDL_assert(canvasFile.layers.contains(canvasView.selectedLayer.value()));
-        SDL_assert(canvasFile.layers.contains(strokeLayer));
+        SDL_assert(app->currentTool == Tool::Paint && "PaintState is active but the paint tool is not selected");
+        SDL_assert(app->currentToolState == ToolState::None && "A stroke is already in progress");
+        SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
+        SDL_assert(canvasFile.currentTileCommand.has_value() && "TileModification not started");
+        SDL_assert(canvasFile.layers.contains(canvasView.selectedLayer.value()) && "Selected layer no longer exists");
+        SDL_assert(canvasFile.layers.contains(strokeLayer) && "Stroke layer no longer exists");
 
         app->strokeArena.reset();
         std::construct_at(&strokePoints, app->strokeArena);
@@ -486,7 +488,9 @@ void PaintState::OnEvent(const SDL_Event* event) {
                 .y = static_cast<TileAxis>(tilePos.y),
                 .x = static_cast<TileAxis>(tilePos.x),
             };
-            canvasFile.currentTileCommand->TrackTile(underTile);
+            if (auto err = canvasFile.currentTileCommand->TrackTile(underTile); err != Error::None) {
+                SDL_assert(false && "Failed to track a tile for undo; the stroke will not fully revert");
+            }
         }
 
         strokePoints.push_back(point);
@@ -495,12 +499,12 @@ void PaintState::OnEvent(const SDL_Event* event) {
     }
 
     if (IsPointerUp(app, event)) {
-        SDL_assert(app->currentTool == Tool::Paint);
-        SDL_assert(app->currentToolState == ToolState::Started);
-        SDL_assert(canvasView.selectedLayer.has_value());
-        SDL_assert(canvasFile.currentTileCommand.has_value());
-        SDL_assert(canvasFile.layers.contains(canvasView.selectedLayer.value()));
-        SDL_assert(canvasFile.layers.contains(strokeLayer));
+        SDL_assert(app->currentTool == Tool::Paint && "PaintState is active but the paint tool is not selected");
+        SDL_assert(app->currentToolState == ToolState::Started && "No stroke in progress");
+        SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
+        SDL_assert(canvasFile.currentTileCommand.has_value() && "TileModification not started");
+        SDL_assert(canvasFile.layers.contains(canvasView.selectedLayer.value()) && "Selected layer no longer exists");
+        SDL_assert(canvasFile.layers.contains(strokeLayer) && "Stroke layer no longer exists");
 
         canvasFile.currentTileCommand->SaveTrackedTilesForPrevious();
 
@@ -528,14 +532,14 @@ void PaintState::DrawUI() const {
 
 EraseState::EraseState(App* app) : app(app), strokePoints(app->strokeArena), strokeTileAffected(app->strokeArena) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
 
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
     auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
 
-    SDL_assert(app->currentTool == Tool::Erase);
-    SDL_assert(app->currentToolState == ToolState::None);
-    SDL_assert(canvasView.selectedLayer.has_value());
+    SDL_assert(app->currentTool == Tool::Erase && "EraseState is active but the erase tool is not selected");
+    SDL_assert(app->currentToolState == ToolState::None && "A stroke is already in progress");
+    SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
     SDL_assert(!canvasFile.currentTileCommand.has_value() && "TileModification already started");
 
     app->strokeArena.reset();
@@ -560,7 +564,9 @@ EraseState::EraseState(App* app) : app(app), strokePoints(app->strokeArena), str
         if (canvasFile.tilesLoaded.contains(tile)) {
             strokeTileAffected.insert(tile);
             canvasFile.MarkTileDirty(tile);
-            canvasFile.currentTileCommand->TrackTile(tile);
+            if (auto err = canvasFile.currentTileCommand->TrackTile(tile); err != Error::None) {
+                SDL_assert(false && "Failed to track a tile for undo; the stroke will not fully revert");
+            }
         }
     }
     canvasFile.currentTileCommand->SaveTrackedTilesForPrevious();
@@ -571,16 +577,16 @@ EraseState::EraseState(App* app) : app(app), strokePoints(app->strokeArena), str
 
 void EraseState::OnEvent(const SDL_Event* event) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
 
     auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
     auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
 
     if (IsPointerMove(app, event)) {
         const auto point = MakeStrokePoint(app, app->eraseBrush);
-        SDL_assert(app->currentTool == Tool::Erase);
-        SDL_assert(app->currentToolState == ToolState::Started);
-        SDL_assert(canvasView.selectedLayer.has_value());
+        SDL_assert(app->currentTool == Tool::Erase && "EraseState is active but the erase tool is not selected");
+        SDL_assert(app->currentToolState == ToolState::Started && "No stroke in progress");
+        SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
         SDL_assert(canvasFile.currentTileCommand.has_value() && "TileModification not started");
 
         const StrokePoint startPoint = previousPoint;
@@ -605,7 +611,9 @@ void EraseState::OnEvent(const SDL_Event* event) {
                 if (canvasFile.tilesLoaded.contains(tile)) {
                     strokeTileAffected.insert(tile);
                     canvasFile.MarkTileDirty(tile);
-                    canvasFile.currentTileCommand->TrackTile(tile);
+                    if (auto err = canvasFile.currentTileCommand->TrackTile(tile); err != Error::None) {
+                        SDL_assert(false && "Failed to track a tile for undo; the stroke will not fully revert");
+                    }
                 }
             }
         }
@@ -616,9 +624,9 @@ void EraseState::OnEvent(const SDL_Event* event) {
     if (IsPointerUp(app, event)) {
         const auto point = MakeStrokePoint(app, app->eraseBrush);
 
-        SDL_assert(app->currentTool == Tool::Erase);
-        SDL_assert(app->currentToolState == ToolState::Started);
-        SDL_assert(canvasView.selectedLayer.has_value());
+        SDL_assert(app->currentTool == Tool::Erase && "EraseState is active but the erase tool is not selected");
+        SDL_assert(app->currentToolState == ToolState::Started && "No stroke in progress");
+        SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
         SDL_assert(canvasFile.currentTileCommand && "TileModification not started");
 
         canvasFile.currentTileCommand->SaveTrackedTilesForNew();
@@ -644,12 +652,12 @@ void EraseState::DrawUI() const {
 /*
 SampleState::SampleState(App* app) : app(app) {
     ZoneScoped;
-    SDL_assert(app->currentCanvasView.has_value());
+    SDL_assert(app->currentCanvasView.has_value() && "No active canvas view");
     // TODO take another snapshot of the whole screen (windows, DMW)
 
-    SDL_assert(app->windowSize.x > 0);
-    SDL_assert(app->windowSize.y > 0);
-    SDL_assert(app->renderer.canvasTexture);
+    SDL_assert(app->windowSize.x > 0 && "Cannot sample a zero width window");
+    SDL_assert(app->windowSize.y > 0 && "Cannot sample a zero height window");
+    SDL_assert(app->renderer.canvasTexture && "No canvas texture to sample from");
 
     size.x = app->windowSize.x;
     size.y = app->windowSize.y;
@@ -663,10 +671,10 @@ SampleState::SampleState(App* app) : app(app) {
     };
     SDL_GPUTransferBuffer* transferBuffer =
         SDL_CreateGPUTransferBuffer(app->renderer.device, &transferBufferCreateInfo);
-    SDL_assert(transferBuffer);
+    SDL_assert(transferBuffer && "Failed to create the sample download buffer");
 
     SDL_GPUCommandBuffer* cmdBuf = SDL_AcquireGPUCommandBuffer(app->renderer.device);
-    SDL_assert(cmdBuf);
+    SDL_assert(cmdBuf && "Failed to acquire a gpu command buffer");
 
     SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmdBuf);
     SDL_GPUTextureRegion region = {
@@ -689,7 +697,7 @@ SampleState::SampleState(App* app) : app(app) {
 
     SDL_EndGPUCopyPass(copyPass);
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdBuf);
-    SDL_assert(fence);
+    SDL_assert(fence && "Failed to acquire a fence for the sample download");
     SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
     SDL_ReleaseGPUFence(app->renderer.device, fence);
 
@@ -702,8 +710,8 @@ SampleState::SampleState(App* app) : app(app) {
 }
 
 void SampleState::OnEvent(const SDL_Event* event) {
-    SDL_assert(size.x > 0);
-    SDL_assert(size.y > 0);
+    SDL_assert(size.x > 0 && "Sample texture has no width");
+    SDL_assert(size.y > 0 && "Sample texture has no height");
     SDL_assert(texture.size() == static_cast<std::size_t>(size.x) * size.y && "SampleTexture is of wrong dimensions");
 
     const auto rx = static_cast<int>(std::round(app->cursorCurrentPos.x));

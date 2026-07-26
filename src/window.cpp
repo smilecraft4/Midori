@@ -19,7 +19,7 @@ Window::~Window() {
             continue;
         }
     
-        SDL_assert(!app->canvasViews.contains(id.value()));
+        SDL_assert(!app->canvasViews.contains(id.value()) && "Window destroyed while it still holds a canvas view");
     }
 }
 

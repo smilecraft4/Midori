@@ -11,7 +11,7 @@ namespace Midori {
 
 TileModificationCommand::TileModificationCommand(CanvasView* canvasView, Layer layer)
     : app(canvasView->app), canvasFileId(canvasView->canvasFileId), layer(layer) {
-    SDL_assert(layer != LAYER_INVALID);
+    SDL_assert(layer != LAYER_INVALID && "TileModificationCommand needs a real layer");
 }
 
 TileModificationCommand::~TileModificationCommand() {
@@ -29,10 +29,10 @@ std::string TileModificationCommand::Name() {
 void TileModificationCommand::Execute() {
     ZoneScoped;
     auto& canvasFile = app->canvasFiles.at(canvasFileId);
-    SDL_assert(canvasFile.layers.contains(layer) && "Layer not found");
+    SDL_assert(canvasFile.layers.contains(layer) && "Command targets a layer that no longer exists");
 
     const bool copyPassBegan = app->renderer.BeginCopyPass();
-    SDL_assert(copyPassBegan);
+    SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
     for (auto [tile, textures] : tileTextures) {
         if (!textures.execute) {
             canvasFile.DestroyTile(tile);
@@ -40,12 +40,12 @@ void TileModificationCommand::Execute() {
         } else {
             if (!canvasFile.tilesLoaded.contains(tile)) {
                 const Error err = app->renderer.CreateUninitializedTileTexture(tile);
-                SDL_assert(err == Error::None);
+                SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
                 canvasFile.tilesLoaded.insert(tile);
             }
 
-            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "tile not found");
-            SDL_assert(app->renderer.tileTextures.contains(tile) && "No tile texture found");
+            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "Tile is not loaded");
+            SDL_assert(app->renderer.tileTextures.contains(tile) && "Loaded tile has no gpu texture");
             SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
             SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
             app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.execute);
@@ -53,16 +53,16 @@ void TileModificationCommand::Execute() {
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
-    SDL_assert(copyPassEnded);
+    SDL_assert(copyPassEnded && "Failed to submit the gpu copy pass");
 }
 
 void TileModificationCommand::Revert() {
     ZoneScoped;
     auto& canvasFile = app->canvasFiles.at(canvasFileId);
-    SDL_assert(canvasFile.layers.contains(layer) && "Layer not found");
+    SDL_assert(canvasFile.layers.contains(layer) && "Command targets a layer that no longer exists");
 
     const bool copyPassBegan = app->renderer.BeginCopyPass();
-    SDL_assert(copyPassBegan);
+    SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
     for (auto [tile, textures] : tileTextures) {
         if (!textures.revert) {
             canvasFile.DestroyTile(tile);
@@ -70,12 +70,12 @@ void TileModificationCommand::Revert() {
         } else {
             if (!canvasFile.tilesLoaded.contains(tile)) {
                 const Error err = app->renderer.CreateUninitializedTileTexture(tile);
-                SDL_assert(err == Error::None);
+                SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
                 canvasFile.tilesLoaded.insert(tile);
             }
 
-            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "tile not found");
-            SDL_assert(app->renderer.tileTextures.contains(tile) && "No tile texture found");
+            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "Tile is not loaded");
+            SDL_assert(app->renderer.tileTextures.contains(tile) && "Loaded tile has no gpu texture");
             SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
             SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
             app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.revert);
@@ -83,19 +83,34 @@ void TileModificationCommand::Revert() {
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
-    SDL_assert(copyPassEnded);
+    SDL_assert(copyPassEnded && "Failed to submit the gpu copy pass");
 }
 
-void TileModificationCommand::TrackTile(Tile tile) {
+Error TileModificationCommand::TrackTile(Tile tile) {
     ZoneScoped;
+
+    // Already tracked: the same tile is touched by most points in a stroke.
+    if (tileTextures.contains(tile)) {
+        return Error::None;
+    }
+
+    // insert() throws when the map is full, and a stroke can cover more tiles than
+    // the command has room for, so this has to be checked rather than asserted.
+    if (tileTextures.full()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Cannot track tile(%u, %d, %d): command is at its %zu tile limit",
+                    tile.layer, tile.x, tile.y, tileTextures.capacity());
+        return Error::OutOfCapacity;
+    }
+
     tileTextures.insert(tile, {.revert = nullptr, .execute = nullptr});
+    return Error::None;
 }
 
 void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
     ZoneScoped;
 
     const bool copyPassBegan = app->renderer.BeginCopyPass();
-    SDL_assert(copyPassBegan);
+    SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
     for (auto [tile, textures] : tileTextures) {
         if (!overwrite && textures.revert) {
             continue;
@@ -108,13 +123,13 @@ void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
-    SDL_assert(copyPassEnded);
+    SDL_assert(copyPassEnded && "Failed to submit the gpu copy pass");
 }
 
 void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
     ZoneScoped;
     const bool copyPassBegan = app->renderer.BeginCopyPass();
-    SDL_assert(copyPassBegan);
+    SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
     for (auto [tile, textures] : tileTextures) {
         if (!overwrite && textures.execute) {
             continue;
@@ -127,12 +142,10 @@ void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
-    SDL_assert(copyPassEnded);
+    SDL_assert(copyPassEnded && "Failed to submit the gpu copy pass");
 }
 
-CommandHistory::CommandHistory(size_t capacity) : commands(capacity) {}
-
-CommandHistory::~CommandHistory() = default;
+CommandHistory::CommandHistory(size_t capacity) : ring(capacity) {}
 
 void CommandHistory::Undo() {
     if (position == 0) {
@@ -145,15 +158,15 @@ void CommandHistory::Undo() {
                 command.Revert();
             }
         },
-        commands[Index(position)]);
+        ring.at(position - 1));
     position--;
 }
 
 void CommandHistory::Redo() {
-    if (position == count) {
+    if (position == ring.size()) {
         return;
     }
-    SDL_assert(position < count);
+    SDL_assert(position < ring.size());
     position++;
 
     std::visit(
@@ -162,51 +175,39 @@ void CommandHistory::Redo() {
                 command.Execute();
             }
         },
-        commands[Index(position)]);
+        ring.at(position - 1));
 }
 
 void CommandHistory::Clear() {
     position = 0;
-    count = 0;
-    start = 0;
-    commands.clear(); // we just want to call the destructors
-    commands.resize(commands.capacity());
-}
-
-size_t CommandHistory::Index(size_t pos) const {
-    SDL_assert(pos > 0);
-    SDL_assert(pos <= count);
-    return (start + (pos - 1)) % commands.capacity();
+    ring.clear();
 }
 
 void CommandHistory::Push(Command&& command) {
-    if (position < count) {
-        for (int pos = static_cast<int>(count) - 1; pos > position; pos--) {
-            commands[Index(position)] = std::monostate();
+    SDL_assert(ring.size() <= position && "Untracked position in ring_arry");
+    if (ring.size() > position) {
+        while (ring.size() > position) {
+            ring.pop_front();
         }
+    } else if (ring.full()) {
+        ring.pop_front();
+        position--;
     }
-
-    if (position < commands.capacity()) {
-        position++;
-        count = position;
-    } else {
-        start = (start + 1) % commands.size();
-    }
-
-    commands[Index(position)] = std::move(command);
+    ring.push_back(std::move(command));
+    position++;
 }
 
-const Command* CommandHistory::Get(size_t index) const {
-    SDL_assert(index < count);
-    return &commands[Index(index + 1)];
+const Command* CommandHistory::Get(size_t pos) const {
+    SDL_assert(pos < ring.size());
+    return &ring.at(pos - 1);
 }
 
 size_t CommandHistory::Empty() const {
-    return count == 0;
+    return ring.empty();
 }
 
 size_t CommandHistory::Count() const {
-    return count;
+    return ring.size();
 }
 
 void CommandHistory::DrawUI() {
@@ -231,7 +232,7 @@ void CommandHistory::DrawUI() {
                         }
                     }
                 },
-                commands[Index(pos + 1)]);
+                ring.at(pos + 1));
         }
     }
 }

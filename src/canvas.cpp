@@ -50,8 +50,8 @@ CanvasFile::~CanvasFile() = default;
 
 Error CanvasFile::New() {
     ZoneScoped;
-    SDL_assert(!env);
-    SDL_assert(!filename.has_value());
+    SDL_assert(!env && "New() on a CanvasFile that still owns an lmdb env; Close() first");
+    SDL_assert(!filename.has_value() && "New() on a CanvasFile that still has a filename");
 
     const LayerCreateInfo createInfo{
         .name = "Base Layer",
@@ -69,8 +69,8 @@ Error CanvasFile::New() {
 
 Error CanvasFile::Open(std::filesystem::path newFilename) {
     ZoneScoped;
-    SDL_assert(!env);
-    SDL_assert(newFilename.has_filename());
+    SDL_assert(!env && "Open() on a CanvasFile that still owns an lmdb env; Close() first");
+    SDL_assert(newFilename.has_filename() && "Open() needs a file path, not a directory");
 
     if (!std::filesystem::exists(newFilename) || !std::filesystem::is_regular_file(newFilename)) {
         return Error::FileNotFound;
@@ -374,38 +374,89 @@ Error CanvasFile::SaveAs(std::filesystem::path newFilename) {
         std::filesystem::create_directories(newFilename.parent_path());
     }
 
+    const auto filenameStr = newFilename.string();
+
     if (env) {
-        const auto newFilenameStr = newFilename.string();
-        mdb_env_copy2(env, newFilenameStr.c_str(), MDB_CP_COMPACT);
+        // Copy the live env to the new path, then reopen there so subsequent writes
+        // land in the new file. Keep the old env open if the copy fails.
+        int rc = mdb_env_copy2(env, filenameStr.c_str(), MDB_CP_COMPACT);
+        if (rc != MDB_SUCCESS) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to copy the lmdb env to '%s': %s", filenameStr.c_str(),
+                         mdb_strerror(rc));
+            SDL_assert(false && "Failed to copy the lmdb environment");
+            return Error::Unknown;
+        }
 
         mdb_dbi_close(env, dbiMetadata);
         mdb_dbi_close(env, dbiLayers);
         mdb_dbi_close(env, dbiTiles);
         mdb_env_close(env);
+        env = nullptr;
+        filename = std::nullopt;
+    }
+
+    int rc = mdb_env_create(&env);
+    if (rc == MDB_SUCCESS) {
+        rc = mdb_env_set_maxdbs(env, CANVASFILE_DBI_COUNT);
+    }
+    if (rc == MDB_SUCCESS) {
+        rc = mdb_env_set_mapsize(env, CANVASFILE_MAP_SIZE);
+    }
+    if (rc == MDB_SUCCESS) {
+        rc = mdb_env_open(env, filenameStr.c_str(), MDB_NOSUBDIR, CANVASFILE_FILE_MODE);
+    }
+    if (rc != MDB_SUCCESS) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open lmdb env '%s': %s", filenameStr.c_str(),
+                     mdb_strerror(rc));
+        SDL_assert(false && "Failed to open the lmdb environment");
+        if (env) {
+            mdb_env_close(env);
+            env = nullptr;
+        }
+        return Error::Unknown;
+    }
+
+    MDB_txn* txn{};
+    rc = mdb_txn_begin(env, nullptr, 0, &txn);
+    if (rc != MDB_SUCCESS) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to begin the dbi open transaction: %s", mdb_strerror(rc));
+        SDL_assert(false && "Failed to begin the lmdb dbi open transaction");
+        mdb_env_close(env);
+        env = nullptr;
+        return Error::Unknown;
+    }
+
+    rc = mdb_dbi_open(txn, CANVASFILE_DBI_METADATA, MDB_CREATE, &dbiMetadata);
+    if (rc == MDB_SUCCESS) {
+        rc = mdb_dbi_open(txn, CANVASFILE_DBI_LAYERS, MDB_INTEGERKEY | MDB_CREATE, &dbiLayers);
+    }
+    if (rc == MDB_SUCCESS) {
+        rc = mdb_dbi_open(txn, CANVASFILE_DBI_TILES, MDB_INTEGERKEY | MDB_CREATE, &dbiTiles);
+    }
+    if (rc == MDB_SUCCESS) {
+        rc = mdb_txn_commit(txn);
+    } else {
+        mdb_txn_abort(txn);
+    }
+    if (rc != MDB_SUCCESS) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open the lmdb databases: %s", mdb_strerror(rc));
+        SDL_assert(false && "Failed to open the lmdb databases");
+        mdb_env_close(env);
+        env = nullptr;
+        return Error::Unknown;
     }
 
     filename = std::move(newFilename);
-
-    mdb_env_create(&env);
-    mdb_env_set_maxdbs(env, 3); // metadata, layers, tiles
-    mdb_env_set_mapsize(env, 1_GiB);
-    const auto filenameStr = filename->string();
-    mdb_env_open(env, filenameStr.c_str(), MDB_NOSUBDIR, 0664);
-
-    MDB_txn* txn{};
-    MDB_val key, val;
-    mdb_txn_begin(env, nullptr, 0, &txn);
-    mdb_dbi_open(txn, "metadata", MDB_CREATE, &dbiMetadata);
-    mdb_dbi_open(txn, "layers", MDB_INTEGERKEY | MDB_CREATE, &dbiLayers);
-    mdb_dbi_open(txn, "tiles", MDB_INTEGERKEY | MDB_CREATE, &dbiTiles);
-    mdb_txn_commit(txn);
 
     return Save();
 }
 
 Error CanvasFile::Close() {
     ZoneScoped;
-    SDL_assert(env);
+    SDL_assert(env && "Close() on a CanvasFile with no lmdb env open");
+    if (!env) {
+        return Error::None;
+    }
 
     mdb_dbi_close(env, dbiTiles);
     mdb_dbi_close(env, dbiLayers);
@@ -432,15 +483,18 @@ Error CanvasFile::Update() {
     // Update tile writing
     if (!tilesWriting.empty()) {
         ZoneScopedN("Update Tile writing");
-        if (int rc = mdb_txn_begin(env, nullptr, 0, &txn); !rc) {
-            SDL_assert(false && "Failed to begin lmdb write transaction");
+        if (int rc = mdb_txn_begin(env, nullptr, 0, &txn); rc != MDB_SUCCESS) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to begin the tile write transaction: %s",
+                         mdb_strerror(rc));
+            SDL_assert(false && "Failed to begin the lmdb tile write transaction");
+            return Error::Unknown;
         }
 
         std::vector<Tile, arena_allocator<Tile>> tilesWrote(app->frameArena);
         std::vector<Tile, arena_allocator<Tile>> tilesDeleting(app->frameArena);
         for (auto [tile, data] : tilesWriting) {
             ZoneScopedN("Tile writing");
-            SDL_assert(tilesModified.contains(tile));
+            SDL_assert(tilesModified.contains(tile) && "A tile queued for writing must still be marked modified");
 
             if (data.state == TileWriteState::Pending) {
                 const auto slot = app->renderer.DownloadTileTexture(tile);
@@ -476,21 +530,38 @@ Error CanvasFile::Update() {
                     };
                     int encodedBufSize{};
                     auto* encodedBuf = static_cast<std::byte*>(qoi_encode(info.data, &desc, &encodedBufSize));
-                    SDL_assert(encodedBufSize > 0);
-                    SDL_assert(encodedBuf);
+                    SDL_assert(encodedBuf && "qoi_encode returned no buffer");
+                    SDL_assert(encodedBufSize > 0 && "qoi_encode produced an empty buffer");
+                    if (encodedBuf == nullptr || encodedBufSize <= 0) {
+                        // Leave the tile queued so the next frame retries it.
+                        app->renderer.FreeTileTextureDownload(data.rendererSlot);
+                        data.state = TileWriteState::Pending;
+                        continue;
+                    }
 
                     data.state = TileWriteState::Writting;
                     key.mv_data = std::bit_cast<size_t*>(&tile);
-                    key.mv_size = sizeof(size_t);
+                    key.mv_size = sizeof(Tile);
                     val.mv_data = encodedBuf;
                     val.mv_size = encodedBufSize;
-                    if (int rc = mdb_put(txn, dbiTiles, &key, &val, 0); !rc) {
-                        SDL_assert(false && "Failed to write to lmdb tile database");
-                    }
+                    const int rc = mdb_put(txn, dbiTiles, &key, &val, 0);
+
                     app->renderer.FreeTileTextureDownload(data.rendererSlot);
                     Free(encodedBuf);
 
-                    layers.at(tile.layer).tiles.insert(tile);
+                    if (rc != MDB_SUCCESS) {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write tile(%u, %d, %d): %s", tile.layer,
+                                     tile.x, tile.y, mdb_strerror(rc));
+                        SDL_assert(false && "Failed to write to the lmdb tile database");
+                        data.state = TileWriteState::Pending;
+                        continue;
+                    }
+
+                    if (layers.at(tile.layer).tiles.full()) {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Layer %u is at its tile limit", tile.layer);
+                    } else {
+                        layers.at(tile.layer).tiles.insert(tile);
+                    }
                     data.state = TileWriteState::Done;
                 }
                 if (data.state == TileWriteState::Done) {
@@ -499,13 +570,24 @@ Error CanvasFile::Update() {
                 }
             }
         }
-        if (!mdb_txn_commit(txn)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write tiles textures. Retrying next frame...");
+        if (int rc = mdb_txn_commit(txn); rc != MDB_SUCCESS) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to commit %zu tile textures, retrying next frame: %s",
+                         tilesWrote.size(), mdb_strerror(rc));
+
+            // Nothing reached the file, so put every tile back in the queue. The
+            // download slots are already released, hence the reset to Pending.
+            for (const auto tile : tilesWrote) {
+                tilesModified.insert(tile);
+                tilesWriting.at(tile).state = TileWriteState::Pending;
+            }
             tilesWrote.clear();
+            tilesDeleting.clear();
         }
         for (const auto tile : tilesWrote) {
             tilesWriting.erase(tile);
         }
+        // Deleted outside the transaction above: DeleteTile() opens its own write
+        // transaction and lmdb deadlocks if a thread nests two of them.
         for (const auto tile : tilesDeleting) {
             DeleteTile(tile);
         }
@@ -515,14 +597,17 @@ Error CanvasFile::Update() {
     if (!tilesReading.empty()) {
         ZoneScopedN("Update Tile reading");
         // FIXME use mdb_txn_renew instead
-        if (int rc = mdb_txn_begin(env, nullptr, MDB_RDONLY, &txn); !rc) {
-            SDL_assert(false && "Failed to begin a read only lmdb operation");
+        if (int rc = mdb_txn_begin(env, nullptr, MDB_RDONLY, &txn); rc != MDB_SUCCESS) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to begin the tile read transaction: %s",
+                         mdb_strerror(rc));
+            SDL_assert(false && "Failed to begin the lmdb tile read transaction");
+            return Error::Unknown;
         }
 
         std::vector<Tile, arena_allocator<Tile>> tilesRead(app->frameArena);
         for (auto [tile, data] : tilesReading) {
             ZoneScopedN("Tile reading");
-            SDL_assert(!tilesLoaded.contains(tile));
+            SDL_assert(!tilesLoaded.contains(tile) && "A tile queued for reading must not already be loaded");
 
             if (data.state == TileReadState::Pending) {
                 const auto slot = app->renderer.ReserveTileTextureUpload(tile);
@@ -533,9 +618,16 @@ Error CanvasFile::Update() {
                 const auto& info = app->renderer.GetTileTextureUploadInfo(data.rendererSlot);
 
                 key.mv_data = std::bit_cast<size_t*>(&tile);
-                key.mv_size = sizeof(size_t);
-                if (int rc = mdb_get(txn, dbiTiles, &key, &val); !rc) {
-                    SDL_assert(false && "Failed to read tile");
+                key.mv_size = sizeof(Tile);
+                if (int rc = mdb_get(txn, dbiTiles, &key, &val); rc != MDB_SUCCESS) {
+                    // MDB_NOTFOUND means the layer's tile set and the tile database
+                    // disagree; either way this read can never complete, so drop it
+                    // rather than retrying it every frame.
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read tile(%u, %d, %d): %s", tile.layer,
+                                 tile.x, tile.y, mdb_strerror(rc));
+                    SDL_assert(false && "Failed to read a tile from the lmdb tile database");
+                    app->renderer.FreeTileTextureUpload(data.rendererSlot);
+                    tilesRead.push_back(tile);
                     continue;
                 }
                 data.state = TileReadState::Read;
@@ -543,10 +635,18 @@ Error CanvasFile::Update() {
                 qoi_desc desc{};
                 int size = static_cast<int>(val.mv_size);
                 auto* decodedBuf = static_cast<std::byte*>(qoi_decode(val.mv_data, size, &desc, 4));
-                SDL_assert(decodedBuf);
-                SDL_assert(desc.width == TILE_WIDTH);
-                SDL_assert(desc.height == TILE_HEIGHT);
-                SDL_assert(desc.channels = 4);
+                SDL_assert(decodedBuf && "qoi_decode returned no buffer");
+                if (decodedBuf == nullptr || desc.width != TILE_WIDTH || desc.height != TILE_HEIGHT
+                    || desc.channels != 4) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                                 "Tile(%u, %d, %d) decoded to %ux%u/%uch, expected %zux%zu/4ch", tile.layer, tile.x,
+                                 tile.y, desc.width, desc.height, desc.channels, TILE_WIDTH, TILE_HEIGHT);
+                    SDL_assert(false && "Decoded tile has unexpected dimensions");
+                    Free(decodedBuf);
+                    app->renderer.FreeTileTextureUpload(data.rendererSlot);
+                    tilesRead.push_back(tile);
+                    continue;
+                }
 
                 data.state = TileReadState::Decoded;
 
@@ -560,10 +660,9 @@ Error CanvasFile::Update() {
                 data.state = TileReadState::Done;
             }
         }
-        if (!mdb_txn_commit(txn)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write tiles textures. Retrying next frame...");
-            tilesRead.clear();
-        }
+        // Read-only transactions have nothing to commit.
+        mdb_txn_abort(txn);
+
         for (const auto tile : tilesRead) {
             tilesReading.erase(tile);
         }
@@ -728,8 +827,8 @@ Error CanvasFile::SetBlendMode(Layer layer, BlendMode newBlendMode) {
 
 Error CanvasFile::MergeLayers(Layer srcLayer, Layer dstLayer) {
     ZoneScoped;
-    SDL_assert(layers.contains(srcLayer));
-    SDL_assert(layers.contains(dstLayer));
+    SDL_assert(layers.contains(srcLayer) && "Merge source layer does not exist");
+    SDL_assert(layers.contains(dstLayer) && "Merge destination layer does not exist");
 
     // Batch for better result
 
@@ -767,14 +866,14 @@ bool CanvasFile::HasTile(Tile tile) const {
 
 Error CanvasFile::NewTile(Tile tile) {
     ZoneScoped;
-    SDL_assert(layers.contains(tile.layer) && "Layer missing");
-    SDL_assert(!tilesLoaded.contains(tile) && "Tile already loaded");
-    SDL_assert(!layers.at(tile.layer).tiles.contains(tile) && "Tile already exists");
+    SDL_assert(layers.contains(tile.layer) && "NewTile() on a layer that does not exist");
+    SDL_assert(!tilesLoaded.contains(tile) && "NewTile() on a tile that is already loaded");
+    SDL_assert(!layers.at(tile.layer).tiles.contains(tile) && "NewTile() on a tile that already exists in the file");
 
     // Batch for better perfs
 
     if (auto err = app->renderer.CreateTileTexture(tile); err != Error::None) {
-        SDL_assert(err != Error::None && "Failed to create gpu texture");
+        SDL_assert(false && "Failed to create the tile gpu texture");
         return Error::Unknown;
     }
 
@@ -788,25 +887,52 @@ Error CanvasFile::NewTile(Tile tile) {
 
 Error CanvasFile::DeleteTile(Tile tile) {
     ZoneScoped;
-    SDL_assert(env);
+    SDL_assert(env && "DeleteTile() needs an open lmdb env");
+    if (!env) {
+        return Error::FileNotFound;
+    }
 
     // TODO: figure tileLoading
     // TODO: figure tileUnloading
 
+    if (!layers.contains(tile.layer)) {
+        return Error::LayerNotFound;
+    }
     if (!layers.at(tile.layer).tiles.contains(tile)) {
         return Error::TileNotFound;
     }
 
-    SDL_assert(!tilesReading.contains(tile) && "Haven't figured this out yet :/");
+    SDL_assert(!tilesReading.contains(tile) && "Deleting a tile that is mid-read is not handled yet");
 
     // Batch for better perfs
     MDB_txn* txn{};
     MDB_val key{};
     key.mv_data = &tile;
-    key.mv_size = sizeof(size_t);
-    mdb_txn_begin(env, nullptr, 0, &txn);
-    mdb_del(txn, dbiTiles, &key, nullptr);
-    mdb_txn_commit(txn);
+    key.mv_size = sizeof(Tile);
+
+    int rc = mdb_txn_begin(env, nullptr, 0, &txn);
+    if (rc != MDB_SUCCESS) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to begin the tile delete transaction: %s", mdb_strerror(rc));
+        SDL_assert(false && "Failed to begin the lmdb tile delete transaction");
+        return Error::Unknown;
+    }
+
+    rc = mdb_del(txn, dbiTiles, &key, nullptr);
+    if (rc != MDB_SUCCESS && rc != MDB_NOTFOUND) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to delete tile(%u, %d, %d): %s", tile.layer, tile.x, tile.y,
+                     mdb_strerror(rc));
+        SDL_assert(false && "Failed to delete a tile from the lmdb tile database");
+        mdb_txn_abort(txn);
+        return Error::Unknown;
+    }
+
+    rc = mdb_txn_commit(txn);
+    if (rc != MDB_SUCCESS) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to commit the tile delete transaction: %s",
+                     mdb_strerror(rc));
+        SDL_assert(false && "Failed to commit the lmdb tile delete transaction");
+        return Error::Unknown;
+    }
 
     tilesModified.erase(tile);
     layers.at(tile.layer).tiles.erase(tile);
@@ -816,7 +942,7 @@ Error CanvasFile::DeleteTile(Tile tile) {
 
 Error CanvasFile::DestroyTile(Tile tile) {
     ZoneScoped;
-    SDL_assert(tilesLoaded.contains(tile));
+    SDL_assert(tilesLoaded.contains(tile) && "DestroyTile() on a tile that is not loaded");
 
     app->renderer.DestroyTileTexture(tile);
     tilesLoaded.erase(tile);
@@ -843,7 +969,8 @@ Error CanvasFile::MarkTileDirty(Tile tile) {
 
 Error CanvasFile::ReadTile(Tile tile) {
     ZoneScoped;
-    SDL_assert(layers.at(tile.layer).tiles.contains(tile) && "Tile not saved, cannot load it");
+    SDL_assert(layers.contains(tile.layer) && "ReadTile() on a layer that does not exist");
+    SDL_assert(HasTile(tile) && "ReadTile() on a tile that was never written to the file");
 
     // FIXME This needs to be thread safe
 
@@ -906,8 +1033,8 @@ Error CanvasFile::WriteTile(Tile tile) {
 
 Error CanvasFile::MergeTiles(Tile srcTile, Tile dstTile) {
     ZoneScoped;
-    SDL_assert(layers.contains(srcTile.layer));
-    SDL_assert(layers.at(srcTile.layer).tiles.contains(srcTile));
+    SDL_assert(layers.contains(srcTile.layer) && "Merge source layer does not exist");
+    SDL_assert(HasTile(srcTile) && "Merge source tile does not exist in the file");
 
     // FIXME handling non resident tiles tile is broken
     // TODO fix the path when tile are not visible
@@ -937,8 +1064,8 @@ Error CanvasFile::MergeTiles(Tile srcTile, Tile dstTile) {
 Error CanvasFile::MoveTile(Tile srcTile, Tile dstTile) {
     ZoneScoped;
 
-    SDL_assert(layers.contains(srcTile.layer));
-    SDL_assert(layers.contains(dstTile.layer));
+    SDL_assert(layers.contains(srcTile.layer) && "Move source layer does not exist");
+    SDL_assert(layers.contains(dstTile.layer) && "Move destination layer does not exist");
 
     if (tilesLoaded.contains(srcTile)) {
         tilesLoaded.insert(dstTile);
@@ -975,7 +1102,7 @@ void CanvasFile::SyncCanvasViews() {
             continue;
         }
 
-        SDL_assert(app->canvasViews.contains(id.value()));
+        SDL_assert(app->canvasViews.contains(id.value()) && "CanvasFile references a canvas view that no longer exists");
         auto& canvasView = app->canvasViews.at(id.value());
         canvasView.dirty = true;
     }
@@ -987,7 +1114,7 @@ void CanvasFile::SyncCanvasViews() {
 
 CanvasView::CanvasView(App* app, size_t windowId, size_t canvasFileId)
     : app(app), windowId(windowId), canvasFileId(canvasFileId) {
-    SDL_assert(app->canvasFiles.contains(canvasFileId));
+    SDL_assert(app->canvasFiles.contains(canvasFileId) && "CanvasView references a canvas file that no longer exists");
 
     auto& canvasFile = app->canvasFiles.at(canvasFileId);
 }

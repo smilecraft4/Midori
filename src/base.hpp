@@ -1963,9 +1963,8 @@ static_assert(std::ranges::forward_range<slot_map<size_t, int>>);
 // the front does not move any element.
 //
 // Unlike the other containers here, appending to a full ring_array is not an error:
-// emplace_back()/push_back() drop the oldest element to make room and return true
-// when they did, so callers holding a logical index can shift it. Check full()
-// beforehand if losing the front is not acceptable.
+// emplace_back()/push_back() overwrite the oldest element. Check full() beforehand
+// when that element still matters.
 template<typename Elem, class Alloc = std::allocator<Elem>>
 struct ring_array {
     using elem_alloc = typename std::allocator_traits<Alloc>::template rebind_alloc<Elem>;
@@ -1977,20 +1976,21 @@ struct ring_array {
     size_t size_{};
     size_t head_{};
 
-    ring_array(size_t capacity = 0, Alloc alloc = Alloc())
-        : ea_(elem_alloc(alloc)), capacity_(capacity) {
+    ring_array(size_t capacity = 0, Alloc alloc = Alloc()) : ea_(elem_alloc(alloc)), capacity_(capacity) {
         if (capacity_) {
             elems_ = elem_atr::allocate(ea_, capacity_);
         }
     }
 
+    // Copying normalises the storage: the copy keeps head_ at 0, so logical index i
+    // lands in elems_[i].
     ring_array(const ring_array& other)
         : ea_(elem_atr::select_on_container_copy_construction(other.ea_)),
           capacity_(other.capacity_),
           size_(other.size_) {
         if (capacity_) {
             elems_ = elem_atr::allocate(ea_, capacity_);
-            for (size_t i = 0; i < size_; ++i) {
+            for (size_t i = 0; i < size_; i++) {
                 elem_atr::construct(ea_, elems_ + i, std::as_const(other[i]));
             }
         }
@@ -2022,10 +2022,11 @@ struct ring_array {
 
         capacity_ = other.capacity_;
         size_ = other.size_;
+        head_ = 0;
 
         if (capacity_) {
             elems_ = elem_atr::allocate(ea_, capacity_);
-            for (size_t i = 0; i < size_; ++i) {
+            for (size_t i = 0; i < size_; i++) {
                 elem_atr::construct(ea_, elems_ + i, std::as_const(other[i]));
             }
         }
@@ -2068,7 +2069,7 @@ struct ring_array {
     void clear() {
         while (size_) {
             size_--;
-            elem_atr::destroy(ea_, elems_ + slot(size_));
+            elem_atr::destroy(ea_, elems_ + ((head_ + size_) % capacity_));
         }
         head_ = 0;
     }
@@ -2082,9 +2083,9 @@ struct ring_array {
         }
     }
 
-    // Only valid while empty: reallocating would have to relocate live elements,
-    // and the element type is not required to be movable.
     bool reserve(size_t newCapacity) {
+        // Only possible while empty: growing would have to relocate the live
+        // elements, and Elem is not required to be movable.
         if (size_) {
             return false;
         }
@@ -2097,23 +2098,25 @@ struct ring_array {
         return true;
     }
 
-    [[nodiscard]] size_t slot(size_t index) const { return capacity_ ? (head_ + index) % capacity_ : 0; }
-
-    Elem& operator[](size_t index) { return elems_[slot(index)]; }
-    const Elem& operator[](size_t index) const { return elems_[slot(index)]; }
+    Elem& operator[](size_t index) { return elems_[(head_ + index) % capacity_]; }
+    const Elem& operator[](size_t index) const { return elems_[(head_ + index) % capacity_]; }
 
     Elem& at(size_t index) {
+        // use logical index where 0 is the oldest and size() - 1 is the latest inserted element
         if (index >= size_) {
             throw std::out_of_range("ring_array::at: index out of range");
         }
-        return elems_[slot(index)];
+
+        return elems_[(head_ + index) % capacity_];
     }
 
     [[nodiscard]] const Elem& at(size_t index) const {
+        // use logical index where 0 is the oldest and size() - 1 is the latest inserted element
         if (index >= size_) {
             throw std::out_of_range("ring_array::at: index out of range");
         }
-        return elems_[slot(index)];
+
+        return elems_[(head_ + index) % capacity_];
     }
 
     Elem& front() { return at(0); }
@@ -2123,37 +2126,31 @@ struct ring_array {
 
     template<typename... Args>
     Elem& emplace_back(Args&&... args) {
-        if (size_ == capacity_) {
-            throw std::bad_alloc(); // fixed capacity, cannot grow
+        // if no more possible simply replace the oldest entry. Don't error
+        if (!capacity_) {
+            throw std::bad_alloc(); // no storage at all, there is nothing to overwrite
         }
 
-        const size_t pos = slot(size_);
+        if (size_ == capacity_) {
+            // The oldest element sits exactly where the new one belongs, so dropping
+            // it frees the slot that the append below writes to.
+            pop_front();
+        }
+
+        const size_t pos = (head_ + size_) % capacity_;
         elem_atr::construct(ea_, elems_ + pos, std::forward<Args>(args)...);
         size_++;
         return elems_[pos];
     }
 
-    template<typename... Args>
-    bool emplace_back_evict(Args&&... args) {
-        if (!capacity_) {
-            throw std::bad_alloc();
-        }
-
-        bool evicted = false;
-        if (size_ == capacity_) {
-            evicted = pop_front();
-        }
-
-        // After an eviction slot(size_) is the storage the front just vacated.
-        elem_atr::construct(ea_, elems_ + slot(size_), std::forward<Args>(args)...);
-        size_++;
-        return evicted;
+    Elem& push_back(const Elem& elem) {
+        // if no more possible simply replace the oldest entry. Don't error
+        return emplace_back(elem);
     }
-
-    Elem& push_back(const Elem& elem) { return emplace_back(elem); }
-    Elem& push_back(Elem&& elem) { return emplace_back(std::move(elem)); }
-    bool push_back_evict(const Elem& elem) { return emplace_back_evict(elem); }
-    bool push_back_evict(Elem&& elem) { return emplace_back_evict(std::move(elem)); }
+    Elem& push_back(Elem&& elem) {
+        // if no more possible simply replace the oldest entry. Don't error
+        return emplace_back(std::move(elem));
+    }
 
     bool pop_front() {
         if (!size_) {
@@ -2175,22 +2172,9 @@ struct ring_array {
         }
 
         size_--;
-        elem_atr::destroy(ea_, elems_ + slot(size_));
+        elem_atr::destroy(ea_, elems_ + ((head_ + size_) % capacity_));
         if (!size_) {
             head_ = 0;
-        }
-        return true;
-    }
-
-    // Drops elements from the back until size() == newSize. False if newSize is
-    // already past the end.
-    bool truncate(size_t newSize) {
-        if (newSize > size_) {
-            return false;
-        }
-
-        while (size_ > newSize) {
-            pop_back();
         }
         return true;
     }

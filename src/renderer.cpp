@@ -741,15 +741,15 @@ std::optional<Renderer::TileTextureUpload> Renderer::ReserveTileTextureUpload(Ti
 // / Do this directly inside the worker threads
 bool Renderer::FreeTileTextureUpload(TileTextureUpload slot) {
     ZoneScoped;
-    SDL_assert(slot < tileUploadSlots.size());
+    SDL_assert(slot < tileUploadSlots.size() && "Upload slot out of range");
     tileUploadSlots[slot].state.store(TextureUploadState::None, std::memory_order_relaxed);
     return true;
 }
 
 bool Renderer::CommitTileTextureUpload(TileTextureUpload slot) {
     ZoneScoped;
-    SDL_assert(slot < tileUploadSlots.size());
-    SDL_assert(tileUploadSlots[slot].state == TextureUploadState::Reserved);
+    SDL_assert(slot < tileUploadSlots.size() && "Upload slot out of range");
+    SDL_assert(tileUploadSlots[slot].state == TextureUploadState::Reserved && "Upload slot was not reserved");
     std::atomic_thread_fence(std::memory_order_seq_cst);
     tileUploadSlots[slot].state.store(TextureUploadState::Pending, std::memory_order_release);
     return true;
@@ -757,7 +757,7 @@ bool Renderer::CommitTileTextureUpload(TileTextureUpload slot) {
 
 Renderer::TileTextureUploadInfo& Renderer::GetTileTextureUploadInfo(TileTextureUpload slot) {
     ZoneScoped;
-    SDL_assert(slot < tileUploadSlots.size());
+    SDL_assert(slot < tileUploadSlots.size() && "Upload slot out of range");
     return tileUploadSlots[slot];
 }
 
@@ -864,7 +864,7 @@ std::optional<Renderer::TileTextureDownload> Renderer::DownloadTileTexture(Tile 
 
 bool Renderer::QueryTileTextureDownload(TileTextureDownload slot) {
     ZoneScoped;
-    SDL_assert(slot < tileDownloadSlots.size());
+    SDL_assert(slot < tileDownloadSlots.size() && "Download slot out of range");
     if (tileDownloadSlots[slot].state.load(std::memory_order_relaxed) == TextureDownloadState::Downloading) {
         if (!tileDownloadSlotFences[tileDownloadSlots[slot].fence]) {
             return true;
@@ -875,14 +875,14 @@ bool Renderer::QueryTileTextureDownload(TileTextureDownload slot) {
 
 bool Renderer::FreeTileTextureDownload(TileTextureDownload slot) {
     ZoneScoped;
-    SDL_assert(slot < tileDownloadSlots.size());
+    SDL_assert(slot < tileDownloadSlots.size() && "Download slot out of range");
     tileDownloadSlots[slot].state.store(TextureDownloadState::None, std::memory_order_relaxed);
     return true;
 }
 
 Renderer::TileTextureDownloadInfo& Renderer::GetTileTextureDownloadInfo(TileTextureDownload slot) {
     ZoneScoped;
-    SDL_assert(slot < tileDownloadSlots.size());
+    SDL_assert(slot < tileDownloadSlots.size() && "Download slot out of range");
     return tileDownloadSlots[slot];
 }
 
@@ -914,7 +914,7 @@ bool Renderer::UpdateTileTextureDownload() {
         bool recorded{false};
         for (auto& slot : tileDownloadSlots) {
             if (slot.state.load(std::memory_order_relaxed) == TextureDownloadState::Pending) {
-                SDL_assert(tileTextures.contains(slot.tile));
+                SDL_assert(tileTextures.contains(slot.tile) && "No gpu texture for the tile being downloaded");
 
                 const SDL_GPUTextureTransferInfo destination = {
                     .transfer_buffer = tileDownloadBuffer,
@@ -1342,9 +1342,9 @@ void Renderer::Quit() {
 
 bool Renderer::CreateLayerTexture(const Layer layer) {
     ZoneScoped;
-    SDL_assert(!layerTextures.contains(layer));
-    SDL_assert(app->windowSize.x > 0);
-    SDL_assert(app->windowSize.y > 0);
+    SDL_assert(!layerTextures.contains(layer) && "Layer already has a gpu texture");
+    SDL_assert(app->windowSize.x > 0 && "Cannot size a layer texture to a zero width window");
+    SDL_assert(app->windowSize.y > 0 && "Cannot size a layer texture to a zero height window");
 
     const SDL_GPUTextureCreateInfo textureCreateInfo = {
         .type = SDL_GPU_TEXTURETYPE_2D,
@@ -1372,14 +1372,14 @@ bool Renderer::CreateLayerTexture(const Layer layer) {
 
 void Renderer::DestroyLayerTexture(const Layer layer) {
     ZoneScoped;
-    SDL_assert(layerTextures.contains(layer));
+    SDL_assert(layerTextures.contains(layer) && "No gpu texture for this layer");
     SDL_ReleaseGPUTexture(device, layerTextures.at(layer));
     layerTextures.erase(layer);
 }
 
 Error Renderer::CreateUninitializedTileTexture(Tile tile) {
     ZoneScoped;
-    SDL_assert(!tileTextures.contains(tile));
+    SDL_assert(!tileTextures.contains(tile) && "Tile already has a gpu texture");
 
     const SDL_GPUTextureCreateInfo textureCreateInfo = {
         .type = SDL_GPU_TEXTURETYPE_2D,
@@ -1431,8 +1431,8 @@ void Renderer::DestroyTileTexture(Tile tile) {
 // TODO Transform into BeginMerge(), MergeTileTextures(), EndMerge()
 bool Renderer::MergeTileTextures(Tile overTile, Tile belowTile) {
     ZoneScoped;
-    SDL_assert(tileTextures.contains(overTile));
-    SDL_assert(tileTextures.contains(belowTile));
+    SDL_assert(tileTextures.contains(overTile) && "No gpu texture for the over tile");
+    SDL_assert(tileTextures.contains(belowTile) && "No gpu texture for the below tile");
 
     SDL_assert(tileTextures.at(overTile) && "Over tile textures is empty");
     SDL_assert(tileTextures.at(belowTile) && "Below tile textures is empty, Prefer a move");
@@ -1498,8 +1498,8 @@ bool Renderer::MergeTileTextures(Tile overTile, Tile belowTile) {
 
 bool Renderer::BeginCopyPass() {
     ZoneScoped;
-    SDL_assert(!currentCommandBuffer);
-    SDL_assert(!currentCopyPass);
+    SDL_assert(!currentCommandBuffer && "A command buffer is already open");
+    SDL_assert(!currentCopyPass && "A copy pass is already open");
 
     currentCommandBuffer = SDL_AcquireGPUCommandBuffer(device);
     if (!currentCommandBuffer) {
@@ -1512,15 +1512,15 @@ bool Renderer::BeginCopyPass() {
 
 SDL_GPUTexture* Renderer::DuplicateTileTexture(Tile tile) {
     ZoneScoped;
-    SDL_assert(tileTextures.contains(tile));
+    SDL_assert(tileTextures.contains(tile) && "No gpu texture for this tile");
     SDL_assert(tileTextures.at(tile) && "Tile texture is null");
     return DuplicateTileTexture(tileTextures.at(tile));
 }
 
 SDL_GPUTexture* Renderer::DuplicateTileTexture(SDL_GPUTexture* texture) const {
-    SDL_assert(currentCommandBuffer);
-    SDL_assert(currentCopyPass);
-    SDL_assert(texture);
+    SDL_assert(currentCommandBuffer && "No command buffer open; call BeginCopyPass() first");
+    SDL_assert(currentCopyPass && "No copy pass open; call BeginCopyPass() first");
+    SDL_assert(texture && "Cannot duplicate a null texture");
 
     const SDL_GPUTextureCreateInfo textureCreateInfo = {
         .type = SDL_GPU_TEXTURETYPE_2D,
@@ -1561,8 +1561,8 @@ SDL_GPUTexture* Renderer::DuplicateTileTexture(SDL_GPUTexture* texture) const {
 
 bool Renderer::EndCopyPass(bool wait) {
     ZoneScoped;
-    SDL_assert(currentCommandBuffer);
-    SDL_assert(currentCopyPass);
+    SDL_assert(currentCommandBuffer && "No command buffer open; call BeginCopyPass() first");
+    SDL_assert(currentCopyPass && "No copy pass open; call BeginCopyPass() first");
 
     SDL_EndGPUCopyPass(currentCopyPass);
 
@@ -1582,8 +1582,8 @@ bool Renderer::EndCopyPass(bool wait) {
 
 void Renderer::CancelCopyPass() {
     ZoneScoped;
-    SDL_assert(currentCommandBuffer);
-    SDL_assert(currentCopyPass);
+    SDL_assert(currentCommandBuffer && "No command buffer open; call BeginCopyPass() first");
+    SDL_assert(currentCopyPass && "No copy pass open; call BeginCopyPass() first");
 
     SDL_CancelGPUCommandBuffer(currentCommandBuffer);
     currentCopyPass = nullptr;

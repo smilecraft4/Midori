@@ -118,24 +118,24 @@ void Viewport::ComputeViewMatrix() {
 }
 
 glm::mat4 Viewport::ViewMatrix() const {
-    SDL_assert(viewComputed);
+    SDL_assert(viewComputed && "View matrix read before ComputeViewMatrix()");
     return viewMat;
 }
 
 glm::mat4 Viewport::InverseViewMatrix() const {
-    SDL_assert(viewComputed);
+    SDL_assert(viewComputed && "View matrix read before ComputeViewMatrix()");
     return viewMatInv;
 }
 
 glm::vec2 Viewport::ScreenToCanvas(glm::vec2 screenPos) const {
-    SDL_assert(viewComputed);
+    SDL_assert(viewComputed && "View matrix read before ComputeViewMatrix()");
     glm::vec2 pos = screenPos - (viewSize / 2.0f);
     pos = static_cast<glm::vec2>(InverseViewMatrix() * glm::vec4(pos, 0.0f, 1.0f));
     return pos;
 }
 
 bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
-    SDL_assert(viewComputed);
+    SDL_assert(viewComputed && "View matrix read before ComputeViewMatrix()");
     const glm::vec2 t0 = static_cast<float>(tilePos.x) * vX + static_cast<float>(tilePos.y) * vY + vTrans;
     const glm::vec2 tCorners[4] = {
         t0,
@@ -156,7 +156,7 @@ bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
 }
 
 std::vector<glm::ivec2, arena_allocator<glm::ivec2>> Viewport::VisibleTiles(arena<>& arena) const {
-    SDL_assert(viewComputed);
+    SDL_assert(viewComputed && "View matrix read before ComputeViewMatrix()");
     constexpr glm::vec2 T_SIZE(TILE_WIDTH, TILE_HEIGHT);
 
     // Broad pass (AABB in canvas Space)

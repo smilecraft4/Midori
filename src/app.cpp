@@ -573,7 +573,7 @@ void App::SaveBrushes() {
 
         const std::string file = std::format("{}brushes/paintBrush.json", path);
         SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
-        SDL_assert(fileIo != nullptr);
+        SDL_assert(fileIo != nullptr && "Failed to open the brush file for writing");
         SDL_WriteIO(fileIo, brushJsonDump.data(), brushJsonDump.size());
         SDL_CloseIO(fileIo);
         paintBrush.modified = false;
@@ -600,7 +600,7 @@ void App::SaveBrushes() {
 
         const std::string file = std::format("{}brushes/eraseBrush.json", path);
         SDL_IOStream* fileIo = SDL_IOFromFile(file.c_str(), "w");
-        SDL_assert(fileIo != nullptr);
+        SDL_assert(fileIo != nullptr && "Failed to open the brush file for writing");
         SDL_WriteIO(fileIo, brushJsonDump.data(), brushJsonDump.size());
         SDL_CloseIO(fileIo);
         eraseBrush.modified = false;

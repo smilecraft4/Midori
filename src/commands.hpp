@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "base.hpp"
+#include "errors.hpp"
 #include "tiles.hpp"
 #include "viewport.hpp"
 
@@ -31,7 +32,7 @@ struct TileModificationCommand final {
     void Execute();
     void Revert();
 
-    void TrackTile(Tile tile);
+    Error TrackTile(Tile tile);
     void SaveTrackedTilesForPrevious(bool overwrite = true);
     void SaveTrackedTilesForNew(bool overwrite = true);
 
@@ -77,7 +78,6 @@ using Command = std::variant<std::monostate, TileModificationCommand, ViewportCh
 
 struct CommandHistory final {
     CommandHistory(size_t capacity);
-    ~CommandHistory();
 
     void Push(Command&& command);
 
@@ -91,9 +91,7 @@ struct CommandHistory final {
     [[nodiscard]] size_t Empty() const;
     [[nodiscard]] size_t Count() const;
 
-    std::vector<Command> commands;
+    ring_array<Command> ring;
     size_t position{0};
-    size_t count{0};
-    size_t start{0};
 };
 } // namespace Midori
