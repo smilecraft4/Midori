@@ -47,6 +47,7 @@ target_sources(midori PRIVATE
   "src/base.cpp"
   "src/app.cpp"
   "src/canvas.cpp"
+  "src/window.cpp"
   "src/renderer.cpp"
   "src/viewport.cpp"
   "src/commands.cpp"

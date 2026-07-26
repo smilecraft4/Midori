@@ -3,6 +3,12 @@
 #include "base.hpp"
 #include <limits>
 
+namespace Midori {
+
+constexpr size_t WINDOW_MAX = 16;
+constexpr size_t CANVASVIEW_MAX = 16;
+constexpr size_t CANVASFILE_MAX = 16;
+
 constexpr size_t WINDOW_WIDTH_MIN = 0;
 constexpr size_t WINDOW_HEIGHT_MIN = 0;
 constexpr size_t WINDOW_WIDTH_MAX = 7680;
@@ -42,9 +48,20 @@ constexpr size_t TILE_MAX_CONCURENT_DOWNLOADS = 32;
 
 constexpr size_t STROKE_MAX_POINTS = 4096;
 
+constexpr char CANVASFILE_DBI_METADATA[] = "metadata";
+constexpr char CANVASFILE_DBI_LAYERS[] = "layers";
+constexpr char CANVASFILE_DBI_TILES[] = "tiles";
+constexpr unsigned int CANVASFILE_DBI_COUNT = 3;
+// The key size stored on disk includes the terminator, so index with sizeof().
+constexpr char CANVASFILE_KEY_FILE_VERSION[] = "fileVersion";
+constexpr size_t CANVASFILE_MAP_SIZE = 1_GiB;
+constexpr int CANVASFILE_FILE_MODE = 0664;
+
 
 using TileAxis = int16_t;
 using Layer = uint16_t;
 using LayerHeight = uint16_t;
 constexpr Layer LAYER_INVALID = std::numeric_limits<Layer>::max();
+
+} // namespace Midori
 

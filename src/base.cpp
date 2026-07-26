@@ -2,6 +2,8 @@
 #include <format>
 #include <tracy/Tracy.hpp>
 
+namespace Midori {
+
 void* Malloc(size_t size) {
     void* ptr = std::malloc(size);
     TracyAlloc(ptr, size);
@@ -24,36 +26,6 @@ void* Realloc(void* ptr, size_t size) {
 void Free(void* ptr) {
     TracyFree(ptr);
     std::free(ptr);
-}
-
-void* operator new(std::size_t count) {
-    if (count == 0) {
-        count = 1;
-    }
-    auto* ptr = Malloc(count);
-    if (ptr == nullptr) {
-        throw std::bad_alloc();
-    }
-    return ptr;
-}
-
-void operator delete(void* ptr) noexcept {
-    Free(ptr);
-}
-
-void* operator new[](std::size_t count) {
-    if (count == 0) {
-        count = 1;
-    }
-    auto* ptr = Malloc(count);
-    if (ptr == nullptr) {
-        throw std::bad_alloc();
-    }
-    return ptr;
-}
-
-void operator delete[](void* ptr) noexcept {
-    Free(ptr);
 }
 
 thread_pool::thread_pool(size_t size, const std::string& name) {
@@ -121,4 +93,38 @@ void thread_pool::emplace(std::function<void()> task) {
         tasks_.emplace(std::move(task));
     }
     cv_.notify_one();
+}
+
+} // namespace Midori
+
+// Replacement operators have to stay at global scope.
+
+void* operator new(std::size_t count) {
+    if (count == 0) {
+        count = 1;
+    }
+    auto* ptr = Midori::Malloc(count);
+    if (ptr == nullptr) {
+        throw std::bad_alloc();
+    }
+    return ptr;
+}
+
+void operator delete(void* ptr) noexcept {
+    Midori::Free(ptr);
+}
+
+void* operator new[](std::size_t count) {
+    if (count == 0) {
+        count = 1;
+    }
+    auto* ptr = Midori::Malloc(count);
+    if (ptr == nullptr) {
+        throw std::bad_alloc();
+    }
+    return ptr;
+}
+
+void operator delete[](void* ptr) noexcept {
+    Midori::Free(ptr);
 }

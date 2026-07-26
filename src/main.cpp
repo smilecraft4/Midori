@@ -13,7 +13,7 @@ static Uint32 SDLCALL Heartbeat(void*, SDL_TimerID, Uint32 interval) {
 }
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
-    SDL_SetMemoryFunctions(Malloc, Calloc, Realloc, Free);
+    SDL_SetMemoryFunctions(Midori::Malloc, Midori::Calloc, Midori::Realloc, Midori::Free);
     SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent");
 
     auto* app = new Midori::App(argc, argv);

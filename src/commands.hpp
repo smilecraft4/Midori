@@ -5,13 +5,13 @@
 #include "viewport.hpp"
 
 #include <SDL3/SDL_gpu.h>
-#include <memory>
 #include <string>
 #include <variant>
 
 namespace Midori {
 
-struct Canvas;
+struct App;
+struct CanvasView;
 
 struct TileModificationCommand final {
     struct Textures {
@@ -19,7 +19,7 @@ struct TileModificationCommand final {
         SDL_GPUTexture* execute{};
     };
 
-    explicit TileModificationCommand(Canvas* canvas, Layer layer);
+    explicit TileModificationCommand(CanvasView* canvasView, Layer layer);
     ~TileModificationCommand();
 
     TileModificationCommand(const TileModificationCommand&) = delete;
@@ -35,14 +35,25 @@ struct TileModificationCommand final {
     void SaveTrackedTilesForPrevious(bool overwrite = true);
     void SaveTrackedTilesForNew(bool overwrite = true);
 
-    Canvas* canvas;
+    App* app;
+    size_t canvasFileId;
     Layer layer;
     hash_map<Tile, Textures> tileTextures{256};
 };
 
 struct ViewportChangeCommand final {
-    explicit ViewportChangeCommand(Canvas* canvas);
-    ~ViewportChangeCommand();
+    struct ViewportPos {
+        glm::vec2 trans{0.0f};
+        glm::vec2 scale{1.0f};
+        float rot{0.0f};
+
+        bool operator==(const ViewportPos& other) const noexcept {
+            return trans == other.trans && scale == other.trans && rot == other.rot;
+        }
+        bool operator!=(const ViewportPos& other) const noexcept { return !(*this == other); }
+    };
+
+    explicit ViewportChangeCommand(App* app, size_t canvasViewId);
 
     ViewportChangeCommand(const ViewportChangeCommand&) = delete;
     ViewportChangeCommand& operator=(const ViewportChangeCommand&) = delete;
@@ -50,15 +61,16 @@ struct ViewportChangeCommand final {
     ViewportChangeCommand& operator=(ViewportChangeCommand&&) noexcept = default;
 
     static std::string Name();
-    void Execute();
-    void Revert();
+    void Execute() const;
+    void Revert() const;
 
     void SetPreviousViewport(Viewport viewport);
     void SetNewViewport(Viewport viewport);
 
-    Canvas* canvas;
-    Viewport previousViewport;
-    Viewport newViewport;
+    App* app;
+    size_t canvasViewId;
+    ViewportPos previousViewport;
+    ViewportPos newViewport;
 };
 
 using Command = std::variant<std::monostate, TileModificationCommand, ViewportChangeCommand>;

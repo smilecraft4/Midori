@@ -1,9 +1,12 @@
 #pragma once
 
+#include "defines.hpp"
+#include "renderer.hpp"
 #include <SDL3/SDL_events.h>
 #include <glm/vec2.hpp>
 #include <cstdint>
 #include <variant>
+#include <vector>
 
 namespace Midori {
 
@@ -22,7 +25,6 @@ enum class ToolState : uint8_t {
 
 constexpr const char* TOOL_NAME[] = {"Paint", "Erase", "Sample"};
 
-// Shortcuts active, waiting for input. Pointer down starts a stroke, space enters navigation.
 struct IdleState {
     explicit IdleState(App* app);
 
@@ -32,7 +34,6 @@ struct IdleState {
     App* app;
 };
 
-// Space held: drag to pan, ctrl-drag to zoom, shift-drag to rotate, R resets the view.
 struct NavigateState {
     enum class Mode : std::uint8_t {
         Pan,
@@ -58,6 +59,10 @@ struct PaintState {
     void DrawUI() const;
 
     App* app;
+    Layer strokeLayer;
+    StrokePoint previousPoint{};
+    hash_set<Tile, arena_allocator<Tile>> strokeTileAffected;
+    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints;
 };
 
 struct EraseState {
@@ -67,8 +72,12 @@ struct EraseState {
     void DrawUI() const;
 
     App* app;
+    StrokePoint previousPoint{};
+    hash_set<Tile, arena_allocator<Tile>> strokeTileAffected;
+    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints;
 };
 
+/*
 struct SampleState {
     explicit SampleState(App* app);
 
@@ -76,7 +85,10 @@ struct SampleState {
     void DrawUI() const;
 
     App* app;
+    glm::ivec2 size;
+    std::vector<std::byte> texture;
 };
+*/
 
 using State = std::variant<std::monostate, IdleState, NavigateState, PaintState, EraseState>;
 

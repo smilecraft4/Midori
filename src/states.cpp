@@ -1,12 +1,17 @@
 #include "states.hpp"
 
+#include "SDL3/SDL_events.h"
 #include "app.hpp"
 #include "brushes.hpp"
+#include "commands.hpp"
 #include "defines.hpp"
+#include "renderer.hpp"
 
 #include <backends/imgui_impl_sdl3.h>
 #include <imgui.h>
 #include <memory>
+#include <optional>
+#include <tracy/Tracy.hpp>
 #include <utility>
 #include <variant>
 
@@ -66,6 +71,7 @@ void StateManager::Switch(State&& state) {
 }
 
 void StateManager::OnEvent(const SDL_Event* event) {
+    ZoneScoped;
     ImGui_ImplSDL3_ProcessEvent(event);
 
     const ImGuiIO& io = ImGui::GetIO();
@@ -85,7 +91,6 @@ void StateManager::OnEvent(const SDL_Event* event) {
         app->penPressure = event->paxis.value;
     }
 
-    // Cursor tracking; pen events win over the mouse events SDL synthesizes from them
     if (event->type == SDL_EVENT_MOUSE_MOTION && !app->penInRange) {
         app->cursorLastPos = app->cursorCurrentPos;
         app->cursorCurrentPos = glm::vec2(event->motion.x, event->motion.y);
@@ -97,7 +102,6 @@ void StateManager::OnEvent(const SDL_Event* event) {
         app->cursorDeltaPos = app->cursorCurrentPos - app->cursorLastPos;
     }
 
-    // Modifier tracking
     if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
         const bool down = event->type == SDL_EVENT_KEY_DOWN;
         switch (event->key.key) {
@@ -121,11 +125,10 @@ void StateManager::OnEvent(const SDL_Event* event) {
         }
     }
 
-    // App-level events, handled whatever the current state is
     if (app->shouldQuit) {
-        // The quit sequence has started
         return;
     }
+
     if ((event->type == SDL_EVENT_QUIT)
         || (event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED
             && event->window.windowID == SDL_GetWindowID(app->window))) {
@@ -148,7 +151,7 @@ void StateManager::OnEvent(const SDL_Event* event) {
         current);
 
     if (!std::holds_alternative<std::monostate>(next)) {
-        current = next;
+        current = std::move(next);
         next = std::monostate();
     }
 }
@@ -169,82 +172,104 @@ void StateManager::DrawUI() const {
 IdleState::IdleState(App* app) : app(app) {}
 
 void IdleState::OnEvent(const SDL_Event* event) {
-    if (IsPointerDown(app, event) && app->canvas.selectedLayer != LAYER_INVALID) {
-        switch (app->canvas.currentTool) {
-            case Tool::Paint: {
-                app->stateManager.Switch(PaintState(app));
-            } break;
-            case Tool::Erase: {
-                app->stateManager.Switch(EraseState(app));
-            } break;
-            default:
-                SDL_assert(false && "Uknown tool");
-                break;
+    ZoneScoped;
+
+    if (app->currentCanvasView.has_value()) {
+        auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+        auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
+        if (IsPointerDown(app, event) && canvasView.selectedLayer.has_value()) {
+            switch (app->currentTool) {
+                case Tool::Paint: {
+                    app->stateManager.Switch(PaintState(app));
+                } break;
+                case Tool::Erase: {
+                    app->stateManager.Switch(EraseState(app));
+                } break;
+                default:
+                    SDL_assert(false && "Uknown tool");
+                    break;
+            }
+
+            return;
         }
 
-        return;
+        if (event->key.key == SDLK_SPACE && !event->key.repeat) {
+            app->stateManager.Switch(NavigateState(app));
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_S, SDL_KMOD_CTRL)) {
+            canvasFile.Save();
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_TAB, SDL_KMOD_NONE)) {
+            app->hideUi = !app->hideUi;
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_Z, SDL_KMOD_CTRL)) {
+            canvasFile.canvasHistory.Undo();
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_Z, SDL_KMOD_CTRL | SDL_KMOD_SHIFT)) {
+            canvasFile.canvasHistory.Redo();
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_LEFT, SDL_KMOD_ALT)) {
+            canvasView.viewHistory.Undo();
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_RIGHT, SDL_KMOD_ALT)) {
+            canvasView.viewHistory.Redo();
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_B, SDL_KMOD_NONE)) {
+            app->currentTool = Tool::Paint;
+            return;
+        }
+        if (IsKeyPressed(event, SDLK_E, SDL_KMOD_NONE)) {
+            app->currentTool = Tool::Erase; // TODO swith to the app level
+            return;
+        }
     }
 
-    if (event->type != SDL_EVENT_KEY_DOWN) {
-        return;
-    }
-
-    if (event->key.key == SDLK_SPACE && !event->key.repeat) {
-        app->stateManager.Switch(NavigateState(app));
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_S, SDL_KMOD_CTRL)) {
-        app->Save();
-        return;
-    }
     if (IsKeyPressed(event, SDLK_F11, SDL_KMOD_NONE)) {
         app->Fullscreen(!app->fullscreen);
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_TAB, SDL_KMOD_NONE)) {
-        app->hideUi = !app->hideUi;
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_Z, SDL_KMOD_CTRL)) {
-        app->canvas.canvasCommands.Undo();
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_Z, SDL_KMOD_CTRL | SDL_KMOD_SHIFT)) {
-        app->canvas.canvasCommands.Redo();
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_LEFT, SDL_KMOD_ALT)) {
-        app->canvas.viewCommands.Undo();
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_RIGHT, SDL_KMOD_ALT)) {
-        app->canvas.viewCommands.Redo();
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_B, SDL_KMOD_NONE)) {
-        app->canvas.currentTool = Tool::Paint;
-        return;
-    }
-    if (IsKeyPressed(event, SDLK_E, SDL_KMOD_NONE)) {
-        app->canvas.currentTool = Tool::Erase;
         return;
     }
 }
 
 void IdleState::DrawUI() const {
+    const auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
     ImGui::Text("IdleState");
-    ImGui::Text("Tool: %s", TOOL_NAME[std::to_underlying(app->canvas.currentTool)]);
+    ImGui::Text("Tool: %s", TOOL_NAME[std::to_underlying(app->currentTool)]);
 }
 
 // ---------------------------------------------------------------------------
 // NavigateState
 
 NavigateState::NavigateState(App* app) : app(app) {
-    // TODO: Save the previous view state so leaving the state can push a ViewportChangeCommand
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    SDL_assert(!canvasView.currentViewportCommand.has_value());
+
+    canvasView.currentViewportCommand = ViewportChangeCommand(app, app->currentCanvasView.value());
+    canvasView.currentViewportCommand->SetPreviousViewport(canvasView.viewport);
 }
 
 void NavigateState::OnEvent(const SDL_Event* event) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+
     if (event->type == SDL_EVENT_KEY_UP && event->key.key == SDLK_SPACE) {
+        canvasView.currentViewportCommand->SetNewViewport(canvasView.viewport);
+        if (canvasView.currentViewportCommand.value().previousViewport
+            != canvasView.currentViewportCommand.value().newViewport) {
+            canvasView.viewHistory.Push(std::move(canvasView.currentViewportCommand.value()));
+        }
+        canvasView.currentViewportCommand = std::nullopt;
         app->stateManager.Switch(IdleState(app));
         return;
     }
@@ -260,8 +285,8 @@ void NavigateState::OnEvent(const SDL_Event* event) {
     }
 
     if (IsKeyPressed(event, SDLK_R, SDL_KMOD_NONE)) {
-        app->canvas.viewport.SetRotation(0.0f);
-        app->canvas.viewport.SetZoom(glm::vec2(0.0f), glm::vec2(1.0f));
+        canvasView.viewport.SetRotation(0.0f);
+        canvasView.viewport.SetZoom(glm::vec2(1.0f));
         return;
     }
 
@@ -277,17 +302,17 @@ void NavigateState::OnEvent(const SDL_Event* event) {
         const glm::vec2 center = glm::vec2(app->windowSize) / 2.0f;
         switch (mode) {
             case Mode::Pan:
-                app->canvas.viewport.Translate(app->cursorDeltaPos);
+                canvasView.viewport.Translate(app->cursorDeltaPos);
                 break;
             case Mode::Zoom: {
-                app->canvas.viewport.Zoom(startPos - center, glm::vec2(app->cursorDeltaPos.x / 256.0f));
+                canvasView.viewport.Zoom(startPos - center, glm::vec2(app->cursorDeltaPos.x / 256.0f));
                 break;
             }
             case Mode::Rotate: {
                 const auto previousAngle = std::atan2(app->cursorLastPos.x - center.x, app->cursorLastPos.y - center.y);
                 const auto currentAngle =
                     std::atan2(app->cursorCurrentPos.x - center.x, app->cursorCurrentPos.y - center.y);
-                app->canvas.viewport.Rotate(previousAngle - currentAngle);
+                canvasView.viewport.Rotate(previousAngle - currentAngle);
                 break;
             }
         }
@@ -310,10 +335,16 @@ void NavigateState::DrawUI() const {
     }
 }
 
-Canvas::StrokePoint MakeStrokePoint(const App* app, BrushSettings settings) {
-    Canvas::StrokePoint point{};
-    point.position = app->canvas.viewport.ScreenToCanvas(app->cursorCurrentPos);
-    point.color = app->canvas.paintBrush.color;
+StrokePoint MakeStrokePoint(const App* app, BrushSettings settings) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
+    StrokePoint point{};
+    point.position = canvasView.viewport.ScreenToCanvas(app->cursorCurrentPos);
+    point.color = settings.color;
     point.color.a = std::lerp(settings.minPressureOpacity, settings.maxPressureOpacity, app->penPressure);
     point.radius = std::lerp(settings.minPressureRadius, settings.maxPressureRadius, app->penPressure);
     point.hardness = std::lerp(settings.minPressureHardness, settings.maxPressureHardness, app->penPressure);
@@ -321,49 +352,375 @@ Canvas::StrokePoint MakeStrokePoint(const App* app, BrushSettings settings) {
     return point;
 }
 
-PaintState::PaintState(App* app) : app(app) {
-    const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
-    app->canvas.StartPaintStroke(point);
+std::vector<glm::ivec2, arena_allocator<glm::ivec2>> GetTilePosAffectedByStrokePoint(StrokePoint point,
+                                                                                     arena<>& arena) {
+    constexpr glm::vec2 TILE_SIZE = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
+    std::vector<glm::ivec2, arena_allocator<glm::ivec2>> tilesPos(arena);
+
+    glm::ivec2 tilePosMin = glm::floor((point.position - (point.radius + 16.0f)) / TILE_SIZE);
+    glm::ivec2 tilePosMax = glm::ceil((point.position + (point.radius + 16.0f)) / TILE_SIZE);
+
+    const glm::ivec2 tileDistance = tilePosMax - tilePosMin;
+    tilesPos.reserve((size_t)tileDistance.x * tileDistance.y);
+    glm::ivec2 tilePos;
+    for (tilePos.y = tilePosMin.y; tilePos.y < tilePosMax.y; tilePos.y++) {
+        for (tilePos.x = tilePosMin.x; tilePos.x < tilePosMax.x; tilePos.x++) {
+            tilesPos.push_back(tilePos);
+        }
+    }
+
+    return tilesPos;
+}
+
+PaintState::PaintState(App* app) : app(app), strokePoints(app->strokeArena), strokeTileAffected(app->strokeArena) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
+    SDL_assert(app->currentTool == Tool::Paint);
+    SDL_assert(app->currentToolState == ToolState::None);
+    SDL_assert(canvasView.selectedLayer.has_value());
+    SDL_assert(!canvasFile.currentTileCommand.has_value());
+
+    app->strokeArena.reset();
+    std::construct_at(&strokePoints, app->strokeArena);
+    strokePoints.reserve(STROKE_MAX_POINTS);
+    strokeTileAffected.reserve(256);
+
+    canvasFile.currentTileCommand = TileModificationCommand(&canvasView, canvasView.selectedLayer.value());
+
+    const auto& selectedLayerInfo = canvasFile.layers.at(canvasView.selectedLayer.value());
+    LayerCreateInfo strokeLayerCreateInfo{};
+    strokeLayerCreateInfo.name = "Stroke Layer";
+    strokeLayerCreateInfo.height = selectedLayerInfo.height;
+    strokeLayerCreateInfo.opacity =
+        selectedLayerInfo.opacity; // FIXME: this is broken, the blending is bad. Needs to folder to be fixed
+    strokeLayerCreateInfo.internal = true;
+    if (auto res = canvasFile.NewLayer(strokeLayerCreateInfo); !res.has_value()) {
+        SDL_assert(false && "Failed to create new layer");
+    } else {
+        strokeLayer = res.value();
+    }
+
+    const auto point = MakeStrokePoint(app, app->paintBrush);
+    const auto tilesPos = GetTilePosAffectedByStrokePoint(point, app->frameArena);
+    for (const auto& tilePos : tilesPos) {
+        const Tile strokeTile{
+            .layer = strokeLayer,
+            .y = static_cast<TileAxis>(tilePos.y),
+            .x = static_cast<TileAxis>(tilePos.x),
+        };
+        if (!canvasFile.tilesLoaded.contains(strokeTile)) {
+            if (auto err = canvasFile.NewTile(strokeTile); err != Error::None) {
+                SDL_assert(false && "Failed to create tile on stroke layer");
+            }
+        }
+        strokeTileAffected.insert(strokeTile);
+
+        const Tile underTile{
+            .layer = canvasView.selectedLayer.value(),
+            .y = static_cast<TileAxis>(tilePos.y),
+            .x = static_cast<TileAxis>(tilePos.x),
+        };
+        canvasFile.currentTileCommand->TrackTile(underTile);
+    }
+
+    strokePoints.push_back(point);
+    previousPoint = point;
+    app->currentToolState = ToolState::Started;
 }
 
 void PaintState::OnEvent(const SDL_Event* event) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
     if (IsPointerMove(app, event)) {
-        const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
-        app->canvas.UpdatePaintStroke(point);
+        const auto point = MakeStrokePoint(app, app->paintBrush);
+        SDL_assert(app->currentTool == Tool::Paint);
+        SDL_assert(app->currentToolState == ToolState::None);
+        SDL_assert(canvasView.selectedLayer.has_value());
+        SDL_assert(canvasFile.currentTileCommand.has_value());
+        SDL_assert(canvasFile.layers.contains(canvasView.selectedLayer.value()));
+        SDL_assert(canvasFile.layers.contains(strokeLayer));
+
+        app->strokeArena.reset();
+        std::construct_at(&strokePoints, app->strokeArena);
+        strokePoints.reserve(STROKE_MAX_POINTS);
+        strokeTileAffected.reserve(256);
+
+        canvasFile.currentTileCommand = TileModificationCommand(&canvasView, canvasView.selectedLayer.value());
+
+        const auto& selectedLayerInfo = canvasFile.layers.at(canvasView.selectedLayer.value());
+        LayerCreateInfo strokeLayerCreateInfo{};
+        strokeLayerCreateInfo.name = "Stroke Layer";
+        strokeLayerCreateInfo.height = selectedLayerInfo.height;
+        strokeLayerCreateInfo.opacity = selectedLayerInfo.opacity; // FIXME: this is broken, the blending is bad
+        strokeLayerCreateInfo.internal = true;
+        if (auto res = canvasFile.NewLayer(strokeLayerCreateInfo); !res.has_value()) {
+            SDL_assert(false && "Failed to create layer");
+        } else {
+            strokeLayer = res.value();
+        }
+
+        const auto tilesPos = GetTilePosAffectedByStrokePoint(point, app->frameArena);
+        for (const auto& tilePos : tilesPos) {
+            const Tile strokeTile{
+                .layer = strokeLayer,
+                .y = static_cast<TileAxis>(tilePos.y),
+                .x = static_cast<TileAxis>(tilePos.x),
+            };
+            if (!canvasFile.tilesLoaded.contains(strokeTile)) {
+                if (auto err = canvasFile.NewTile(strokeTile); err != Error::None) {
+                    SDL_assert(false && "Failed to create tile on stroke layer");
+                }
+            }
+            strokeTileAffected.insert(strokeTile);
+
+            const Tile underTile{
+                .layer = canvasView.selectedLayer.value(),
+                .y = static_cast<TileAxis>(tilePos.y),
+                .x = static_cast<TileAxis>(tilePos.x),
+            };
+            canvasFile.currentTileCommand->TrackTile(underTile);
+        }
+
+        strokePoints.push_back(point);
+        previousPoint = point;
+        app->currentToolState = ToolState::Started;
     }
 
     if (IsPointerUp(app, event)) {
-        const auto point = MakeStrokePoint(app, app->canvas.paintBrush);
-        app->canvas.EndPaintStroke(point);
+        SDL_assert(app->currentTool == Tool::Paint);
+        SDL_assert(app->currentToolState == ToolState::Started);
+        SDL_assert(canvasView.selectedLayer.has_value());
+        SDL_assert(canvasFile.currentTileCommand.has_value());
+        SDL_assert(canvasFile.layers.contains(canvasView.selectedLayer.value()));
+        SDL_assert(canvasFile.layers.contains(strokeLayer));
+
+        canvasFile.currentTileCommand->SaveTrackedTilesForPrevious();
+
+        canvasFile.MergeLayers(strokeLayer, canvasView.selectedLayer.value());
+        canvasFile.DeleteLayer(strokeLayer);
+
+        canvasFile.currentTileCommand->SaveTrackedTilesForNew();
+        canvasFile.canvasHistory.Push(std::move(canvasFile.currentTileCommand.value()));
+        canvasFile.currentTileCommand = std::nullopt;
+
+        strokeLayer = LAYER_INVALID;
+        strokePoints.clear();
+        app->currentToolState = ToolState::None;
+
         app->stateManager.Switch(IdleState(app));
     }
 }
 
 void PaintState::DrawUI() const {
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
     ImGui::Text("PaintState");
-    ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
+    ImGui::Text("Points: %zu", strokePoints.size());
 }
 
-EraseState::EraseState(App* app) : app(app) {
-    const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
-    app->canvas.StartEraseStroke(point);
+EraseState::EraseState(App* app) : app(app), strokePoints(app->strokeArena), strokeTileAffected(app->strokeArena) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
+    SDL_assert(app->currentTool == Tool::Erase);
+    SDL_assert(app->currentToolState == ToolState::None);
+    SDL_assert(canvasView.selectedLayer.has_value());
+    SDL_assert(!canvasFile.currentTileCommand.has_value() && "TileModification already started");
+
+    app->strokeArena.reset();
+    std::construct_at(&strokePoints, app->strokeArena);
+    strokeTileAffected.reserve(256);
+    strokePoints.reserve(STROKE_MAX_POINTS);
+
+    canvasFile.currentTileCommand = TileModificationCommand(&canvasView, canvasView.selectedLayer.value());
+
+    const auto point = MakeStrokePoint(app, app->eraseBrush);
+    const auto tilesPos = GetTilePosAffectedByStrokePoint(point, app->frameArena);
+
+    // TODO: find a better algorithm when erasing on layers. Right now the opacity of the erase brush does not work.
+    // TODO: find a way to duplicate the layer this early and instead use a temporary internal layer as the
+    // modification source
+    for (const auto& tilePos : tilesPos) {
+        const Tile tile{
+            .layer = canvasView.selectedLayer.value(),
+            .y = static_cast<TileAxis>(tilePos.y),
+            .x = static_cast<TileAxis>(tilePos.x),
+        };
+        if (canvasFile.tilesLoaded.contains(tile)) {
+            strokeTileAffected.insert(tile);
+            canvasFile.MarkTileDirty(tile);
+            canvasFile.currentTileCommand->TrackTile(tile);
+        }
+    }
+    canvasFile.currentTileCommand->SaveTrackedTilesForPrevious();
+
+    previousPoint = point;
+    app->currentToolState = ToolState::Started;
 }
 
 void EraseState::OnEvent(const SDL_Event* event) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
     if (IsPointerMove(app, event)) {
-        const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
-        app->canvas.UpdateEraseStroke(point);
+        const auto point = MakeStrokePoint(app, app->eraseBrush);
+        SDL_assert(app->currentTool == Tool::Erase);
+        SDL_assert(app->currentToolState == ToolState::Started);
+        SDL_assert(canvasView.selectedLayer.has_value());
+        SDL_assert(canvasFile.currentTileCommand.has_value() && "TileModification not started");
+
+        const StrokePoint startPoint = previousPoint;
+        const auto distance = glm::distance(startPoint.position, point.position);
+        float distanceCovered{app->eraseBrush.maxPressureSpacing};
+        while (distanceCovered < distance) {
+            ZoneScoped;
+
+            const float t = distanceCovered / distance;
+            const StrokePoint newPoint = StrokePoint::Lerp(startPoint, point, t);
+            strokePoints.push_back(newPoint);
+            previousPoint = newPoint;
+            distanceCovered += app->eraseBrush.maxPressureSpacing;
+
+            const auto tilesPos = GetTilePosAffectedByStrokePoint(newPoint, app->frameArena);
+            for (const auto& tilePos : tilesPos) {
+                const Tile tile{
+                    .layer = canvasView.selectedLayer.value(),
+                    .y = static_cast<TileAxis>(tilePos.y),
+                    .x = static_cast<TileAxis>(tilePos.x),
+                };
+                if (canvasFile.tilesLoaded.contains(tile)) {
+                    strokeTileAffected.insert(tile);
+                    canvasFile.MarkTileDirty(tile);
+                    canvasFile.currentTileCommand->TrackTile(tile);
+                }
+            }
+        }
+
+        canvasFile.currentTileCommand->SaveTrackedTilesForPrevious(false);
     }
 
     if (IsPointerUp(app, event)) {
-        const auto point = MakeStrokePoint(app, app->canvas.eraseBrush);
-        app->canvas.EndEraseStroke(point);
+        const auto point = MakeStrokePoint(app, app->eraseBrush);
+
+        SDL_assert(app->currentTool == Tool::Erase);
+        SDL_assert(app->currentToolState == ToolState::Started);
+        SDL_assert(canvasView.selectedLayer.has_value());
+        SDL_assert(canvasFile.currentTileCommand && "TileModification not started");
+
+        canvasFile.currentTileCommand->SaveTrackedTilesForNew();
+        canvasFile.canvasHistory.Push(std::move(canvasFile.currentTileCommand.value()));
+        canvasFile.currentTileCommand = std::nullopt;
+
+        strokePoints.clear();
+
+        app->currentToolState = ToolState::None;
+
         app->stateManager.Switch(IdleState(app));
     }
 }
 
 void EraseState::DrawUI() const {
+    auto& canvasView = app->canvasViews.at(app->currentCanvasView.value());
+    auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+
     ImGui::Text("EraseState");
-    ImGui::Text("Points: %zu", app->canvas.strokePoints.size());
+    ImGui::Text("Points: %zu", strokePoints.size());
 }
+
+/*
+SampleState::SampleState(App* app) : app(app) {
+    ZoneScoped;
+    SDL_assert(app->currentCanvasView.has_value());
+    // TODO take another snapshot of the whole screen (windows, DMW)
+
+    SDL_assert(app->windowSize.x > 0);
+    SDL_assert(app->windowSize.y > 0);
+    SDL_assert(app->renderer.canvasTexture);
+
+    size.x = app->windowSize.x;
+    size.y = app->windowSize.y;
+
+    std::vector<Color> canvasTexture(static_cast<std::size_t>(app->windowSize.x)
+                                     * static_cast<std::size_t>(app->windowSize.y));
+
+    const SDL_GPUTransferBufferCreateInfo transferBufferCreateInfo = {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+        .size = static_cast<Uint32>(canvasTexture.size() * sizeof(Color)),
+    };
+    SDL_GPUTransferBuffer* transferBuffer =
+        SDL_CreateGPUTransferBuffer(app->renderer.device, &transferBufferCreateInfo);
+    SDL_assert(transferBuffer);
+
+    SDL_GPUCommandBuffer* cmdBuf = SDL_AcquireGPUCommandBuffer(app->renderer.device);
+    SDL_assert(cmdBuf);
+
+    SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmdBuf);
+    SDL_GPUTextureRegion region = {
+        .texture = app->renderer.canvasTexture,
+        .mip_level = 0,
+        .layer = 0,
+        .x = 0,
+        .y = 0,
+        .z = 0,
+        .w = static_cast<Uint32>(app->windowSize.x),
+        .h = static_cast<Uint32>(app->windowSize.y),
+        .d = 1,
+    };
+    const SDL_GPUTextureTransferInfo transferInfo = {
+        .transfer_buffer = transferBuffer,
+        .pixels_per_row = static_cast<Uint32>(app->windowSize.x),
+        .rows_per_layer = static_cast<Uint32>(app->windowSize.y),
+    };
+    SDL_DownloadFromGPUTexture(copyPass, &region, &transferInfo);
+
+    SDL_EndGPUCopyPass(copyPass);
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdBuf);
+    SDL_assert(fence);
+    SDL_WaitForGPUFences(app->renderer.device, true, &fence, 1);
+    SDL_ReleaseGPUFence(app->renderer.device, fence);
+
+    const auto* colors = static_cast<Color*>(SDL_MapGPUTransferBuffer(app->renderer.device, transferBuffer, false));
+
+    std::memcpy(canvasTexture.data(), colors, canvasTexture.size() * sizeof(Color));
+
+    SDL_UnmapGPUTransferBuffer(app->renderer.device, transferBuffer);
+    SDL_ReleaseGPUTransferBuffer(app->renderer.device, transferBuffer);
+}
+
+void SampleState::OnEvent(const SDL_Event* event) {
+    SDL_assert(size.x > 0);
+    SDL_assert(size.y > 0);
+    SDL_assert(texture.size() == static_cast<std::size_t>(size.x) * size.y && "SampleTexture is of wrong dimensions");
+
+    const auto rx = static_cast<int>(std::round(app->cursorCurrentPos.x));
+    const auto ry = static_cast<int>(std::round(app->cursorCurrentPos.y));
+
+    if (rx < 0 || rx >= size.x) {
+        return;
+    }
+    if (ry < 0 || ry >= size.y) {
+        return;
+    }
+
+    const std::size_t index = static_cast<std::size_t>(rx) + (static_cast<std::size_t>(ry) * size.x);
+    SDL_assert(index < texture.size() && "Sample out of bound");
+
+    auto color = texture[index];
+}
+*/
+
 } // namespace Midori

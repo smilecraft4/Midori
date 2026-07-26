@@ -9,15 +9,16 @@
 
 namespace Midori {
 
-TileModificationCommand::TileModificationCommand(Canvas* canvas, Layer layer) : canvas(canvas), layer(layer) {
+TileModificationCommand::TileModificationCommand(CanvasView* canvasView, Layer layer)
+    : app(canvasView->app), canvasFileId(canvasView->canvasFileId), layer(layer) {
     SDL_assert(layer != LAYER_INVALID);
 }
 
 TileModificationCommand::~TileModificationCommand() {
     ZoneScoped;
     for (auto [tile, textures] : tileTextures) {
-        SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures.revert);
-        SDL_ReleaseGPUTexture(canvas->app->renderer.device, textures.execute);
+        SDL_ReleaseGPUTexture(app->renderer.device, textures.revert);
+        SDL_ReleaseGPUTexture(app->renderer.device, textures.execute);
     }
 }
 
@@ -27,59 +28,61 @@ std::string TileModificationCommand::Name() {
 
 void TileModificationCommand::Execute() {
     ZoneScoped;
-    SDL_assert(canvas->layers.contains(layer) && "Layer not found");
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
+    SDL_assert(canvasFile.layers.contains(layer) && "Layer not found");
 
-    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!textures.execute) {
-            canvas->DestroyTile(tile);
-            canvas->DeleteTile(tile);
+            canvasFile.DestroyTile(tile);
+            canvasFile.DeleteTile(tile);
         } else {
-            if (!canvas->tilesLoaded.contains(tile)) {
-                const Renderer::Error err = canvas->app->renderer.CreateUninitializedTileTexture(tile);
-                SDL_assert(err == Renderer::Error::None);
-                canvas->tilesLoaded.insert(tile);
+            if (!canvasFile.tilesLoaded.contains(tile)) {
+                const Error err = app->renderer.CreateUninitializedTileTexture(tile);
+                SDL_assert(err == Error::None);
+                canvasFile.tilesLoaded.insert(tile);
             }
 
-            SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
-            SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
-            SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
-            SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
-            canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.execute);
-            canvas->MarkTileDirty(tile);
+            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "tile not found");
+            SDL_assert(app->renderer.tileTextures.contains(tile) && "No tile texture found");
+            SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
+            SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
+            app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.execute);
+            canvasFile.MarkTileDirty(tile);
         }
     }
-    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    const bool copyPassEnded = app->renderer.EndCopyPass(true);
     SDL_assert(copyPassEnded);
 }
 
 void TileModificationCommand::Revert() {
     ZoneScoped;
-    SDL_assert(canvas->layers.contains(layer) && "Layer not found");
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
+    SDL_assert(canvasFile.layers.contains(layer) && "Layer not found");
 
-    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!textures.revert) {
-            canvas->DestroyTile(tile);
-            canvas->DeleteTile(tile);
+            canvasFile.DestroyTile(tile);
+            canvasFile.DeleteTile(tile);
         } else {
-            if (!canvas->tilesLoaded.contains(tile)) {
-                const Renderer::Error err = canvas->app->renderer.CreateUninitializedTileTexture(tile);
-                SDL_assert(err == Renderer::Error::None);
-                canvas->tilesLoaded.insert(tile);
+            if (!canvasFile.tilesLoaded.contains(tile)) {
+                const Error err = app->renderer.CreateUninitializedTileTexture(tile);
+                SDL_assert(err == Error::None);
+                canvasFile.tilesLoaded.insert(tile);
             }
 
-            SDL_assert(canvas->tilesLoaded.contains(tile) && "tile not found");
-            SDL_assert(canvas->app->renderer.tileTextures.contains(tile) && "No tile texture found");
-            SDL_GPUTexture* originalTexture = canvas->app->renderer.tileTextures.at(tile);
-            SDL_ReleaseGPUTexture(canvas->app->renderer.device, originalTexture);
-            canvas->app->renderer.tileTextures.at(tile) = canvas->app->renderer.DuplicateTileTexture(textures.revert);
-            canvas->MarkTileDirty(tile);
+            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "tile not found");
+            SDL_assert(app->renderer.tileTextures.contains(tile) && "No tile texture found");
+            SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
+            SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
+            app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.revert);
+            canvasFile.MarkTileDirty(tile);
         }
     }
-    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    const bool copyPassEnded = app->renderer.EndCopyPass(true);
     SDL_assert(copyPassEnded);
 }
 
@@ -91,33 +94,39 @@ void TileModificationCommand::TrackTile(Tile tile) {
 void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
     ZoneScoped;
 
-    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!overwrite && textures.revert) {
             continue;
         }
-        if (canvas->app->renderer.tileTextures.contains(tile)) {
-            textures.revert = canvas->app->renderer.DuplicateTileTexture(tile);
+        if (app->renderer.tileTextures.contains(tile)) {
+            if (textures.revert) {
+                SDL_ReleaseGPUTexture(app->renderer.device, textures.revert);
+            }
+            textures.revert = app->renderer.DuplicateTileTexture(tile);
         }
     }
-    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    const bool copyPassEnded = app->renderer.EndCopyPass(true);
     SDL_assert(copyPassEnded);
 }
 
 void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
     ZoneScoped;
-    const bool copyPassBegan = canvas->app->renderer.BeginCopyPass();
+    const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan);
     for (auto [tile, textures] : tileTextures) {
         if (!overwrite && textures.execute) {
             continue;
         }
-        if (canvas->app->renderer.tileTextures.contains(tile)) {
-            textures.execute = canvas->app->renderer.DuplicateTileTexture(tile);
+        if (app->renderer.tileTextures.contains(tile)) {
+            if (textures.execute) {
+                SDL_ReleaseGPUTexture(app->renderer.device, textures.execute);
+            }
+            textures.execute = app->renderer.DuplicateTileTexture(tile);
         }
     }
-    const bool copyPassEnded = canvas->app->renderer.EndCopyPass(true);
+    const bool copyPassEnded = app->renderer.EndCopyPass(true);
     SDL_assert(copyPassEnded);
 }
 
@@ -227,28 +236,36 @@ void CommandHistory::DrawUI() {
     }
 }
 
-ViewportChangeCommand::ViewportChangeCommand(Canvas* canvas) : canvas(canvas) {}
-
-ViewportChangeCommand::~ViewportChangeCommand() = default;
+ViewportChangeCommand::ViewportChangeCommand(App* app, size_t canvasViewId) : app(app), canvasViewId(canvasViewId) {}
 
 std::string ViewportChangeCommand::Name() {
     return "View change";
 }
 
-void ViewportChangeCommand::Execute() {
-    canvas->viewport = newViewport;
+void ViewportChangeCommand::Execute() const {
+    auto& canvasView = app->canvasViews.at(canvasViewId);
+    canvasView.viewport.SetRotation(newViewport.rot);
+    canvasView.viewport.SetTranslation(newViewport.trans);
+    canvasView.viewport.SetZoom(newViewport.scale);
 }
 
-void ViewportChangeCommand::Revert() {
-    canvas->viewport = previousViewport;
+void ViewportChangeCommand::Revert() const {
+    auto& canvasView = app->canvasViews.at(canvasViewId);
+    canvasView.viewport.SetRotation(previousViewport.rot);
+    canvasView.viewport.SetTranslation(previousViewport.trans);
+    canvasView.viewport.SetZoom(previousViewport.scale);
 }
 
 void ViewportChangeCommand::SetPreviousViewport(Viewport viewport) {
-    previousViewport = viewport;
+    previousViewport.rot = viewport.rotation;
+    previousViewport.trans = viewport.translation;
+    previousViewport.scale = viewport.zoom;
 }
 
 void ViewportChangeCommand::SetNewViewport(Viewport viewport) {
-    newViewport = viewport;
+    newViewport.rot = viewport.rotation;
+    newViewport.trans = viewport.translation;
+    newViewport.scale = viewport.zoom;
 }
 
 } // namespace Midori

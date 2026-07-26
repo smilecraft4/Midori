@@ -681,7 +681,7 @@ bool Renderer::UpdateUninitializedTextures() {
         SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(commandBuffer);
 
         for (const auto& tile : tileTexturesToInitialize) {
-            if(!tileTextures.contains(tile)) {
+            if (!tileTextures.contains(tile)) {
                 continue;
             }
             const SDL_GPUTextureTransferInfo transferInfo = {
@@ -1377,7 +1377,7 @@ void Renderer::DestroyLayerTexture(const Layer layer) {
     layerTextures.erase(layer);
 }
 
-Renderer::Error Renderer::CreateUninitializedTileTexture(Tile tile) {
+Error Renderer::CreateUninitializedTileTexture(Tile tile) {
     ZoneScoped;
     SDL_assert(!tileTextures.contains(tile));
 
@@ -1406,7 +1406,7 @@ Renderer::Error Renderer::CreateUninitializedTileTexture(Tile tile) {
     return Error::None;
 }
 
-Renderer::Error Renderer::CreateTileTexture(Tile tile) {
+Error Renderer::CreateTileTexture(Tile tile) {
     ZoneScoped;
     if (auto res = CreateUninitializedTileTexture(tile); res != Error::None) {
         return res;
@@ -1590,37 +1590,13 @@ void Renderer::CancelCopyPass() {
     currentCommandBuffer = nullptr;
 }
 
-// std::vector<SDL_GPUTexture*> Renderer::DuplicateTileTextures(std::span<TileCoord> srcTiles) {
-//     ZoneScoped;
-//     if (srcTiles.empty()) {
-//         return {};
-//     }
-
-//     std::vector<SDL_GPUTexture*> textures(srcTiles.size());
-
-//     if (!BeginCopyPass()) {
-//         return {};
-//     }
-
-//     for (size_t i = 0; i < srcTiles.size(); i++) {
-//         textures[i] = DuplicateTileTexture(srcTiles[i]);
-//         if (textures[i] == nullptr) {
-//             CancelCopyPass();
-//             for (auto& texture : textures) {
-//                 SDL_ReleaseGPUTexture(device, texture);
-//             }
-//             return {};
-//         }
-//     }
-
-//     if (!EndCopyPass(true)) {
-//         for (auto& texture : textures) {
-//             SDL_ReleaseGPUTexture(device, texture);
-//         }
-//         return {};
-//     }
-
-//     return textures;
-// }
+StrokePoint StrokePoint::Lerp(StrokePoint start, StrokePoint end, float t) {
+    start.position = glm::mix(start.position, end.position, t);
+    start.color = glm::mix(start.color, end.color, t);
+    start.flow = std::lerp(start.flow, end.flow, t);
+    start.radius = std::lerp(start.radius, end.radius, t);
+    start.hardness = std::lerp(start.hardness, end.hardness, t);
+    return start;
+}
 
 } // namespace Midori

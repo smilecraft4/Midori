@@ -19,6 +19,8 @@
 #include <numbers>
 #include <utility>
 
+namespace Midori {
+
 constexpr size_t operator""_KiB(size_t b) {
     return b * 1024llu;
 }
@@ -244,6 +246,8 @@ void* Calloc(size_t value, size_t size);
 void* Realloc(void* ptr, size_t size);
 void Free(void* ptr);
 
+// NOLINTBEGIN(readability-identifier-naming)
+
 template<class Alloc = std::allocator<std::byte>>
 struct arena {
     Alloc alloc_;
@@ -364,10 +368,9 @@ struct arena {
     void reset() { head_ = data_; }
 };
 
-// NOLINTBEGIN(readability-identifier-naming)
 template<typename T, class Alloc = std::allocator<std::byte>>
 struct arena_allocator {
-    arena<Alloc>& arena_;
+    arena<Alloc>* arena_;
 
     using value_type = T;
     using pointer = T*;
@@ -382,7 +385,7 @@ struct arena_allocator {
     using propagate_on_container_swap = std::true_type;
     using is_always_equal = std::true_type;
 
-    arena_allocator(arena<Alloc>& arena) : arena_(arena) {}
+    arena_allocator(arena<Alloc>& arena) : arena_(&arena) {}
 
     arena_allocator(const arena_allocator& other) = default;
 
@@ -394,7 +397,7 @@ struct arena_allocator {
             return nullptr;
         }
 
-        void* ptr = arena_.allocate(sizeof(T) * n, alignof(T));
+        void* ptr = arena_->allocate(sizeof(T) * n, alignof(T));
         if (ptr == nullptr) {
             throw std::bad_alloc();
         }
@@ -416,7 +419,7 @@ struct arena_allocator {
         ptr->~U();
     }
 
-    bool operator==(const arena_allocator<T>& other) const noexcept { return &arena_ == &other.arena_; }
+    bool operator==(const arena_allocator<T>& other) const noexcept { return arena_ == other.arena_; }
 
     bool operator!=(const arena_allocator<T>& other) const noexcept { return !(*this == other); }
 };
@@ -536,6 +539,11 @@ struct pool {
 };
 
 struct thread_pool {
+    thread_pool(const thread_pool& pool) = delete;
+    thread_pool(thread_pool&& pool) noexcept = delete;
+    thread_pool& operator=(const thread_pool& pool) = delete;
+    thread_pool& operator=(thread_pool&& pool) noexcept = delete;
+
     thread_pool(size_t size, const std::string& name = "Worker");
     ~thread_pool();
 
@@ -710,6 +718,7 @@ struct hash_set {
     [[nodiscard]] size_t size() const { return size_; }
     [[nodiscard]] size_t capacity() const { return capacity_; }
     [[nodiscard]] bool empty() const { return size_ == 0; }
+    [[nodiscard]] bool full() const { return size_ == capacity_; }
 
     void clear() {
         if (size_) {
@@ -839,9 +848,9 @@ struct hash_set {
 
         for (size_t probed = 0; probed < capacity_; ++probed) {
             const int8_t m = metas_[pos];
-            if (m == h2) { // full + H2 match -> candidate
+            if (m == h2) {           // full + H2 match -> candidate
                 if (keys_[pos] == key) {
-                    return false; // already present -> no insertion took place
+                    return false;    // already present -> no insertion took place
                 }
             } else if (m == EMPTY) { // key definitely absent -> insert here (or in a prior tombstone)
                 const size_t target = firstDeleted != capacity_ ? firstDeleted : pos;
@@ -1132,7 +1141,8 @@ struct hash_map {
 
     [[nodiscard]] size_t size() const { return size_; }
     [[nodiscard]] size_t capacity() const { return capacity_; }
-    [[nodiscard]] size_t empty() const { return size_ == 0; }
+    [[nodiscard]] bool empty() const { return size_ == 0; }
+    [[nodiscard]] bool full() const { return size_ == capacity_; }
 
     void clear() {
         if (size_) {
@@ -1442,7 +1452,7 @@ struct hash_map {
         throw std::out_of_range("hash_map::at: key not found");
     }
 
-    [[nodiscard]] Elem& at(const Key& key) const {
+    [[nodiscard]] const Elem& at(const Key& key) const {
         if (size_ != 0) {
             const size_t hash = std::hash<Key>{}(key);
             const int8_t h2 = hash & 0x7f;
@@ -1710,11 +1720,10 @@ struct slot_map {
         }
     }
 
-    [[nodiscard]] bool empty() const { return size_ == 0; }
-
-    [[nodiscard]] size_t size() const { return size_; }
-
     [[nodiscard]] size_t capacity() const { return capacity_; }
+    [[nodiscard]] size_t size() const { return size_; }
+    [[nodiscard]] bool empty() const { return size_ == 0; }
+    [[nodiscard]] bool full() const { return size_ == capacity_; }
 
     bool reserve(size_t newCapacity) {
         if (size_) {
@@ -1764,15 +1773,15 @@ struct slot_map {
     }
 
     [[nodiscard]] Slot free_slot() const {
-        if (!capacity_) {
-            return static_cast<Slot>(-1);
+        if (!capacity_ || size_ == capacity_) {
+            throw std::bad_alloc();
         }
         size_t slot = 0;
         while (slot < capacity_ && slots_[slot]) {
             slot++;
         }
         if (slot == capacity_) {
-            return static_cast<Slot>(-1);
+            throw std::bad_alloc();
         }
         return static_cast<Slot>(slot);
     }
@@ -1829,8 +1838,12 @@ struct slot_map {
 
     template<typename... Args>
     bool emplace_at(Slot slot, Args&&... args) {
-        if (slot >= capacity_ || slots_[slot]) {
-            return false;
+        if (slot >= capacity_) {
+            throw std::bad_alloc();
+        }
+
+        if (slots_[slot]) {
+            return false; // Slot already used
         }
 
         elem_atr::construct(ea_, elems_ + slot, std::forward<Args>(args)...);
@@ -1875,6 +1888,14 @@ struct slot_map {
     // std::vector-style checked access: throws std::out_of_range for an
     // out-of-range or empty slot.
     Elem& at(Slot slot) {
+        if (slot >= capacity_ || !slots_[slot]) {
+            throw std::out_of_range("slot_map::at: invalid slot");
+        }
+
+        return elems_[slot];
+    }
+
+    [[nodiscard]] const Elem& at(Slot slot) const {
         if (slot >= capacity_ || !slots_[slot]) {
             throw std::out_of_range("slot_map::at: invalid slot");
         }
@@ -1936,6 +1957,285 @@ struct slot_map {
 };
 static_assert(std::forward_iterator<slot_map<size_t, int>::Iterator>);
 static_assert(std::ranges::forward_range<slot_map<size_t, int>>);
+
+// Fixed-capacity circular buffer. Logical index 0 is the oldest live element and
+// index size()-1 the newest; the mapping to storage is private, so an eviction at
+// the front does not move any element.
+//
+// Unlike the other containers here, appending to a full ring_array is not an error:
+// emplace_back()/push_back() drop the oldest element to make room and return true
+// when they did, so callers holding a logical index can shift it. Check full()
+// beforehand if losing the front is not acceptable.
+template<typename Elem, class Alloc = std::allocator<Elem>>
+struct ring_array {
+    using elem_alloc = typename std::allocator_traits<Alloc>::template rebind_alloc<Elem>;
+    using elem_atr = std::allocator_traits<elem_alloc>;
+
+    elem_alloc ea_;
+    Elem* elems_{};
+    size_t capacity_{};
+    size_t size_{};
+    size_t head_{};
+
+    ring_array(size_t capacity = 0, Alloc alloc = Alloc())
+        : ea_(elem_alloc(alloc)), capacity_(capacity) {
+        if (capacity_) {
+            elems_ = elem_atr::allocate(ea_, capacity_);
+        }
+    }
+
+    ring_array(const ring_array& other)
+        : ea_(elem_atr::select_on_container_copy_construction(other.ea_)),
+          capacity_(other.capacity_),
+          size_(other.size_) {
+        if (capacity_) {
+            elems_ = elem_atr::allocate(ea_, capacity_);
+            for (size_t i = 0; i < size_; ++i) {
+                elem_atr::construct(ea_, elems_ + i, std::as_const(other[i]));
+            }
+        }
+    }
+
+    ring_array(ring_array&& other) noexcept
+        : ea_(std::move(other.ea_)),
+          elems_(other.elems_),
+          capacity_(other.capacity_),
+          size_(other.size_),
+          head_(other.head_) {
+        other.elems_ = nullptr;
+        other.capacity_ = 0;
+        other.size_ = 0;
+        other.head_ = 0;
+    }
+
+    ring_array& operator=(const ring_array& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        release();
+
+        if constexpr (elem_atr::propagate_on_container_copy_assignment::value
+                      && std::is_copy_assignable_v<elem_alloc>) {
+            ea_ = other.ea_;
+        }
+
+        capacity_ = other.capacity_;
+        size_ = other.size_;
+
+        if (capacity_) {
+            elems_ = elem_atr::allocate(ea_, capacity_);
+            for (size_t i = 0; i < size_; ++i) {
+                elem_atr::construct(ea_, elems_ + i, std::as_const(other[i]));
+            }
+        }
+
+        return *this;
+    }
+
+    ring_array& operator=(ring_array&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+
+        release();
+
+        if constexpr (elem_atr::propagate_on_container_move_assignment::value
+                      && std::is_move_assignable_v<elem_alloc>) {
+            ea_ = std::move(other.ea_);
+        }
+
+        elems_ = other.elems_;
+        capacity_ = other.capacity_;
+        size_ = other.size_;
+        head_ = other.head_;
+
+        other.elems_ = nullptr;
+        other.capacity_ = 0;
+        other.size_ = 0;
+        other.head_ = 0;
+
+        return *this;
+    }
+
+    ~ring_array() { release(); }
+
+    [[nodiscard]] size_t capacity() const { return capacity_; }
+    [[nodiscard]] size_t size() const { return size_; }
+    [[nodiscard]] bool empty() const { return size_ == 0; }
+    [[nodiscard]] bool full() const { return size_ == capacity_; }
+
+    void clear() {
+        while (size_) {
+            size_--;
+            elem_atr::destroy(ea_, elems_ + slot(size_));
+        }
+        head_ = 0;
+    }
+
+    void release() noexcept {
+        if (capacity_) {
+            clear();
+            elem_atr::deallocate(ea_, elems_, capacity_);
+            elems_ = nullptr;
+            capacity_ = 0;
+        }
+    }
+
+    // Only valid while empty: reallocating would have to relocate live elements,
+    // and the element type is not required to be movable.
+    bool reserve(size_t newCapacity) {
+        if (size_) {
+            return false;
+        }
+
+        release();
+        capacity_ = newCapacity;
+        if (capacity_) {
+            elems_ = elem_atr::allocate(ea_, capacity_);
+        }
+        return true;
+    }
+
+    [[nodiscard]] size_t slot(size_t index) const { return capacity_ ? (head_ + index) % capacity_ : 0; }
+
+    Elem& operator[](size_t index) { return elems_[slot(index)]; }
+    const Elem& operator[](size_t index) const { return elems_[slot(index)]; }
+
+    Elem& at(size_t index) {
+        if (index >= size_) {
+            throw std::out_of_range("ring_array::at: index out of range");
+        }
+        return elems_[slot(index)];
+    }
+
+    [[nodiscard]] const Elem& at(size_t index) const {
+        if (index >= size_) {
+            throw std::out_of_range("ring_array::at: index out of range");
+        }
+        return elems_[slot(index)];
+    }
+
+    Elem& front() { return at(0); }
+    [[nodiscard]] const Elem& front() const { return at(0); }
+    Elem& back() { return at(size_ - 1); }
+    [[nodiscard]] const Elem& back() const { return at(size_ - 1); }
+
+    template<typename... Args>
+    Elem& emplace_back(Args&&... args) {
+        if (size_ == capacity_) {
+            throw std::bad_alloc(); // fixed capacity, cannot grow
+        }
+
+        const size_t pos = slot(size_);
+        elem_atr::construct(ea_, elems_ + pos, std::forward<Args>(args)...);
+        size_++;
+        return elems_[pos];
+    }
+
+    template<typename... Args>
+    bool emplace_back_evict(Args&&... args) {
+        if (!capacity_) {
+            throw std::bad_alloc();
+        }
+
+        bool evicted = false;
+        if (size_ == capacity_) {
+            evicted = pop_front();
+        }
+
+        // After an eviction slot(size_) is the storage the front just vacated.
+        elem_atr::construct(ea_, elems_ + slot(size_), std::forward<Args>(args)...);
+        size_++;
+        return evicted;
+    }
+
+    Elem& push_back(const Elem& elem) { return emplace_back(elem); }
+    Elem& push_back(Elem&& elem) { return emplace_back(std::move(elem)); }
+    bool push_back_evict(const Elem& elem) { return emplace_back_evict(elem); }
+    bool push_back_evict(Elem&& elem) { return emplace_back_evict(std::move(elem)); }
+
+    bool pop_front() {
+        if (!size_) {
+            return false;
+        }
+
+        elem_atr::destroy(ea_, elems_ + head_);
+        head_ = (head_ + 1) % capacity_;
+        size_--;
+        if (!size_) {
+            head_ = 0;
+        }
+        return true;
+    }
+
+    bool pop_back() {
+        if (!size_) {
+            return false;
+        }
+
+        size_--;
+        elem_atr::destroy(ea_, elems_ + slot(size_));
+        if (!size_) {
+            head_ = 0;
+        }
+        return true;
+    }
+
+    // Drops elements from the back until size() == newSize. False if newSize is
+    // already past the end.
+    bool truncate(size_t newSize) {
+        if (newSize > size_) {
+            return false;
+        }
+
+        while (size_ > newSize) {
+            pop_back();
+        }
+        return true;
+    }
+
+    struct Iterator {
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = Elem;
+        using pointer = Elem*;
+        using reference = Elem&;
+
+        ring_array* ptr{};
+        size_t index{};
+
+        Iterator() = default;
+        Iterator(ring_array* ptr, size_t index) : ptr(ptr), index(index) {}
+
+        reference operator*() const { return (*ptr)[index]; }
+        pointer operator->() const { return &(*ptr)[index]; }
+
+        Iterator& operator++() {
+            index++;
+            return *this;
+        }
+
+        Iterator operator++(int) {
+            auto tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        bool operator==(const Iterator& other) const { return ptr == other.ptr && index == other.index; }
+    };
+
+    using iterator = Iterator;
+
+    iterator begin() { return iterator(this, 0); }
+    iterator end() { return iterator(this, size_); }
+};
+static_assert(std::forward_iterator<ring_array<int>::Iterator>);
+static_assert(std::ranges::forward_range<ring_array<int>>);
+
+// NOLINTEND(readability-identifier-naming)
+
+} // namespace Midori
 
 // namespace Base {
 

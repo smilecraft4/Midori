@@ -62,9 +62,9 @@ static_assert(sizeof(Tile) == sizeof(size_t), "Tile coord must be 8bytes");
 template<>
 struct std::hash<Midori::Tile> {
     size_t operator()(const Midori::Tile& t) const {
-        size_t hash = static_cast<size_t>(std::make_unsigned_t<Layer>(t.layer)) << 48
-                    | static_cast<size_t>(std::make_unsigned_t<TileAxis>(t.y)) << 32
-                    | static_cast<size_t>(std::make_unsigned_t<TileAxis>(t.x)) << 16;
-        return Splitmix64(hash);
+        size_t hash = static_cast<size_t>(std::make_unsigned_t<Midori::Layer>(t.layer)) << 48
+                    | static_cast<size_t>(std::make_unsigned_t<Midori::TileAxis>(t.y)) << 32
+                    | static_cast<size_t>(std::make_unsigned_t<Midori::TileAxis>(t.x)) << 16;
+        return Midori::Splitmix64(hash);
     }
 };

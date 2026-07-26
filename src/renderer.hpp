@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "defines.hpp"
+#include "errors.hpp"
 #include "tiles.hpp"
 #include "colors.hpp"
 
@@ -16,22 +17,20 @@ namespace Midori {
 
 struct App;
 
+struct StrokePoint {
+    glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    glm::vec2 position;
+    float radius = 8.0f;
+    float flow = 0.5f;
+    float hardness = 0.5f;
+    float pad[3];
+
+    static StrokePoint Lerp(StrokePoint start, StrokePoint end, float t);
+};
+
 struct Renderer {
     using TileTextureDownload = size_t;
     using TileTextureUpload = size_t;
-
-    enum class Error : uint8_t {
-        None,
-
-        MissingTexture,
-        UploadSlotMissing,
-        DownloadSlotMissing,
-        OutOfTileMemory,
-        OutOfLayerMemory,
-        OutOfMemory,
-
-        Unknown,
-    };
 
     enum class TextureDownloadState : uint8_t {
         None,        // slot available for use
@@ -114,6 +113,7 @@ struct Renderer {
     bool InitMerge();
     bool InitPaint();
 
+    // TODO change the ownership of the textures to slot_map instead
     bool CreateLayerTexture(Layer layer);
     void DestroyLayerTexture(Layer layer);
 

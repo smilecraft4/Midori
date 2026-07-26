@@ -15,7 +15,7 @@ public:
     void FlipVertical();
 
     void SetTranslation(glm::vec2 newTranslation);
-    void SetZoom(glm::vec2 origin, glm::vec2 amount);
+    void SetZoom(glm::vec2 newZoom);
     void SetRotation(float newRotation);
 
     void Resize(glm::vec2 newViewSize);

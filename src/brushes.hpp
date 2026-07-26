@@ -19,6 +19,7 @@ struct BrushSettings {
     float minPressureSpacing{1.0f};
     float maxPressureSpacing{1.0f};
     float smoothing{0.0f};
+    bool modified;
 };
 
 struct PointerState {

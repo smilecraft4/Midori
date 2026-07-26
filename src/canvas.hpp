@@ -4,6 +4,7 @@
 #include "colors.hpp"
 #include "commands.hpp"
 #include "defines.hpp"
+#include "errors.hpp"
 #include "layers.hpp"
 #include "renderer.hpp"
 #include "states.hpp"
@@ -11,45 +12,32 @@
 #include "viewport.hpp"
 #include "base.hpp"
 
+#include "../deps/liblmdb/lmdb.h"
 #include <SDL3/SDL_gpu.h>
 #include <array>
+#include <expected>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
-#include <cstdint>
+#include <filesystem>
+#include <optional>
 
 namespace Midori {
 
 struct App;
 
+struct TileWriteData {
+    Tile tile;
+    TileWriteState state;
+    Renderer::TileTextureDownload rendererSlot;
+};
+
+struct TileReadData {
+    Tile tile;
+    TileReadState state;
+    Renderer::TileTextureUpload rendererSlot;
+};
+
 struct Canvas {
-    enum class Error : uint8_t {
-        None,
-        LayerNotFound,
-        TileNotFound,
-        Unknown,
-    };
-
-    struct TileWriteData {
-        Tile tile;
-        TileWriteState state;
-        Renderer::TileTextureDownload rendererSlot;
-    };
-
-    struct TileReadData {
-        Tile tile;
-        TileReadState state;
-        Renderer::TileTextureUpload rendererSlot;
-    };
-
-    struct StrokePoint {
-        glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        glm::vec2 position;
-        float radius = 8.0f;
-        float flow = 0.5f;
-        float hardness = 0.5f;
-        float pad[3];
-    };
-
     Canvas(const Canvas&) = delete;
     Canvas(Canvas&&) = delete;
     Canvas& operator=(const Canvas&) = delete;
@@ -128,11 +116,6 @@ struct Canvas {
     Tool currentTool{Tool::Paint};
     ToolState currentToolState{ToolState::None};
 
-    BrushSettings paintBrush;
-    bool paintBrushModified{};
-    BrushSettings eraseBrush;
-    bool eraseBrushModified{};
-
     StrokePoint previousPoint{};
     std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints{strokeArena};
     hash_set<Tile, arena_allocator<Tile>> strokeTileAffected{strokeArena};
@@ -143,61 +126,115 @@ struct Canvas {
     static bool SampleTexture(const std::vector<Color>& texture, glm::ivec2 textureSize, glm::vec2 pos, Color& color);
 };
 
-struct CanvasFile;
-struct CanvasView;
-struct Window;
-
 struct CanvasFile {
+    struct Version {
+        uint16_t major;
+        uint16_t minor;
+        uint16_t patch;
+    };
+
     CanvasFile(const CanvasFile&) = delete;
-    CanvasFile(CanvasFile&&) = delete;
+    CanvasFile(CanvasFile&&) noexcept = delete;
     CanvasFile& operator=(const CanvasFile&) = delete;
-    CanvasFile& operator=(CanvasFile&&) = delete;
+    CanvasFile& operator=(CanvasFile&&) noexcept = delete;
 
-    CanvasFile(App* app);
-    ~CanvasFile() = default;
+    explicit CanvasFile(App* app);
+    ~CanvasFile();
 
-    void Init();
-    void Update();
-    void Quit();
+    Error New();
+    Error SaveAs(std::filesystem::path newFilename);
+    Error Open(std::filesystem::path newFilename);
+    Error Save();
+    Error Close();
+    Error Update();
+    Error Quit();
+    void SyncCanvasViews();
 
-    Layer NewLayer(LayerCreateInfo createInfo);
-    bool DeleteLayer(Layer layer);
-    bool RenameLayer(Layer layer, std::string newName);
-    bool MoveLayer(Layer layer, LayerHeight newHeight);
+    [[nodiscard]] bool HasLayer(Layer layer) const;
+    std::expected<Layer, Error> NewLayer(LayerCreateInfo createInfo);
+    std::expected<Layer, Error> GetLayer(LayerHeight height);
+    Error DeleteLayer(Layer layer);
+    Error SetLayerName(Layer layer, std::string newName);
+    Error SetLayerHeight(Layer layer, LayerHeight newHeight);
+    Error SetBlendMode(Layer layer, BlendMode newBlendMode);
+    Error MergeLayers(Layer srcLayer, Layer dstLayer);
 
-    bool NewTile(Tile tile);
-    bool DeleteTile(Tile tile);
-    bool ReadTile(Tile tile);
-    bool WriteTile(Tile tile);
+    std::expected<Layer, Error> DuplicateLayer(Layer layer);
+    [[nodiscard]] bool HasTile(Tile tile) const;
+    Error NewTile(Tile tile);
+    Error DeleteTile(Tile tile);
+    Error DestroyTile(Tile tile);
+    Error MarkTileDirty(Tile tile);
+    Error ReadTile(Tile tile);
+    Error WriteTile(Tile tile);
+    Error MergeTiles(Tile srcTile, Tile dstTile);
+    Error MoveTile(Tile srcTile, Tile dstTile);
+    Error DuplicateTile(Tile srcTile, Tile dstTile);
 
     App* app;
-    std::array<CanvasView*, 16> canvasViews;
+    size_t id;
+    Version version{.major = 0, .minor = 1, .patch = 0}; // TODO move to defines.hpp
+    std::optional<std::filesystem::path> filename;
+    std::array<std::optional<size_t>, CANVASVIEW_MAX> canvasViewIds{};
+
+    arena<> arena{16_KiB};
+    slot_map<Layer, LayerInfo> layers{1024};
+    std::vector<Layer> layersTree;
+    hash_set<Tile> tilesLoaded{1024};
+    hash_set<Tile> tilesModified{1024};
+    hash_map<Tile, TileWriteData> tilesWriting{1024};
+    hash_map<Tile, TileReadData> tilesReading{1024};
+
+    CommandHistory canvasHistory{512};
+    std::optional<TileModificationCommand> currentTileCommand;
+
+    MDB_env* env{};
+    MDB_dbi dbiMetadata;
+    MDB_dbi dbiLayers;
+    MDB_dbi dbiTiles;
 };
 
 struct CanvasView {
     CanvasView(const CanvasView&) = delete;
-    CanvasView(CanvasView&&) = delete;
+    CanvasView(CanvasView&&) noexcept = delete;
     CanvasView& operator=(const CanvasView&) = delete;
-    CanvasView& operator=(CanvasView&&) = delete;
+    CanvasView& operator=(CanvasView&&) noexcept = delete;
 
-    CanvasView(App* app);
-    ~CanvasView() = default;
+    CanvasView(App* app, size_t windowId, size_t canvasFileId);
+    ~CanvasView();
 
-    void Init();
-    void Update();
-    void Render();
-    void Quit();
+    Error Init();
+    Error Update();
+    Error Render();
+    Error Quit();
+    Error Resize(int newWidth, int newHeight);
+    Error Move(int newX, int newY);
 
-    bool HideLayer(Layer layer, bool hide);
-    bool LockLayer(Layer layer, bool lock);
-    bool SelectLayer(Layer layer);
+    Error HideLayer(Layer layer, bool hide);
+    Error LockLayer(Layer layer, bool lock);
+    Error SelectLayer(Layer layer);
 
-    bool LoadTile();
-    bool UnloadTile();
+    Error LoadTile(Tile tile);
+    Error UnloadTile(Tile tile);
 
     App* app;
-    Window* window;
-    CanvasFile* canvasFile;
+    size_t id;
+    size_t windowId;
+    size_t canvasFileId;
+    int x;
+    int y;
+    int width;
+    int height;
+
+    arena<> arena{16_KiB};
+
+    std::optional<Layer> selectedLayer;
+
+    Viewport viewport;
+    CommandHistory viewHistory{1024};
+    std::optional<ViewportChangeCommand> currentViewportCommand;
+
+    bool dirty; // Needs re-rendering
 };
 
 } // namespace Midori

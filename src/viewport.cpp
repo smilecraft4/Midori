@@ -49,12 +49,10 @@ void Viewport::Zoom(glm::vec2 origin, glm::vec2 amount) {
     // Translate(origin - pivotScreen);
 }
 
-void Viewport::SetZoom(glm::vec2 origin, glm::vec2 amount) {
-    zoomOrigin = origin;
-    zoom = amount;
+void Viewport::SetZoom(glm::vec2 newZoom) {
+    zoom = newZoom;
     zoom.x = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.x));
     zoom.y = std::max(VIEWPORT_ZOOM_MIN, std::min(VIEWPORT_ZOOM_MAX, zoom.y));
-    ;
 
     viewComputed = false;
     ComputeViewMatrix();
