@@ -141,6 +141,7 @@ struct CanvasFile {
     explicit CanvasFile(App* app);
     ~CanvasFile();
 
+    Error Init(size_t newId);
     Error New();
     Error SaveAs(std::filesystem::path newFilename);
     Error Open(std::filesystem::path newFilename);
@@ -203,16 +204,14 @@ struct CanvasView {
     CanvasView(App* app, size_t windowId, size_t canvasFileId);
     ~CanvasView();
 
-    Error Init();
+    Error Init(size_t newId);
     Error Update();
-    Error Render();
     Error Quit();
     Error Resize(int newWidth, int newHeight);
     Error Move(int newX, int newY);
 
-    Error HideLayer(Layer layer, bool hide);
-    Error LockLayer(Layer layer, bool lock);
     Error SelectLayer(Layer layer);
+    Error DeselectedLayer(Layer layer);
 
     Error LoadTile(Tile tile);
     Error UnloadTile(Tile tile);
@@ -221,12 +220,10 @@ struct CanvasView {
     size_t id;
     size_t windowId;
     size_t canvasFileId;
-    int x;
-    int y;
-    int width;
-    int height;
-
-    arena<> arena{16_KiB};
+    int x{};
+    int y{};
+    int width{};
+    int height{};
 
     std::optional<Layer> selectedLayer;
 
@@ -234,7 +231,7 @@ struct CanvasView {
     CommandHistory viewHistory{1024};
     std::optional<ViewportChangeCommand> currentViewportCommand;
 
-    bool dirty; // Needs re-rendering
+    bool dirty;
 };
 
 } // namespace Midori

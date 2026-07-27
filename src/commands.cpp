@@ -39,7 +39,7 @@ void TileModificationCommand::Execute() {
             canvasFile.DeleteTile(tile);
         } else {
             if (!canvasFile.tilesLoaded.contains(tile)) {
-                const Error err = app->renderer.CreateUninitializedTileTexture(tile);
+                const Error err = app->renderer.CreateUninitializedTileTexture(canvasFile, tile);
                 SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
                 canvasFile.tilesLoaded.insert(tile);
             }
@@ -69,7 +69,7 @@ void TileModificationCommand::Revert() {
             canvasFile.DeleteTile(tile);
         } else {
             if (!canvasFile.tilesLoaded.contains(tile)) {
-                const Error err = app->renderer.CreateUninitializedTileTexture(tile);
+                const Error err = app->renderer.CreateUninitializedTileTexture(canvasFile, tile);
                 SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
                 canvasFile.tilesLoaded.insert(tile);
             }
@@ -108,6 +108,7 @@ Error TileModificationCommand::TrackTile(Tile tile) {
 
 void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
     ZoneScoped;
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
 
     const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
@@ -119,7 +120,7 @@ void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
             if (textures.revert) {
                 SDL_ReleaseGPUTexture(app->renderer.device, textures.revert);
             }
-            textures.revert = app->renderer.DuplicateTileTexture(tile);
+            textures.revert = app->renderer.DuplicateTileTexture(canvasFile, tile);
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
@@ -128,6 +129,7 @@ void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
 
 void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
     ZoneScoped;
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
     const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
     for (auto [tile, textures] : tileTextures) {
@@ -138,7 +140,7 @@ void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
             if (textures.execute) {
                 SDL_ReleaseGPUTexture(app->renderer.device, textures.execute);
             }
-            textures.execute = app->renderer.DuplicateTileTexture(tile);
+            textures.execute = app->renderer.DuplicateTileTexture(canvasFile, tile);
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
@@ -184,12 +186,14 @@ void CommandHistory::Clear() {
 }
 
 void CommandHistory::Push(Command&& command) {
-    SDL_assert(ring.size() <= position && "Untracked position in ring_arry");
-    if (ring.size() > position) {
+    SDL_assert(position <= ring.size() && "Untracked position in ring_arry");
+    if (position < ring.size()) {
         while (ring.size() > position) {
             ring.pop_front();
         }
-    } else if (ring.full()) {
+    }
+
+    if (ring.full()) {
         ring.pop_front();
         position--;
     }
@@ -232,7 +236,7 @@ void CommandHistory::DrawUI() {
                         }
                     }
                 },
-                ring.at(pos + 1));
+                ring.at(pos));
         }
     }
 }

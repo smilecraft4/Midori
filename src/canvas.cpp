@@ -1,10 +1,7 @@
 ﻿#include "canvas.hpp"
 
-#include "SDL3/SDL_gpu.h"
-#include "SDL3/SDL_log.h"
 #include "app.hpp"
 #include "base.hpp"
-#include "brushes.hpp"
 #include "colors.hpp"
 #include "defines.hpp"
 #include "errors.hpp"
@@ -27,14 +24,13 @@
 #define QOI_IMPLEMENTATION
 #define QOI_NO_STDIO
 #include "../deps/qoi.h"
-#include "../deps/json.hpp"
+#include <SDL3/SDL_log.h>
 #include <SDL3/SDL_assert.h>
 #include <tracy/Tracy.hpp>
 #include <imgui.h>
 #include <string>
 #include <utility>
 #include <algorithm>
-#include <format>
 
 namespace Midori {
 
@@ -47,6 +43,11 @@ CanvasFile::CanvasFile(App* app) : app(app) {
 }
 
 CanvasFile::~CanvasFile() = default;
+
+Error CanvasFile::Init(size_t newId) {
+    id = newId;
+    return Error::None;
+}
 
 Error CanvasFile::New() {
     ZoneScoped;
@@ -497,7 +498,7 @@ Error CanvasFile::Update() {
             SDL_assert(tilesModified.contains(tile) && "A tile queued for writing must still be marked modified");
 
             if (data.state == TileWriteState::Pending) {
-                const auto slot = app->renderer.DownloadTileTexture(tile);
+                const auto slot = app->renderer.DownloadTileTexture(*this, tile);
                 if (!slot.has_value()) {
                     continue;
                 }
@@ -505,10 +506,10 @@ Error CanvasFile::Update() {
                 data.state = TileWriteState::Downloading;
             }
             if (data.state == TileWriteState::Downloading) {
-                if (!app->renderer.QueryTileTextureDownload(data.rendererSlot)) {
+                if (!app->renderer.QueryTileTextureDownload(*this, data.rendererSlot)) {
                     continue;
                 }
-                const auto& info = app->renderer.GetTileTextureDownloadInfo(data.rendererSlot);
+                const auto& info = app->renderer.GetTileTextureDownloadInfo(*this, data.rendererSlot);
                 bool empty{true};
                 for (size_t i = 0; i < TILE_SIZE; i++) {
                     if (static_cast<uint8_t>(info.data[i]) != 0) {
@@ -517,7 +518,7 @@ Error CanvasFile::Update() {
                 }
 
                 if (empty) {
-                    app->renderer.FreeTileTextureDownload(data.rendererSlot);
+                    app->renderer.FreeTileTextureDownload(*this, data.rendererSlot);
                     tilesDeleting.push_back(tile);
                     data.state = TileWriteState::Done;
                 } else {
@@ -534,7 +535,7 @@ Error CanvasFile::Update() {
                     SDL_assert(encodedBufSize > 0 && "qoi_encode produced an empty buffer");
                     if (encodedBuf == nullptr || encodedBufSize <= 0) {
                         // Leave the tile queued so the next frame retries it.
-                        app->renderer.FreeTileTextureDownload(data.rendererSlot);
+                        app->renderer.FreeTileTextureDownload(*this, data.rendererSlot);
                         data.state = TileWriteState::Pending;
                         continue;
                     }
@@ -546,7 +547,7 @@ Error CanvasFile::Update() {
                     val.mv_size = encodedBufSize;
                     const int rc = mdb_put(txn, dbiTiles, &key, &val, 0);
 
-                    app->renderer.FreeTileTextureDownload(data.rendererSlot);
+                    app->renderer.FreeTileTextureDownload(*this, data.rendererSlot);
                     Free(encodedBuf);
 
                     if (rc != MDB_SUCCESS) {
@@ -610,12 +611,12 @@ Error CanvasFile::Update() {
             SDL_assert(!tilesLoaded.contains(tile) && "A tile queued for reading must not already be loaded");
 
             if (data.state == TileReadState::Pending) {
-                const auto slot = app->renderer.ReserveTileTextureUpload(tile);
+                const auto slot = app->renderer.ReserveTileTextureUpload(*this, tile);
                 if (!slot.has_value()) {
                     continue;
                 }
                 data.rendererSlot = slot.value();
-                const auto& info = app->renderer.GetTileTextureUploadInfo(data.rendererSlot);
+                const auto& info = app->renderer.GetTileTextureUploadInfo(*this, data.rendererSlot);
 
                 key.mv_data = std::bit_cast<size_t*>(&tile);
                 key.mv_size = sizeof(Tile);
@@ -626,7 +627,7 @@ Error CanvasFile::Update() {
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read tile(%u, %d, %d): %s", tile.layer,
                                  tile.x, tile.y, mdb_strerror(rc));
                     SDL_assert(false && "Failed to read a tile from the lmdb tile database");
-                    app->renderer.FreeTileTextureUpload(data.rendererSlot);
+                    app->renderer.FreeTileTextureUpload(*this, data.rendererSlot);
                     tilesRead.push_back(tile);
                     continue;
                 }
@@ -643,7 +644,7 @@ Error CanvasFile::Update() {
                                  tile.y, desc.width, desc.height, desc.channels, TILE_WIDTH, TILE_HEIGHT);
                     SDL_assert(false && "Decoded tile has unexpected dimensions");
                     Free(decodedBuf);
-                    app->renderer.FreeTileTextureUpload(data.rendererSlot);
+                    app->renderer.FreeTileTextureUpload(*this, data.rendererSlot);
                     tilesRead.push_back(tile);
                     continue;
                 }
@@ -653,7 +654,7 @@ Error CanvasFile::Update() {
                 std::memcpy(info.data, decodedBuf, TILE_SIZE);
                 Free(decodedBuf);
 
-                app->renderer.CommitTileTextureUpload(data.rendererSlot);
+                app->renderer.CommitTileTextureUpload(*this, data.rendererSlot);
                 data.state = TileReadState::Uploaded;
                 tilesLoaded.insert(tile);
                 tilesRead.push_back(tile);
@@ -671,6 +672,7 @@ Error CanvasFile::Update() {
     return Error::None;
 }
 
+// TODO this stuff is bugous, buffy, and weird. It needs to be fixed
 Error CanvasFile::Quit() {
     ZoneScoped;
     return Close();
@@ -710,9 +712,15 @@ std::expected<Layer, Error> CanvasFile::NewLayer(LayerCreateInfo createInfo) {
         return std::unexpected(Error::OutOfCapacity);
     }
 
-    if (!app->renderer.CreateLayerTexture(createInfo.id.value())) {
-        layers.erase(createInfo.id.value());
-        return std::unexpected(Error::Unknown);
+    for (const auto& id : canvasViewIds) {
+        if (!id.has_value()) {
+            continue;
+        }
+
+        if (!app->renderer.CreateLayerTexture(app->canvasViews.at(id.value()), createInfo.id.value())) {
+            layers.erase(createInfo.id.value());
+            return std::unexpected(Error::Unknown);
+        }
     }
 
     layersTree.push_back(createInfo.id.value());
@@ -742,15 +750,26 @@ Error CanvasFile::DeleteLayer(Layer layer) {
         return Error::LayerNotFound;
     }
 
+    for (const auto& tile : tilesLoaded) {
+        if (tile.layer == layer) {
+            DestroyTile(tile);
+        }
+    }
+
     for (const Tile& tile : layers.at(layer).tiles) {
         tilesModified.erase(tile);
-        tilesLoaded.erase(tile);
     }
 
     SetLayerHeight(layer, static_cast<LayerHeight>(layersTree.size() - 1));
     layersTree.pop_back();
 
-    app->renderer.DestroyLayerTexture(layer);
+    for (const auto& id : canvasViewIds) {
+        if (!id.has_value()) {
+            continue;
+        }
+
+        app->renderer.DestroyLayerTexture(app->canvasViews.at(id.value()), layer);
+    }
     layers.erase(layer);
 
     SyncCanvasViews();
@@ -831,17 +850,27 @@ Error CanvasFile::MergeLayers(Layer srcLayer, Layer dstLayer) {
     SDL_assert(layers.contains(dstLayer) && "Merge destination layer does not exist");
 
     // Batch for better result
-
-    for (const auto& srcTile : layers.at(srcLayer).tiles) {
-        Tile dstTile = srcTile;
-        dstTile.layer = dstLayer;
-
-        MergeTiles(srcTile, dstTile);
+    size_t failed{};
+    for (const auto& tile : tilesLoaded) {
+        if (tile.layer == srcLayer) {
+            Tile target{
+                .layer = dstLayer,
+                .y = tile.y,
+                .x = tile.x,
+            };
+            if (auto err = MergeTiles(tile, target); err != Error::None) {
+                failed++;
+            }
+        }
     }
+
+    // TODO find a way to handle non loaded tiles.
+    // for example make LoadTileAsync and LoadTile for immediate stuff
+    // the same for UnloadTileAsync and UnloadTile for immediate stuff
 
     SyncCanvasViews();
 
-    return Error::None;
+    return failed == 0 ? Error::None : Error::Unknown;
 }
 
 std::expected<Layer, Error> CanvasFile::DuplicateLayer(Layer layer) {
@@ -872,7 +901,7 @@ Error CanvasFile::NewTile(Tile tile) {
 
     // Batch for better perfs
 
-    if (auto err = app->renderer.CreateTileTexture(tile); err != Error::None) {
+    if (auto err = app->renderer.CreateTileTexture(*this, tile); err != Error::None) {
         SDL_assert(false && "Failed to create the tile gpu texture");
         return Error::Unknown;
     }
@@ -888,18 +917,15 @@ Error CanvasFile::NewTile(Tile tile) {
 Error CanvasFile::DeleteTile(Tile tile) {
     ZoneScoped;
     SDL_assert(env && "DeleteTile() needs an open lmdb env");
-    if (!env) {
-        return Error::FileNotFound;
-    }
 
     // TODO: figure tileLoading
     // TODO: figure tileUnloading
 
-    if (!layers.contains(tile.layer)) {
-        return Error::LayerNotFound;
-    }
     if (!layers.at(tile.layer).tiles.contains(tile)) {
         return Error::TileNotFound;
+    }
+    if (!layers.contains(tile.layer)) {
+        return Error::LayerNotFound;
     }
 
     SDL_assert(!tilesReading.contains(tile) && "Deleting a tile that is mid-read is not handled yet");
@@ -942,9 +968,11 @@ Error CanvasFile::DeleteTile(Tile tile) {
 
 Error CanvasFile::DestroyTile(Tile tile) {
     ZoneScoped;
-    SDL_assert(tilesLoaded.contains(tile) && "DestroyTile() on a tile that is not loaded");
+    if (!tilesLoaded.contains(tile)) {
+        return Error::TileNotFound;
+    }
 
-    app->renderer.DestroyTileTexture(tile);
+    app->renderer.DestroyTileTexture(*this, tile);
     tilesLoaded.erase(tile);
 
     SyncCanvasViews();
@@ -983,7 +1011,7 @@ Error CanvasFile::ReadTile(Tile tile) {
     if (tilesReading.contains(tile)) {
         return Error::None;
     }
-    if (app->renderer.CreateUninitializedTileTexture(tile) != Error::None) {
+    if (app->renderer.CreateUninitializedTileTexture(*this, tile) != Error::None) {
         return Error::Unknown;
     }
     const TileReadData data{
@@ -1034,28 +1062,21 @@ Error CanvasFile::WriteTile(Tile tile) {
 Error CanvasFile::MergeTiles(Tile srcTile, Tile dstTile) {
     ZoneScoped;
     SDL_assert(layers.contains(srcTile.layer) && "Merge source layer does not exist");
-    SDL_assert(HasTile(srcTile) && "Merge source tile does not exist in the file");
+    SDL_assert(tilesLoaded.contains(srcTile) && "Tile not loaded");
 
     // FIXME handling non resident tiles tile is broken
     // TODO fix the path when tile are not visible
 
-    if (tilesLoaded.contains(srcTile)) {
-        if (tilesLoaded.contains(dstTile)) {
-            app->renderer.MergeTileTextures(srcTile, dstTile);
-            MarkTileDirty(dstTile);
-        } else {
-            MoveTile(srcTile, dstTile);
-        }
+    const Renderer::MergeInfo mergeInfo{
+        .blendMode = layers.at(srcTile.layer).blendMode,
+        .opacity = layers.at(srcTile.layer).opacity,
+    };
+    if (tilesLoaded.contains(dstTile)) {
+        app->renderer.MergeTileTextures(*this, srcTile, dstTile, mergeInfo);
+        MarkTileDirty(dstTile);
     } else {
-        ReadTile(srcTile);
-        if (!tilesLoaded.contains(dstTile) && layers.at(dstTile.layer).tiles.contains(dstTile)) {
-            ReadTile(dstTile);
-        }
-
-        // TODO wait for the readTile
-        MergeTiles(srcTile, dstTile);
+        MoveTile(srcTile, dstTile);
     }
-
     SyncCanvasViews();
 
     return Error::None;
@@ -1102,7 +1123,8 @@ void CanvasFile::SyncCanvasViews() {
             continue;
         }
 
-        SDL_assert(app->canvasViews.contains(id.value()) && "CanvasFile references a canvas view that no longer exists");
+        SDL_assert(app->canvasViews.contains(id.value())
+                   && "CanvasFile references a canvas view that no longer exists");
         auto& canvasView = app->canvasViews.at(id.value());
         canvasView.dirty = true;
     }
@@ -1121,8 +1143,35 @@ CanvasView::CanvasView(App* app, size_t windowId, size_t canvasFileId)
 
 CanvasView::~CanvasView() = default;
 
-Error CanvasView::Init() {
+Error CanvasView::Init(size_t newId) {
     ZoneScoped;
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
+
+    id = newId;
+    width = app->windowSize.x;
+    height = app->windowSize.y;
+
+    viewport.SetRotation(0.0f);
+    viewport.SetTranslation(glm::vec2{0.0f});
+    viewport.SetZoom(glm::vec2{1.0f});
+    viewport.ComputeViewMatrix();
+
+    bool found{false};
+    for (auto& canvasViewId : canvasFile.canvasViewIds) {
+        if (!canvasViewId.has_value()) {
+            canvasViewId = newId;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return Error::OutOfCapacity;
+    }
+
+    for (const auto& [id, info] : canvasFile.layers) {
+        app->renderer.CreateLayerTexture(*this, id);
+    }
+
     return Error::None;
 }
 
@@ -1131,10 +1180,10 @@ Error CanvasView::Update() {
     auto& canvasFile = app->canvasFiles.at(canvasFileId);
 
     if (dirty) {
-        // ??? rerender the whole screen ?
         dirty = false;
     }
 
+    viewport.ComputeViewMatrix();
     const auto& visibleTiles = viewport.VisibleTiles(app->frameArena);
     for (const auto& loadedTile : canvasFile.tilesLoaded) {
         if (canvasFile.layers.at(loadedTile.layer).hidden || !viewport.IsTileVisible({loadedTile.x, loadedTile.y})) {
@@ -1160,48 +1209,81 @@ Error CanvasView::Update() {
     return Error::None;
 }
 
-Error CanvasView::Render() {
-    ZoneScoped;
-    return Error::None;
-}
-
 Error CanvasView::Quit() {
     ZoneScoped;
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
+
+    const auto& visibleTiles = viewport.VisibleTiles(app->frameArena);
+    for (const auto& loadedTile : canvasFile.tilesLoaded) {
+        if (canvasFile.layers.at(loadedTile.layer).hidden || !viewport.IsTileVisible({loadedTile.x, loadedTile.y})) {
+            UnloadTile(loadedTile);
+        }
+    }
+
+    for (const auto& [id, info] : canvasFile.layers) {
+        app->renderer.DestroyLayerTexture(*this, id);
+    }
+
+    for (auto& canvasViewId : canvasFile.canvasViewIds) {
+        if (id == canvasViewId) {
+            canvasViewId = std::nullopt;
+        }
+    }
+
     return Error::None;
 }
 
 Error CanvasView::Resize(int newWidth, int newHeight) {
     ZoneScoped;
+
+    width = newWidth;
+    height = newHeight;
+
+    viewport.Resize(glm::vec2{width, height});
+
+    app->renderer.ResizeCanvasView(*this);
+
     return Error::None;
 }
 
 Error CanvasView::Move(int newX, int newY) {
     ZoneScoped;
-    return Error::None;
-}
 
-Error CanvasView::HideLayer(Layer layer, bool hide) {
-    ZoneScoped;
-    return Error::None;
-}
+    x = newX;
+    y = newY;
 
-Error CanvasView::LockLayer(Layer layer, bool lock) {
-    ZoneScoped;
     return Error::None;
 }
 
 Error CanvasView::SelectLayer(Layer layer) {
     ZoneScoped;
+
+    selectedLayer = layer;
+
+    return Error::None;
+}
+
+Error CanvasView::DeselectedLayer(Layer layer) {
+    ZoneScoped;
+
+    if (selectedLayer == layer) {
+        selectedLayer = std::nullopt;
+    }
+
     return Error::None;
 }
 
 Error CanvasView::LoadTile(Tile tile) {
     ZoneScoped;
+
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
+
     return Error::None;
 }
 
 Error CanvasView::UnloadTile(Tile tile) {
     ZoneScoped;
+    auto& canvasFile = app->canvasFiles.at(canvasFileId);
     return Error::None;
 }
 

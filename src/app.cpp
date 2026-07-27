@@ -1,4 +1,5 @@
 ﻿#include "app.hpp"
+#include "errors.hpp"
 #include "states.hpp"
 
 #include <SDL3/SDL_log.h>
@@ -80,7 +81,9 @@ bool App::Init() {
     };
     ImGui_ImplSDLGPU3_Init(&initInfo);
 
-    const auto canvasFile = canvasFiles.emplace(this);
+    const auto canvasFileId = canvasFiles.emplace(this);
+    auto& canvasFile = canvasFiles.at(canvasFileId);
+    canvasFile.Init(canvasFileId);
 
 #ifdef NDEBUG
     const std::string path = SDL_GetPrefPath(nullptr, "midori");
@@ -89,15 +92,19 @@ bool App::Init() {
 #endif
     auto filename = std::format("{}file.mido", path);
     if (std::filesystem::exists(filename)) {
-        canvasFiles.at(canvasFile).Open(filename);
+        canvasFile.Open(filename);
     } else {
-        canvasFiles.at(canvasFile).New();
-        canvasFiles.at(canvasFile).SaveAs(filename);
+        canvasFile.New();
+        canvasFile.SaveAs(filename);
     }
 
-    currentCanvasView = canvasViews.emplace(this, 0, canvasFile);
-    canvasViews.at(currentCanvasView.value()).Init();
-    canvasViews.at(currentCanvasView.value()).Resize(windowSize.x, windowSize.y);
+    currentCanvasView = canvasViews.emplace(this, 0, canvasFileId);
+    auto& canvasView = canvasViews.at(currentCanvasView.value());
+    if (auto err = canvasView.Init(currentCanvasView.value()); err != Error::None) {
+        return false;
+    }
+    canvasView.Resize(windowSize.x, windowSize.y);
+    canvasView.SelectLayer(canvasFile.layersTree[0]);
 
     return true;
 }
@@ -347,13 +354,17 @@ void App::Update() {
         canvasFile.Update();
     }
 
-    for (auto [id, canvasView] : canvasViews) {
-        canvasView.Update();
+    renderer.Update();
+
+    for (auto [id, canvasFile] : canvasFiles) {
+        canvasFile.Update();
     }
 
-    // canvas.Update();
-    renderer.Update();
-    renderer.Render();
+    for (auto [id, canvasView] : canvasViews) {
+        // TODO do only if needed
+        canvasView.Update();
+        renderer.RenderCanvasView(canvasView);
+    }
 }
 
 bool App::Resize(const int width, const int height) {
@@ -362,12 +373,9 @@ bool App::Resize(const int width, const int height) {
     windowSize.y = height;
 
     if (windowSize.x > 0 || windowSize.y > 0) {
-        if (!renderer.Resize()) {
-            return false;
-        }
-
+        // TODO: do it per window
         for (auto [id, canvasView] : canvasViews) {
-            canvasView.Update();
+            canvasView.Resize(windowSize.x, windowSize.y);
         }
         // canvas.viewport.Resize(glm::vec2(windowSize));
     }

@@ -29,7 +29,7 @@ struct Window {
     explicit Window(App* app, const CreateInfo& createInfo);
     ~Window();
 
-    // void Init();
+    // void Init(size_t newId);
     // void Update();
     // void Render();
     // void Close();
@@ -46,6 +46,7 @@ struct Window {
 
     App* app;
     SDL_Window* window{};
+    size_t id;
     int x{};
     int y{};
     int width{};

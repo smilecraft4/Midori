@@ -560,18 +560,6 @@ struct thread_pool {
     bool stop_{};
 };
 
-// template<typename Vec, typename T>
-// bool PushUnique(Vec& vec, const T& value) {
-//     for (const auto& elem : vec) {
-//         if (elem == value) {
-//             return false;
-//         }
-//     }
-//     vec.push_back(value);
-//     return true;
-// }
-//
-
 template<typename T>
 concept Hashable = requires(const T& a) {
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
@@ -913,7 +901,7 @@ struct hash_set {
 
         Iterator() = default;
 
-        Iterator(hash_set* set, bool end) : set(set) {
+        Iterator(const hash_set* set, bool end) : set(set) {
             if (!set->capacity_) {
                 return;
             }
@@ -970,17 +958,17 @@ struct hash_set {
 
         // bool operator!=(const Iterator& other) const { return !(*this == other); }
 
-        hash_set* set{};
+        const hash_set* set{};
         size_t pos{};
     };
 
-    using const_iterator = Iterator;
-    using const_reverse_iterator = std::reverse_iterator<Iterator>;
+    using const_iterator = const Iterator;
+    using const_reverse_iterator = const std::reverse_iterator<Iterator>;
 
-    const_iterator begin() noexcept { return const_iterator(this, false); }
-    const_iterator end() noexcept { return const_iterator(this, true); }
-    const_reverse_iterator rbegin() noexcept { return const_reverse_iterator{end()}; }
-    const_reverse_iterator rend() noexcept { return const_reverse_iterator{begin()}; }
+    const_iterator begin() const noexcept { return const_iterator(this, false); }
+    const_iterator end() const noexcept { return const_iterator(this, true); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator{end()}; }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator{begin()}; }
 };
 static_assert(std::bidirectional_iterator<hash_set<int>::Iterator>);
 static_assert(std::ranges::bidirectional_range<hash_set<int>>);

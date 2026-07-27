@@ -29,12 +29,6 @@
 layout(set = 2, binding = 0) uniform Merge {
     uint src_blend_mode;
     float src_opacity;
-    ivec2 src_start;
-    ivec2 src_size;
-    float dst_opacity;
-    uint dst_blend_mode;
-    ivec2 dst_pos;
-    ivec2 dst_size;
 };
 
 layout(set = 0, binding = 0) uniform sampler2D src_tex;

@@ -59,10 +59,8 @@ struct PaintState {
     void DrawUI() const;
 
     App* app;
-    Layer strokeLayer;
+    std::optional<Layer> strokeLayer;
     StrokePoint previousPoint{};
-    hash_set<Tile, arena_allocator<Tile>> strokeTileAffected;
-    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints;
 };
 
 struct EraseState {
@@ -73,8 +71,6 @@ struct EraseState {
 
     App* app;
     StrokePoint previousPoint{};
-    hash_set<Tile, arena_allocator<Tile>> strokeTileAffected;
-    std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints;
 };
 
 /*

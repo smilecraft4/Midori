@@ -4,6 +4,7 @@
 #include "base.hpp"
 #include "canvas.hpp"
 #include "defines.hpp"
+#include "errors.hpp"
 #include "states.hpp"
 #include "tiles.hpp"
 
@@ -254,8 +255,8 @@ bool Renderer::InitLayers() {
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
     };
-    canvasTexture = SDL_CreateGPUTexture(device, &canvasTextureCreateInfo);
-    if (canvasTexture == nullptr) {
+    canvasViewTexture = SDL_CreateGPUTexture(device, &canvasTextureCreateInfo);
+    if (canvasViewTexture == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to base canvas texture");
         return false;
     }
@@ -518,7 +519,7 @@ bool Renderer::InitPaint() {
 
     const SDL_GPUBufferCreateInfo bufferCreateInfo = {
         .usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,
-        .size = STROKE_MAX_POINTS * sizeof(Canvas::StrokePoint),
+        .size = STROKE_MAX_POINTS * sizeof(StrokePoint),
     };
     paintStrokePointBuffer = SDL_CreateGPUBuffer(device, &bufferCreateInfo);
     if (paintStrokePointBuffer == nullptr) {
@@ -528,7 +529,7 @@ bool Renderer::InitPaint() {
 
     const SDL_GPUTransferBufferCreateInfo uploadBufferCreateInfo = {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-        .size = STROKE_MAX_POINTS * sizeof(Canvas::StrokePoint),
+        .size = STROKE_MAX_POINTS * sizeof(StrokePoint),
     };
     paintStrokePointTransferBuffer = SDL_CreateGPUTransferBuffer(device, &uploadBufferCreateInfo);
     if (paintStrokePointTransferBuffer == nullptr) {
@@ -661,10 +662,6 @@ bool Renderer::Update() {
         return false;
     }
 
-    if (!UpdateTileEdit()) {
-        return false;
-    }
-
     return true;
 }
 
@@ -726,7 +723,7 @@ bool Renderer::UpdateUninitializedTextures() {
     return true;
 }
 
-std::optional<Renderer::TileTextureUpload> Renderer::ReserveTileTextureUpload(Tile tile) {
+std::optional<Renderer::TileTextureUpload> Renderer::ReserveTileTextureUpload(const CanvasFile& file, Tile tile) {
     ZoneScoped;
     for (size_t i = 0; i < tileUploadSlots.size(); i++) {
         if (tileUploadSlots[i].state.load(std::memory_order_relaxed) == TextureUploadState::None) {
@@ -739,14 +736,14 @@ std::optional<Renderer::TileTextureUpload> Renderer::ReserveTileTextureUpload(Ti
 }
 
 // / Do this directly inside the worker threads
-bool Renderer::FreeTileTextureUpload(TileTextureUpload slot) {
+bool Renderer::FreeTileTextureUpload(const CanvasFile& file, TileTextureUpload slot) {
     ZoneScoped;
     SDL_assert(slot < tileUploadSlots.size() && "Upload slot out of range");
     tileUploadSlots[slot].state.store(TextureUploadState::None, std::memory_order_relaxed);
     return true;
 }
 
-bool Renderer::CommitTileTextureUpload(TileTextureUpload slot) {
+bool Renderer::CommitTileTextureUpload(const CanvasFile& file, TileTextureUpload slot) {
     ZoneScoped;
     SDL_assert(slot < tileUploadSlots.size() && "Upload slot out of range");
     SDL_assert(tileUploadSlots[slot].state == TextureUploadState::Reserved && "Upload slot was not reserved");
@@ -755,7 +752,7 @@ bool Renderer::CommitTileTextureUpload(TileTextureUpload slot) {
     return true;
 }
 
-Renderer::TileTextureUploadInfo& Renderer::GetTileTextureUploadInfo(TileTextureUpload slot) {
+Renderer::TileTextureUploadInfo& Renderer::GetTileTextureUploadInfo(const CanvasFile& file, TileTextureUpload slot) {
     ZoneScoped;
     SDL_assert(slot < tileUploadSlots.size() && "Upload slot out of range");
     return tileUploadSlots[slot];
@@ -849,7 +846,7 @@ bool Renderer::UpdateTileTextureUpload() {
     return true;
 }
 
-std::optional<Renderer::TileTextureDownload> Renderer::DownloadTileTexture(Tile tile) {
+std::optional<Renderer::TileTextureDownload> Renderer::DownloadTileTexture(const CanvasFile& file, Tile tile) {
     ZoneScoped;
     for (size_t i = 0; i < tileDownloadSlots.size(); i++) {
         if (tileDownloadSlots[i].state.load(std::memory_order_relaxed) == TextureDownloadState::None) {
@@ -862,7 +859,7 @@ std::optional<Renderer::TileTextureDownload> Renderer::DownloadTileTexture(Tile 
     return std::nullopt;
 }
 
-bool Renderer::QueryTileTextureDownload(TileTextureDownload slot) {
+bool Renderer::QueryTileTextureDownload(const CanvasFile& file, TileTextureDownload slot) {
     ZoneScoped;
     SDL_assert(slot < tileDownloadSlots.size() && "Download slot out of range");
     if (tileDownloadSlots[slot].state.load(std::memory_order_relaxed) == TextureDownloadState::Downloading) {
@@ -873,14 +870,15 @@ bool Renderer::QueryTileTextureDownload(TileTextureDownload slot) {
     return false;
 }
 
-bool Renderer::FreeTileTextureDownload(TileTextureDownload slot) {
+bool Renderer::FreeTileTextureDownload(const CanvasFile& file, TileTextureDownload slot) {
     ZoneScoped;
     SDL_assert(slot < tileDownloadSlots.size() && "Download slot out of range");
     tileDownloadSlots[slot].state.store(TextureDownloadState::None, std::memory_order_relaxed);
     return true;
 }
 
-Renderer::TileTextureDownloadInfo& Renderer::GetTileTextureDownloadInfo(TileTextureDownload slot) {
+Renderer::TileTextureDownloadInfo& Renderer::GetTileTextureDownloadInfo(const CanvasFile& file,
+                                                                        TileTextureDownload slot) {
     ZoneScoped;
     SDL_assert(slot < tileDownloadSlots.size() && "Download slot out of range");
     return tileDownloadSlots[slot];
@@ -956,145 +954,192 @@ bool Renderer::UpdateTileTextureDownload() {
     return true;
 }
 
-bool Renderer::UpdateTileEdit() {
+Error Renderer::PaintTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, std::span<StrokePoint> points) {
     ZoneScoped;
+    SDL_assert(points.size() < STROKE_MAX_POINTS);
 
-    if (app->canvas.currentToolState != ToolState::Started) {
-        return true;
+    if (tiles.empty() || points.empty()) {
+        return Error::None;
     }
 
-    if (!app->canvas.strokePoints.empty() && !app->canvas.strokeTileAffected.empty()) {
-        std::memset(paintStrokePointTransferBufferPtr, 0, STROKE_MAX_POINTS * sizeof(Canvas::StrokePoint));
-        std::memcpy(paintStrokePointTransferBufferPtr, app->canvas.strokePoints.data(),
-                    app->canvas.strokePoints.size() * sizeof(Canvas::StrokePoint));
+    std::memset(paintStrokePointTransferBufferPtr, 0, STROKE_MAX_POINTS * sizeof(StrokePoint));
+    std::memcpy(paintStrokePointTransferBufferPtr, points.data(), points.size_bytes());
 
-        SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(device);
-        if (commandBuffer == nullptr) {
-            SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
-            return false;
-        }
-
-        // Copying data to the storage buffer
-        SDL_GPUCopyPass* strokeCopyPass = SDL_BeginGPUCopyPass(commandBuffer);
-
-        const SDL_GPUTransferBufferLocation source = {
-            .transfer_buffer = paintStrokePointTransferBuffer,
-            .offset = 0,
-        };
-        const SDL_GPUBufferRegion destination = {
-            .buffer = paintStrokePointBuffer,
-            .offset = 0,
-            .size = static_cast<Uint32>(app->canvas.strokePoints.size() * sizeof(Canvas::StrokePoint)),
-        };
-
-        SDL_UploadToGPUBuffer(strokeCopyPass, &source, &destination, true);
-        SDL_EndGPUCopyPass(strokeCopyPass);
-
-        const StrokeRenderData strokeRenderData = {
-            .pointsNum = static_cast<std::uint32_t>(app->canvas.strokePoints.size()),
-        };
-
-        SDL_PushGPUComputeUniformData(commandBuffer, 0, &strokeRenderData, sizeof(StrokeRenderData));
-        const glm::ivec2 paintComputeInvocations = glm::ceil(glm::vec2(TILE_WIDTH / 32.0f, TILE_HEIGHT / 32.0f));
-        for (const auto& tile : app->canvas.strokeTileAffected) {
-            if (!tileTextures.contains(tile)) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to get tile texture to paint");
-                continue;
-            }
-
-            SDL_assert(tileTextures.at(tile) && "Tile texture is null");
-            const SDL_GPUStorageTextureReadWriteBinding paintTileBinding[1] = {{
-                .texture = tileTextures.at(tile),
-                .mip_level = 0,
-                .layer = 0,
-            }};
-            // TODO move this higher in the scope
-            switch (app->canvas.currentTool) {
-                case Tool::Paint: {
-                    SDL_GPUComputePass* paintComputePass =
-                        SDL_BeginGPUComputePass(commandBuffer, paintTileBinding, 1, nullptr, 0);
-                    SDL_BindGPUComputePipeline(paintComputePass, paintComputePipeline);
-
-                    tileRenderData.position.x = tile.x;
-                    tileRenderData.position.y = tile.y;
-                    tileRenderData.size = glm::vec2(TILE_WIDTH, TILE_WIDTH);
-                    SDL_PushGPUComputeUniformData(commandBuffer, 1, &tileRenderData, sizeof(TileRenderData));
-
-                    SDL_GPUTextureSamplerBinding samplerBinding = {
-                        .texture = brushTexture,
-                        .sampler = brushSampler,
-                    };
-                    SDL_BindGPUComputeSamplers(paintComputePass, 0, &samplerBinding, 1);
-
-                    SDL_BindGPUComputeStorageBuffers(paintComputePass, 0, &paintStrokePointBuffer, 1);
-
-                    SDL_DispatchGPUCompute(paintComputePass, paintComputeInvocations.x, paintComputeInvocations.y, 1);
-
-                    SDL_EndGPUComputePass(paintComputePass);
-                } break;
-                case Tool::Erase: {
-                    SDL_GPUComputePass* eraseComputePass =
-                        SDL_BeginGPUComputePass(commandBuffer, paintTileBinding, 1, nullptr, 0);
-                    SDL_BindGPUComputePipeline(eraseComputePass, eraseComputePipeline);
-
-                    tileRenderData.position.x = tile.x;
-                    tileRenderData.position.y = tile.y;
-                    tileRenderData.size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
-                    SDL_PushGPUComputeUniformData(commandBuffer, 1, &tileRenderData, sizeof(TileRenderData));
-
-                    SDL_GPUTextureSamplerBinding samplerBinding = {
-                        .texture = brushTexture,
-                        .sampler = brushSampler,
-                    };
-                    SDL_BindGPUComputeSamplers(eraseComputePass, 0, &samplerBinding, 1);
-
-                    SDL_BindGPUComputeStorageBuffers(eraseComputePass, 0, &paintStrokePointBuffer, 1);
-
-                    SDL_DispatchGPUCompute(eraseComputePass, paintComputeInvocations.x, paintComputeInvocations.y, 1);
-
-                    SDL_EndGPUComputePass(eraseComputePass);
-                }
-                default:
-                    break;
-            }
-        }
-        app->canvas.strokeTileAffected.clear();
-        app->canvas.strokePoints.clear();
-
-        if (tileEditFence) {
-            SDL_WaitForGPUFences(device, true, &tileEditFence, 1);
-            SDL_ReleaseGPUFence(device, tileEditFence);
-            tileEditFence = nullptr;
-        }
-        tileEditFence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-        if (tileEditFence == nullptr) {
-            SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
-            return false;
-        }
+    SDL_GPUCommandBuffer* cmdBuf = SDL_AcquireGPUCommandBuffer(device);
+    if (!cmdBuf) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
+        return Error::Unknown;
     }
 
-    return true;
+    SDL_GPUCopyPass* strokeCopyPass = SDL_BeginGPUCopyPass(cmdBuf);
+
+    const SDL_GPUTransferBufferLocation source = {
+        .transfer_buffer = paintStrokePointTransferBuffer,
+        .offset = 0,
+    };
+    const SDL_GPUBufferRegion destination = {
+        .buffer = paintStrokePointBuffer,
+        .offset = 0,
+        .size = static_cast<Uint32>(points.size_bytes()),
+    };
+
+    SDL_UploadToGPUBuffer(strokeCopyPass, &source, &destination, true);
+    SDL_EndGPUCopyPass(strokeCopyPass);
+
+    const StrokeRenderData strokeRenderData = {
+        .pointsNum = static_cast<std::uint32_t>(points.size()),
+    };
+
+    SDL_PushGPUComputeUniformData(cmdBuf, 0, &strokeRenderData, sizeof(StrokeRenderData));
+    const glm::ivec2 paintComputeInvocations = glm::ceil(glm::vec2(TILE_WIDTH / 32.0f, TILE_HEIGHT / 32.0f));
+    for (const auto& tile : tiles) {
+        if (!tileTextures.contains(tile)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to get tile texture to paint");
+            continue;
+        }
+
+        SDL_assert(tileTextures.at(tile) && "Tile texture is null");
+        const SDL_GPUStorageTextureReadWriteBinding paintTileBinding[1] = {{
+            .texture = tileTextures.at(tile),
+            .mip_level = 0,
+            .layer = 0,
+        }};
+
+        SDL_GPUComputePass* paintComputePass = SDL_BeginGPUComputePass(cmdBuf, paintTileBinding, 1, nullptr, 0);
+        SDL_BindGPUComputePipeline(paintComputePass, paintComputePipeline);
+
+        tileRenderData.position.x = tile.x;
+        tileRenderData.position.y = tile.y;
+        tileRenderData.size = glm::vec2(TILE_WIDTH, TILE_WIDTH);
+        SDL_PushGPUComputeUniformData(cmdBuf, 1, &tileRenderData, sizeof(TileRenderData));
+
+        SDL_GPUTextureSamplerBinding samplerBinding = {
+            .texture = brushTexture,
+            .sampler = brushSampler,
+        };
+        SDL_BindGPUComputeSamplers(paintComputePass, 0, &samplerBinding, 1);
+        SDL_BindGPUComputeStorageBuffers(paintComputePass, 0, &paintStrokePointBuffer, 1);
+        SDL_DispatchGPUCompute(paintComputePass, paintComputeInvocations.x, paintComputeInvocations.y, 1);
+        SDL_EndGPUComputePass(paintComputePass);
+    }
+
+    if (tileEditFence) {
+        SDL_WaitForGPUFences(device, true, &tileEditFence, 1);
+        SDL_ReleaseGPUFence(device, tileEditFence);
+        tileEditFence = nullptr;
+    }
+    tileEditFence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdBuf);
+    if (tileEditFence == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
+        return Error::Unknown;
+    }
+
+    return Error::None;
 }
 
-bool Renderer::Render() {
+Error Renderer::EraseTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, std::span<StrokePoint> points) {
     ZoneScoped;
+    SDL_assert(points.size() < STROKE_MAX_POINTS);
+
+    if (tiles.empty() || points.empty()) {
+        return Error::None;
+    }
+
+    std::memset(paintStrokePointTransferBufferPtr, 0, STROKE_MAX_POINTS * sizeof(StrokePoint));
+    std::memcpy(paintStrokePointTransferBufferPtr, points.data(), points.size_bytes());
+
+    SDL_GPUCommandBuffer* cmdBuf = SDL_AcquireGPUCommandBuffer(device);
+    if (!cmdBuf) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
+        return Error::Unknown;
+    }
+
+    SDL_GPUCopyPass* strokeCopyPass = SDL_BeginGPUCopyPass(cmdBuf);
+
+    const SDL_GPUTransferBufferLocation source = {
+        .transfer_buffer = paintStrokePointTransferBuffer,
+        .offset = 0,
+    };
+    const SDL_GPUBufferRegion destination = {
+        .buffer = paintStrokePointBuffer,
+        .offset = 0,
+        .size = static_cast<Uint32>(points.size_bytes()),
+    };
+
+    SDL_UploadToGPUBuffer(strokeCopyPass, &source, &destination, true);
+    SDL_EndGPUCopyPass(strokeCopyPass);
+
+    const StrokeRenderData strokeRenderData = {
+        .pointsNum = static_cast<std::uint32_t>(points.size()),
+    };
+
+    SDL_PushGPUComputeUniformData(cmdBuf, 0, &strokeRenderData, sizeof(StrokeRenderData));
+    const glm::ivec2 paintComputeInvocations = glm::ceil(glm::vec2(TILE_WIDTH / 32.0f, TILE_HEIGHT / 32.0f));
+    for (const auto& tile : tiles) {
+        if (!tileTextures.contains(tile)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to get tile texture to paint");
+            continue;
+        }
+
+        SDL_assert(tileTextures.at(tile) && "Tile texture is null");
+        const SDL_GPUStorageTextureReadWriteBinding paintTileBinding[1] = {{
+            .texture = tileTextures.at(tile),
+            .mip_level = 0,
+            .layer = 0,
+        }};
+
+        SDL_GPUComputePass* eraseComputePass = SDL_BeginGPUComputePass(cmdBuf, paintTileBinding, 1, nullptr, 0);
+        SDL_BindGPUComputePipeline(eraseComputePass, eraseComputePipeline);
+
+        tileRenderData.position.x = tile.x;
+        tileRenderData.position.y = tile.y;
+        tileRenderData.size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
+        SDL_PushGPUComputeUniformData(cmdBuf, 1, &tileRenderData, sizeof(TileRenderData));
+
+        SDL_GPUTextureSamplerBinding samplerBinding = {
+            .texture = brushTexture,
+            .sampler = brushSampler,
+        };
+        SDL_BindGPUComputeSamplers(eraseComputePass, 0, &samplerBinding, 1);
+        SDL_BindGPUComputeStorageBuffers(eraseComputePass, 0, &paintStrokePointBuffer, 1);
+        SDL_DispatchGPUCompute(eraseComputePass, paintComputeInvocations.x, paintComputeInvocations.y, 1);
+        SDL_EndGPUComputePass(eraseComputePass);
+    }
+
+    if (tileEditFence) {
+        SDL_WaitForGPUFences(device, true, &tileEditFence, 1);
+        SDL_ReleaseGPUFence(device, tileEditFence);
+        tileEditFence = nullptr;
+    }
+    tileEditFence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdBuf);
+    if (tileEditFence == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
+        return Error::Unknown;
+    }
+
+    return Error::None;
+}
+
+Error Renderer::RenderCanvasView(const CanvasView& canvasView) {
+    ZoneScoped;
+
     SDL_GPUCommandBuffer* commandBuffer = nullptr;
     SDL_GPUTexture* swapchainTexture = nullptr;
 
-    // Start painting the tiles
     if (app->windowSize.x > 0 && app->windowSize.y > 0 && !app->hidden) {
-        viewportRenderData.view = app->canvas.viewport.ViewMatrix();
+        const auto& canvasFile = app->canvasFiles.at(canvasView.canvasFileId);
+        viewportRenderData.view = canvasView.viewport.ViewMatrix();
 
         commandBuffer = SDL_AcquireGPUCommandBuffer(device);
         if (commandBuffer == nullptr) {
             SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire gpu command buffer: %s", SDL_GetError());
-            return false;
+            return Error::Unknown;
         }
 
         { // Tile Rendering
             ZoneScopedN("Rendering Tile");
-            for (const auto& layer : app->canvas.layersTree) {
-                const auto& layerInfo = app->canvas.layers.at(layer);
+            for (const auto& layer : canvasFile.layersTree) {
+                const auto& layerInfo = canvasFile.layers.at(layer);
                 if (layerInfo.hidden || layerInfo.opacity <= 0.0f) {
                     continue;
                 }
@@ -1114,7 +1159,7 @@ bool Renderer::Render() {
 
                 SDL_PushGPUVertexUniformData(commandBuffer, 0, &viewportRenderData, sizeof(ViewportRenderData));
 
-                for (const auto& tile : app->canvas.tilesLoaded) {
+                for (const auto& tile : canvasFile.tilesLoaded) {
                     if (tile.layer != layer) {
                         continue;
                     }
@@ -1147,7 +1192,7 @@ bool Renderer::Render() {
             rgb *= app->bgColor.a;
 
             const SDL_GPUColorTargetInfo targetInfo = {
-                .texture = canvasTexture,
+                .texture = canvasViewTexture,
                 .clear_color = SDL_FColor{.r = rgb.r, .g = rgb.g, .b = rgb.b, .a = app->bgColor.a},
                 .load_op = SDL_GPU_LOADOP_CLEAR,
                 .store_op = SDL_GPU_STOREOP_STORE,
@@ -1159,26 +1204,18 @@ bool Renderer::Render() {
             MergeRenderData mergeRenderData = {
                 .srcBlendMode = static_cast<std::uint32_t>(BlendMode::Alpha),
                 .srcOpacity = 1.0f,
-                .srcPos = glm::vec2(0.0),
-                .srcSize = app->windowSize,
-                .dstPos = glm::vec2(0.0),
-                .dstSize = app->windowSize,
             };
             const SDL_GPUStorageTextureReadWriteBinding mergeLayerBinding[1] = {{
-                .texture = canvasTexture,
+                .texture = canvasViewTexture,
                 .mip_level = 0,
                 .layer = 0,
             }};
             SDL_GPUComputePass* mergeComputePass =
                 SDL_BeginGPUComputePass(commandBuffer, mergeLayerBinding, 1, nullptr, 0);
-            if (mergeComputePass == nullptr) {
-                SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to create merge compute pass: %s", SDL_GetError());
-                return false;
-            }
             SDL_BindGPUComputePipeline(mergeComputePass, mergeComputePipeline);
 
-            for (const auto& layer : app->canvas.layersTree) {
-                const auto& layerInfo = app->canvas.layers.at(layer);
+            for (const auto& layer : canvasFile.layersTree) {
+                const auto& layerInfo = canvasFile.layers.at(layer);
                 if (layerInfo.hidden || layerInfo.opacity <= 0.0f) {
                     continue;
                 }
@@ -1204,7 +1241,7 @@ bool Renderer::Render() {
             SDL_WaitAndAcquireGPUSwapchainTexture(commandBuffer, app->window, &swapchainTexture, nullptr, nullptr);
             if (swapchainTexture == nullptr) {
                 SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to acquire swapchain texture: %s", SDL_GetError());
-                return false;
+                return Error::Unknown;
             }
         }
         {
@@ -1219,13 +1256,11 @@ bool Renderer::Render() {
             SDL_BindGPUGraphicsPipeline(renderPass, layerGraphicsPipeline);
 
             const SDL_GPUTextureSamplerBinding samplers[] = {{
-                .texture = canvasTexture,
+                .texture = canvasViewTexture,
                 .sampler = layerSampler,
             }};
             SDL_BindGPUFragmentSamplers(renderPass, 0, samplers, 1);
-
             SDL_DrawGPUPrimitives(renderPass, 3, 1, 0, 0);
-
             SDL_EndGPURenderPass(renderPass);
         }
 
@@ -1249,52 +1284,54 @@ bool Renderer::Render() {
             auto* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
             if (fence == nullptr) {
                 SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
-                return false;
+                return Error::Unknown;
             }
             SDL_WaitForGPUFences(device, true, &fence, 1);
             SDL_ReleaseGPUFence(device, fence);
         }
     }
 
-    return true;
+    return Error::Unknown;
 }
 
-bool Renderer::Resize() {
+Error Renderer::ResizeCanvasView(const CanvasView& canvasView) {
     ZoneScoped;
-    viewportRenderData.projection =
-        glm::ortho(-std::floor((float)app->windowSize.x / 2.0f), std::ceil((float)app->windowSize.x / 2.0f),
-                   -std::floor((float)app->windowSize.y / 2.0f), std::ceil((float)app->windowSize.y / 2.0f));
 
-    std::vector<Layer> layers;
+    viewportRenderData.projection = glm::ortho(-std::floor(static_cast<float>(canvasView.width) / 2.0f),
+                                               std::ceil(static_cast<float>(canvasView.width) / 2.0f),
+                                               -std::floor(static_cast<float>(canvasView.height) / 2.0f),
+                                               std::ceil(static_cast<float>(canvasView.height) / 2.0f));
+
+    std::vector<Layer, arena_allocator<Layer>> layers(app->frameArena);
     layers.reserve(layerTextures.size());
     for (const auto& [layer, texture] : layerTextures) {
         layers.push_back(layer);
     }
 
-    SDL_ReleaseGPUTexture(device, canvasTexture);
+    SDL_ReleaseGPUTexture(device, canvasViewTexture);
     const SDL_GPUTextureCreateInfo canvasTextureCreateInfo = {
         .type = SDL_GPU_TEXTURETYPE_2D,
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET
                | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE,
-        .width = static_cast<Uint32>(app->windowSize.x),
-        .height = static_cast<Uint32>(app->windowSize.y),
+        .width = static_cast<Uint32>(canvasView.width),
+        .height = static_cast<Uint32>(canvasView.height),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
     };
-    canvasTexture = SDL_CreateGPUTexture(device, &canvasTextureCreateInfo);
-    if (canvasTexture == nullptr) {
+    canvasViewTexture = SDL_CreateGPUTexture(device, &canvasTextureCreateInfo);
+    if (canvasViewTexture == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create canvas layer texture");
-        return false;
+        return Error::Unknown;
     }
 
     for (auto layer : layers) {
-        DestroyLayerTexture(layer);
-        CreateLayerTexture(layer);
+        DestroyLayerTexture(canvasView, layer);
+        CreateLayerTexture(canvasView, layer);
     }
 
-    return true;
+    return Error::None;
 }
 
 bool Renderer::CanQuit() {
@@ -1330,7 +1367,7 @@ void Renderer::Quit() {
     for (const auto& [layer, texture] : layerTextures) {
         SDL_ReleaseGPUTexture(device, texture);
     }
-    SDL_ReleaseGPUTexture(device, canvasTexture);
+    SDL_ReleaseGPUTexture(device, canvasViewTexture);
     SDL_ReleaseGPUSampler(device, layerSampler);
     SDL_ReleaseGPUGraphicsPipeline(device, layerGraphicsPipeline);
 
@@ -1340,18 +1377,18 @@ void Renderer::Quit() {
     device = nullptr;
 }
 
-bool Renderer::CreateLayerTexture(const Layer layer) {
+bool Renderer::CreateLayerTexture(const CanvasView& view, const Layer layer) {
     ZoneScoped;
     SDL_assert(!layerTextures.contains(layer) && "Layer already has a gpu texture");
-    SDL_assert(app->windowSize.x > 0 && "Cannot size a layer texture to a zero width window");
-    SDL_assert(app->windowSize.y > 0 && "Cannot size a layer texture to a zero height window");
+    SDL_assert(view.width > 0 && "Cannot size a layer texture to a zero width window");
+    SDL_assert(view.height > 0 && "Cannot size a layer texture to a zero height window");
 
     const SDL_GPUTextureCreateInfo textureCreateInfo = {
         .type = SDL_GPU_TEXTURETYPE_2D,
         .format = textureFormat,
         .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        .width = static_cast<Uint32>(app->windowSize.x),
-        .height = static_cast<Uint32>(app->windowSize.y),
+        .width = static_cast<Uint32>(view.width),
+        .height = static_cast<Uint32>(view.height),
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = SDL_GPU_SAMPLECOUNT_1,
@@ -1370,14 +1407,14 @@ bool Renderer::CreateLayerTexture(const Layer layer) {
     return true;
 }
 
-void Renderer::DestroyLayerTexture(const Layer layer) {
+void Renderer::DestroyLayerTexture(const CanvasView& view, const Layer layer) {
     ZoneScoped;
     SDL_assert(layerTextures.contains(layer) && "No gpu texture for this layer");
     SDL_ReleaseGPUTexture(device, layerTextures.at(layer));
     layerTextures.erase(layer);
 }
 
-Error Renderer::CreateUninitializedTileTexture(Tile tile) {
+Error Renderer::CreateUninitializedTileTexture(const CanvasFile& file, Tile tile) {
     ZoneScoped;
     SDL_assert(!tileTextures.contains(tile) && "Tile already has a gpu texture");
 
@@ -1406,9 +1443,9 @@ Error Renderer::CreateUninitializedTileTexture(Tile tile) {
     return Error::None;
 }
 
-Error Renderer::CreateTileTexture(Tile tile) {
+Error Renderer::CreateTileTexture(const CanvasFile& file, Tile tile) {
     ZoneScoped;
-    if (auto res = CreateUninitializedTileTexture(tile); res != Error::None) {
+    if (auto res = CreateUninitializedTileTexture(file, tile); res != Error::None) {
         return res;
     }
 
@@ -1416,7 +1453,7 @@ Error Renderer::CreateTileTexture(Tile tile) {
     return Error::None;
 }
 
-void Renderer::DestroyTileTexture(Tile tile) {
+void Renderer::DestroyTileTexture(const CanvasFile& file, Tile tile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(tile) && "Tile texture not found");
 
@@ -1429,16 +1466,13 @@ void Renderer::DestroyTileTexture(Tile tile) {
 }
 
 // TODO Transform into BeginMerge(), MergeTileTextures(), EndMerge()
-bool Renderer::MergeTileTextures(Tile overTile, Tile belowTile) {
+bool Renderer::MergeTileTextures(const CanvasFile& file, Tile overTile, Tile belowTile, MergeInfo info) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(overTile) && "No gpu texture for the over tile");
     SDL_assert(tileTextures.contains(belowTile) && "No gpu texture for the below tile");
 
     SDL_assert(tileTextures.at(overTile) && "Over tile textures is empty");
     SDL_assert(tileTextures.at(belowTile) && "Below tile textures is empty, Prefer a move");
-
-    const auto& overLayerInfo = app->canvas.layers.at(overTile.layer);
-    const auto& belowLayerInfo = app->canvas.layers.at(belowTile.layer);
 
     SDL_GPUCommandBuffer* commandBuffer = nullptr;
     { // Acquire GPU command buffer
@@ -1455,12 +1489,8 @@ bool Renderer::MergeTileTextures(Tile overTile, Tile belowTile) {
         ZoneScopedN("Layer blending and rendering");
         const glm::ivec2 mergeComputeInvocations = glm::ceil(TILE_SIZE / 32.0f);
         MergeRenderData mergeRenderData = {
-            .srcBlendMode = static_cast<std::uint32_t>(overLayerInfo.blendMode),
-            .srcOpacity = overLayerInfo.opacity,
-            .srcPos = glm::vec2(0.0),
-            .srcSize = TILE_SIZE,
-            .dstPos = glm::vec2(0.0),
-            .dstSize = TILE_SIZE,
+            .srcBlendMode = static_cast<std::uint32_t>(info.blendMode),
+            .srcOpacity = info.opacity,
         };
         const SDL_GPUStorageTextureReadWriteBinding mergeLayerBinding[1] = {{
             .texture = tileTextures.at(belowTile),
@@ -1510,7 +1540,7 @@ bool Renderer::BeginCopyPass() {
     return true;
 }
 
-SDL_GPUTexture* Renderer::DuplicateTileTexture(Tile tile) {
+SDL_GPUTexture* Renderer::DuplicateTileTexture(const CanvasFile& file, Tile tile) {
     ZoneScoped;
     SDL_assert(tileTextures.contains(tile) && "No gpu texture for this tile");
     SDL_assert(tileTextures.at(tile) && "Tile texture is null");

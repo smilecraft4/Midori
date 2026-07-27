@@ -16,6 +16,9 @@
 namespace Midori {
 
 struct App;
+struct Window;
+struct CanvasView;
+struct CanvasFile;
 
 struct StrokePoint {
     glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -60,6 +63,15 @@ struct Renderer {
         glm::vec2 size = glm::vec2(TILE_WIDTH, TILE_HEIGHT);
     };
 
+    struct MergeRenderData {
+        std::uint32_t srcBlendMode;
+        float srcOpacity;
+    };
+
+    struct StrokeRenderData {
+        std::uint32_t pointsNum = 0;
+    };
+
     struct TileTextureDownloadInfo {
         std::atomic<TextureDownloadState> state{TextureDownloadState::None};
         Tile tile;
@@ -74,18 +86,9 @@ struct Renderer {
         size_t fence;
     };
 
-    struct MergeRenderData {
-        std::uint32_t srcBlendMode;
-        float srcOpacity;
-        glm::ivec2 srcPos;
-        glm::ivec2 srcSize;
-        glm::ivec2 dstPos;
-        glm::ivec2 dstSize;
-        uint8_t pad[8];
-    };
-
-    struct StrokeRenderData {
-        std::uint32_t pointsNum = 0;
+    struct MergeInfo {
+        BlendMode blendMode;
+        float opacity;
     };
 
     Renderer(const Renderer&) = delete;
@@ -98,8 +101,6 @@ struct Renderer {
 
     bool Init();
     bool Update();
-    bool Render();
-    bool Resize();
     bool CanQuit();
     void Quit();
 
@@ -114,29 +115,34 @@ struct Renderer {
     bool InitPaint();
 
     // TODO change the ownership of the textures to slot_map instead
-    bool CreateLayerTexture(Layer layer);
-    void DestroyLayerTexture(Layer layer);
+    bool CreateLayerTexture(const CanvasView& view, Layer layer);
+    void DestroyLayerTexture(const CanvasView& view, Layer layer);
 
-    Error CreateUninitializedTileTexture(Tile tile);
-    Error CreateTileTexture(Tile tile);
-    void DestroyTileTexture(Tile tile);
-    bool MergeTileTextures(Tile overTile, Tile belowTile);
+    Error CreateUninitializedTileTexture(const CanvasFile& file, Tile tile);
+    Error CreateTileTexture(const CanvasFile& file, Tile tile);
+    void DestroyTileTexture(const CanvasFile& file, Tile tile);
+    bool MergeTileTextures(const CanvasFile& file, Tile overTile, Tile belowTile, MergeInfo info);
 
-    std::optional<TileTextureUpload> ReserveTileTextureUpload(Tile tile);
-    bool FreeTileTextureUpload(TileTextureUpload slot);
-    bool CommitTileTextureUpload(TileTextureUpload slot);
-    TileTextureUploadInfo& GetTileTextureUploadInfo(TileTextureUpload slot);
+    std::optional<TileTextureUpload> ReserveTileTextureUpload(const CanvasFile& file, Tile tile);
+    bool FreeTileTextureUpload(const CanvasFile& file, TileTextureUpload slot);
+    bool CommitTileTextureUpload(const CanvasFile& file, TileTextureUpload slot);
+    TileTextureUploadInfo& GetTileTextureUploadInfo(const CanvasFile& file, TileTextureUpload slot);
 
-    std::optional<TileTextureDownload> DownloadTileTexture(Tile tile);
-    bool QueryTileTextureDownload(TileTextureDownload slot);
-    bool FreeTileTextureDownload(TileTextureDownload slot);
-    TileTextureDownloadInfo& GetTileTextureDownloadInfo(TileTextureDownload slot);
+    std::optional<TileTextureDownload> DownloadTileTexture(const CanvasFile& file, Tile tile);
+    bool QueryTileTextureDownload(const CanvasFile& file, TileTextureDownload slot);
+    bool FreeTileTextureDownload(const CanvasFile& file, TileTextureDownload slot);
+    TileTextureDownloadInfo& GetTileTextureDownloadInfo(const CanvasFile& file, TileTextureDownload slot);
 
     bool BeginCopyPass();
-    SDL_GPUTexture* DuplicateTileTexture(Tile tile);
+    SDL_GPUTexture* DuplicateTileTexture(const CanvasFile& file, Tile tile);
     SDL_GPUTexture* DuplicateTileTexture(SDL_GPUTexture* texture) const;
     bool EndCopyPass(bool wait);
     void CancelCopyPass();
+
+    Error RenderCanvasView(const CanvasView& canvasView);
+    Error ResizeCanvasView(const CanvasView& canvasView);
+    Error PaintTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, std::span<StrokePoint> points);
+    Error EraseTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, std::span<StrokePoint> points);
 
     // std::vector<SDL_GPUTexture*> DuplicateTileTextures(std::span<TileCoord> srcTiles);
 
@@ -160,7 +166,7 @@ struct Renderer {
     SDL_GPUDevice* device{};
     SDL_GPUTextureFormat textureFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     SDL_GPUTextureFormat swapchainFormat = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-    SDL_GPUTexture* canvasTexture{};
+    SDL_GPUTexture* canvasViewTexture{};
     std::vector<SDL_GPUTexture*> texturesToDelete;
 
     SDL_GPUCommandBuffer* currentCommandBuffer{};

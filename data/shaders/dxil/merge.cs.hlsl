@@ -6,12 +6,6 @@ RWTexture2D<float4> dst_tex : register(u0, space1);
 cbuffer MergeCB : register(b0, space2) {
     uint   src_blend_mode;
     float  src_opacity;
-    int2   src_start;
-    int2   src_size;
-    float  dst_opacity;
-    uint   dst_blend_mode;
-    int2   dst_pos;
-    int2   dst_size;
 };
 
 [numthreads(32, 32, 1)]
