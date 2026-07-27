@@ -87,8 +87,7 @@ struct CommandHistory final {
     void DrawUI();
 
     [[nodiscard]] const Command* Get(size_t index) const;
-    [[nodiscard]] size_t Index(size_t pos) const;
-    [[nodiscard]] size_t Empty() const;
+    [[nodiscard]] bool Empty() const;
     [[nodiscard]] size_t Count() const;
 
     ring_array<Command> ring;

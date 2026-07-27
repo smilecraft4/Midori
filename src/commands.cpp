@@ -89,13 +89,10 @@ void TileModificationCommand::Revert() {
 Error TileModificationCommand::TrackTile(Tile tile) {
     ZoneScoped;
 
-    // Already tracked: the same tile is touched by most points in a stroke.
     if (tileTextures.contains(tile)) {
         return Error::None;
     }
 
-    // insert() throws when the map is full, and a stroke can cover more tiles than
-    // the command has room for, so this has to be checked rather than asserted.
     if (tileTextures.full()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Cannot track tile(%u, %d, %d): command is at its %zu tile limit",
                     tile.layer, tile.x, tile.y, tileTextures.capacity());
@@ -189,7 +186,7 @@ void CommandHistory::Push(Command&& command) {
     SDL_assert(position <= ring.size() && "Untracked position in ring_arry");
     if (position < ring.size()) {
         while (ring.size() > position) {
-            ring.pop_front();
+            ring.pop_back();
         }
     }
 
@@ -202,11 +199,11 @@ void CommandHistory::Push(Command&& command) {
 }
 
 const Command* CommandHistory::Get(size_t pos) const {
-    SDL_assert(pos < ring.size());
+    SDL_assert(pos <= ring.size());
     return &ring.at(pos - 1);
 }
 
-size_t CommandHistory::Empty() const {
+bool CommandHistory::Empty() const {
     return ring.empty();
 }
 

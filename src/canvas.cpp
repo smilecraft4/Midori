@@ -284,7 +284,7 @@ Error CanvasFile::Save() {
     }
 
     for (const auto& tileModified : tilesModified) {
-        WriteTile(tileModified);
+        UnloadTile(tileModified);
     }
 
     MDB_txn* txn{};
@@ -591,6 +591,7 @@ Error CanvasFile::Update() {
         // transaction and lmdb deadlocks if a thread nests two of them.
         for (const auto tile : tilesDeleting) {
             DeleteTile(tile);
+            DestroyTile(tile);
         }
     }
 
@@ -995,7 +996,7 @@ Error CanvasFile::MarkTileDirty(Tile tile) {
     return Error::None;
 }
 
-Error CanvasFile::ReadTile(Tile tile) {
+Error CanvasFile::LoadTile(Tile tile) {
     ZoneScoped;
     SDL_assert(layers.contains(tile.layer) && "ReadTile() on a layer that does not exist");
     SDL_assert(HasTile(tile) && "ReadTile() on a tile that was never written to the file");
@@ -1028,7 +1029,7 @@ Error CanvasFile::ReadTile(Tile tile) {
     return Error::None;
 }
 
-Error CanvasFile::WriteTile(Tile tile) {
+Error CanvasFile::UnloadTile(Tile tile) {
     ZoneScoped;
 
     // FIXME This needs to be thread safe
@@ -1187,7 +1188,7 @@ Error CanvasView::Update() {
     const auto& visibleTiles = viewport.VisibleTiles(app->frameArena);
     for (const auto& loadedTile : canvasFile.tilesLoaded) {
         if (canvasFile.layers.at(loadedTile.layer).hidden || !viewport.IsTileVisible({loadedTile.x, loadedTile.y})) {
-            UnloadTile(loadedTile);
+            canvasFile.UnloadTile(loadedTile);
         }
     }
 
@@ -1201,7 +1202,7 @@ Error CanvasView::Update() {
             };
 
             if (!canvasFile.tilesLoaded.contains(tile) && layerInfo.tiles.contains(tile)) {
-                LoadTile(tile);
+                canvasFile.LoadTile(tile);
             }
         }
     }
@@ -1216,7 +1217,7 @@ Error CanvasView::Quit() {
     const auto& visibleTiles = viewport.VisibleTiles(app->frameArena);
     for (const auto& loadedTile : canvasFile.tilesLoaded) {
         if (canvasFile.layers.at(loadedTile.layer).hidden || !viewport.IsTileVisible({loadedTile.x, loadedTile.y})) {
-            UnloadTile(loadedTile);
+            canvasFile.UnloadTile(loadedTile);
         }
     }
 
@@ -1270,20 +1271,6 @@ Error CanvasView::DeselectedLayer(Layer layer) {
         selectedLayer = std::nullopt;
     }
 
-    return Error::None;
-}
-
-Error CanvasView::LoadTile(Tile tile) {
-    ZoneScoped;
-
-    auto& canvasFile = app->canvasFiles.at(canvasFileId);
-
-    return Error::None;
-}
-
-Error CanvasView::UnloadTile(Tile tile) {
-    ZoneScoped;
-    auto& canvasFile = app->canvasFiles.at(canvasFileId);
     return Error::None;
 }
 

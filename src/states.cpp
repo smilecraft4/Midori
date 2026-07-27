@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <backends/imgui_impl_sdl3.h>
 #include <imgui.h>
-#include <memory>
 #include <optional>
 #include <tracy/Tracy.hpp>
 #include <utility>
@@ -70,7 +69,7 @@ bool IsPointerMove(const App* app, const SDL_Event* event) {
 StateManager::StateManager(App* app) : app(app), current(IdleState(app)) {}
 
 void StateManager::Switch(State&& state) {
-    next = std::move(state);
+    next = state;
 }
 
 void StateManager::OnEvent(const SDL_Event* event) {
@@ -154,7 +153,7 @@ void StateManager::OnEvent(const SDL_Event* event) {
         current);
 
     if (!std::holds_alternative<std::monostate>(next)) {
-        current = std::move(next);
+        current = next;
         next = std::monostate();
     }
 }
@@ -197,9 +196,11 @@ void IdleState::OnEvent(const SDL_Event* event) {
             return;
         }
 
-        if (event->key.key == SDLK_SPACE && !event->key.repeat) {
-            app->stateManager.Switch(NavigateState(app));
-            return;
+        if (event->type == SDL_EVENT_KEY_DOWN) {
+            if (event->key.key == SDLK_SPACE && !event->key.repeat) {
+                app->stateManager.Switch(NavigateState(app));
+                return;
+            }
         }
         if (IsKeyPressed(event, SDLK_S, SDL_KMOD_CTRL)) {
             canvasFile.Save();
@@ -384,7 +385,6 @@ PaintState::PaintState(App* app) : app(app) {
     SDL_assert(canvasView.selectedLayer.has_value() && "No layer selected");
     SDL_assert(!canvasFile.currentTileCommand.has_value() && "TileModification already started");
 
-
     const auto& selectedLayerInfo = canvasFile.layers.at(canvasView.selectedLayer.value());
     LayerCreateInfo strokeLayerCreateInfo{};
     strokeLayerCreateInfo.name = "Stroke Layer";
@@ -401,7 +401,7 @@ PaintState::PaintState(App* app) : app(app) {
     app->strokeArena.reset();
     std::vector<StrokePoint, arena_allocator<StrokePoint>> strokePoints(app->strokeArena);
     std::vector<Tile, arena_allocator<Tile>> tiles(app->strokeArena);
- 
+
     canvasFile.currentTileCommand = TileModificationCommand(&canvasView, canvasView.selectedLayer.value());
 
     const auto point = MakeStrokePoint(app, canvasView.viewport, app->paintBrush);

@@ -962,6 +962,16 @@ Error Renderer::PaintTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, 
         return Error::None;
     }
 
+    if (!UpdateUninitializedTextures()) {
+        return Error::None;
+    }
+
+    if (tileEditFence) {
+        SDL_WaitForGPUFences(device, true, &tileEditFence, 1);
+        SDL_ReleaseGPUFence(device, tileEditFence);
+        tileEditFence = nullptr;
+    }
+
     std::memset(paintStrokePointTransferBufferPtr, 0, STROKE_MAX_POINTS * sizeof(StrokePoint));
     std::memcpy(paintStrokePointTransferBufferPtr, points.data(), points.size_bytes());
 
@@ -1023,11 +1033,6 @@ Error Renderer::PaintTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, 
         SDL_EndGPUComputePass(paintComputePass);
     }
 
-    if (tileEditFence) {
-        SDL_WaitForGPUFences(device, true, &tileEditFence, 1);
-        SDL_ReleaseGPUFence(device, tileEditFence);
-        tileEditFence = nullptr;
-    }
     tileEditFence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdBuf);
     if (tileEditFence == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Failed to submit gpu command buffer: %s", SDL_GetError());
@@ -1043,6 +1048,16 @@ Error Renderer::EraseTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, 
 
     if (tiles.empty() || points.empty()) {
         return Error::None;
+    }
+
+    if (!UpdateUninitializedTextures()) {
+        return Error::None;
+    }
+
+    if (tileEditFence) {
+        SDL_WaitForGPUFences(device, true, &tileEditFence, 1);
+        SDL_ReleaseGPUFence(device, tileEditFence);
+        tileEditFence = nullptr;
     }
 
     std::memset(paintStrokePointTransferBufferPtr, 0, STROKE_MAX_POINTS * sizeof(StrokePoint));

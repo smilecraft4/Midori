@@ -166,8 +166,8 @@ struct CanvasFile {
     Error DeleteTile(Tile tile);
     Error DestroyTile(Tile tile);
     Error MarkTileDirty(Tile tile);
-    Error ReadTile(Tile tile);
-    Error WriteTile(Tile tile);
+    Error LoadTile(Tile tile);
+    Error UnloadTile(Tile tile);
     Error MergeTiles(Tile srcTile, Tile dstTile);
     Error MoveTile(Tile srcTile, Tile dstTile);
     Error DuplicateTile(Tile srcTile, Tile dstTile);
@@ -212,9 +212,6 @@ struct CanvasView {
 
     Error SelectLayer(Layer layer);
     Error DeselectedLayer(Layer layer);
-
-    Error LoadTile(Tile tile);
-    Error UnloadTile(Tile tile);
 
     App* app;
     size_t id;

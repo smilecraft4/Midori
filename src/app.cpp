@@ -81,6 +81,8 @@ bool App::Init() {
     };
     ImGui_ImplSDLGPU3_Init(&initInfo);
 
+    OpenBrushes();
+
     const auto canvasFileId = canvasFiles.emplace(this);
     auto& canvasFile = canvasFiles.at(canvasFileId);
     canvasFile.Init(canvasFileId);
@@ -456,21 +458,6 @@ void App::Save() {
     for (auto [id, canvasFile] : canvasFiles) {
         canvasFile.Save();
     }
-
-    // for (const auto& [id, layer] : canvas.layers) {
-    //     if (layer.modified && !layer.internal) {
-    //         canvas.SaveLayer(id);
-    //     }
-    // }
-
-    // // FIXME Use a tmp vector/iterator to avoid invalidating ptrs
-    // for (const auto& tile : canvas.tilesModified) {
-    //     if (!canvas.tilesLoaded.contains(tile)) {
-    //         canvas.DeleteTile(tile);
-    //     } else {
-    //         canvas.SaveTile(tile);
-    //     }
-    // }
 
     saving = false;
 }
