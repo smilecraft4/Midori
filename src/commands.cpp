@@ -10,9 +10,7 @@
 namespace Midori {
 
 TileModificationCommand::TileModificationCommand(CanvasView* canvasView, Layer layer)
-    : app(canvasView->app), canvasFileId(canvasView->canvasFileId), layer(layer) {
-    SDL_assert(layer != LAYER_INVALID && "TileModificationCommand needs a real layer");
-}
+    : app(canvasView->app), canvasFileId(canvasView->canvasFileId), layer(layer) {}
 
 TileModificationCommand::~TileModificationCommand() {
     ZoneScoped;
@@ -33,25 +31,24 @@ void TileModificationCommand::Execute() {
 
     const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
-    for (auto [tile, textures] : tileTextures) {
-        if (!textures.execute) {
-            canvasFile.DestroyTile(tile);
-            canvasFile.DeleteTile(tile);
-        } else {
-            if (!canvasFile.tilesLoaded.contains(tile)) {
-                const Error err = app->renderer.CreateUninitializedTileTexture(canvasFile, tile);
-                SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
-                canvasFile.tilesLoaded.insert(tile);
-            }
+    // for (auto [tile, textures] : tileTextures) {
+    //     if (!textures.execute) {
+    //         canvasFile.DestroyTile(tile);
+    //         canvasFile.DeleteTile(tile);
+    //     } else {
+    //         if (!canvasFile.tilesLoaded.contains(tile)) {
+    //             const Error err = app->renderer.CreateUninitializedTileTexture(tile);
+    //             SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
+    //             canvasFile.tilesLoaded.insert(tile);
+    //         }
 
-            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "Tile is not loaded");
-            SDL_assert(app->renderer.tileTextures.contains(tile) && "Loaded tile has no gpu texture");
-            SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
-            SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
-            app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.execute);
-            canvasFile.MarkTileDirty(tile);
-        }
-    }
+    //         SDL_assert(canvasFile.tilesLoaded.contains(tile) && "Tile is not loaded");
+    //         SDL_assert(app->renderer.tileTextures.contains(tile) && "Loaded tile has no gpu texture");
+    //         SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
+    //         SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
+    //         app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.execute);
+    //     }
+    // }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
     SDL_assert(copyPassEnded && "Failed to submit the gpu copy pass");
 }
@@ -63,25 +60,24 @@ void TileModificationCommand::Revert() {
 
     const bool copyPassBegan = app->renderer.BeginCopyPass();
     SDL_assert(copyPassBegan && "Failed to begin the gpu copy pass");
-    for (auto [tile, textures] : tileTextures) {
-        if (!textures.revert) {
-            canvasFile.DestroyTile(tile);
-            canvasFile.DeleteTile(tile);
-        } else {
-            if (!canvasFile.tilesLoaded.contains(tile)) {
-                const Error err = app->renderer.CreateUninitializedTileTexture(canvasFile, tile);
-                SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
-                canvasFile.tilesLoaded.insert(tile);
-            }
+    // for (auto [tile, textures] : tileTextures) {
+    //     if (!textures.revert) {
+    //         canvasFile.DestroyTile(tile);
+    //         canvasFile.DeleteTile(tile);
+    //     } else {
+    //         if (!canvasFile.tileStates.contains(tile)) {
+    //             const Error err = app->renderer.CreateUninitializedTileTexture(tile);
+    //             SDL_assert(err == Error::None && "Failed to create the tile gpu texture");
+    //             canvasFile.tilesLoaded.insert(tile);
+    //         }
 
-            SDL_assert(canvasFile.tilesLoaded.contains(tile) && "Tile is not loaded");
-            SDL_assert(app->renderer.tileTextures.contains(tile) && "Loaded tile has no gpu texture");
-            SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
-            SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
-            app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.revert);
-            canvasFile.MarkTileDirty(tile);
-        }
-    }
+    //         SDL_assert(canvasFile.tilesLoaded.contains(tile) && "Tile is not loaded");
+    //         SDL_assert(app->renderer.tileTextures.contains(tile) && "Loaded tile has no gpu texture");
+    //         SDL_GPUTexture* originalTexture = app->renderer.tileTextures.at(tile);
+    //         SDL_ReleaseGPUTexture(app->renderer.device, originalTexture);
+    //         app->renderer.tileTextures.at(tile) = app->renderer.DuplicateTileTexture(textures.revert);
+    //     }
+    // }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
     SDL_assert(copyPassEnded && "Failed to submit the gpu copy pass");
 }
@@ -117,7 +113,7 @@ void TileModificationCommand::SaveTrackedTilesForPrevious(bool overwrite) {
             if (textures.revert) {
                 SDL_ReleaseGPUTexture(app->renderer.device, textures.revert);
             }
-            textures.revert = app->renderer.DuplicateTileTexture(canvasFile, tile);
+            textures.revert = app->renderer.DuplicateTileTexture(tile);
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);
@@ -137,7 +133,7 @@ void TileModificationCommand::SaveTrackedTilesForNew(bool overwrite) {
             if (textures.execute) {
                 SDL_ReleaseGPUTexture(app->renderer.device, textures.execute);
             }
-            textures.execute = app->renderer.DuplicateTileTexture(canvasFile, tile);
+            textures.execute = app->renderer.DuplicateTileTexture(tile);
         }
     }
     const bool copyPassEnded = app->renderer.EndCopyPass(true);

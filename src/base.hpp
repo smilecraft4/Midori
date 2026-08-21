@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <queue>
 #include <ranges>
 #include <source_location>
@@ -237,6 +238,38 @@ constexpr T Remap(T value, T low, T high, T dstLow, T dstHigh) {
     // TODO
 
     return value;
+}
+
+template<typename T>
+concept Enum = std::is_enum_v<T>;
+
+template<Enum T>
+constexpr T operator~(T a) noexcept {
+    return static_cast<T>(~std::to_underlying(a));
+}
+template<Enum T>
+constexpr T operator|(T a, T b) noexcept {
+    return static_cast<T>(std::to_underlying(a) | std::to_underlying(b));
+}
+template<Enum T>
+constexpr T operator&(T a, T b) noexcept {
+    return static_cast<T>(std::to_underlying(a) & std::to_underlying(b));
+}
+template<Enum T>
+constexpr T operator^(T a, T b) noexcept {
+    return static_cast<T>(std::to_underlying(a) ^ std::to_underlying(b));
+}
+template<Enum T>
+constexpr T& operator|=(T& a, T b) noexcept {
+    return a = static_cast<T>(std::to_underlying(a) | std::to_underlying(b));
+}
+template<Enum T>
+constexpr T& operator&=(T& a, T b) noexcept {
+    return a = static_cast<T>(std::to_underlying(a) & std::to_underlying(b));
+}
+template<Enum T>
+constexpr T& operator^=(T& a, T b) noexcept {
+    return a = static_cast<T>(std::to_underlying(a) ^ std::to_underlying(b));
 }
 
 void Assert(bool cond, const char* msg, const std::source_location& loc = std::source_location::current());
@@ -536,6 +569,62 @@ struct pool {
         }
         // Assert(count == 0, "Did not cleared all owned chunks");
     }
+};
+
+template<typename T, class Alloc = std::allocator<T>>
+struct pool_allocator {
+    pool<Alloc> pool_;
+
+    using value_type = T;
+    using pointer = T*;
+    using const_pointer = const T*;
+    using reference = T&;
+    using const_reference = const T&;
+    using size_type = std::size_t;
+    using difference_type = std::ptrdiff_t;
+
+    using propagate_on_container_copy_assignment = std::true_type;
+    using propagate_on_container_move_assignment = std::true_type;
+    using propagate_on_container_swap = std::true_type;
+    using is_always_equal = std::true_type;
+
+    pool_allocator(pool<Alloc>& pool) : pool_(&pool) {}
+
+    pool_allocator(const pool_allocator& other) = default;
+
+    template<typename U>
+    pool_allocator(const pool_allocator<U>& other) : pool_(other.pool_) {}
+
+    T* allocate(std::size_t n) {
+        if (n == 0) {
+            return nullptr;
+        }
+
+        void* ptr = pool_->allocate(sizeof(T) * n, alignof(T));
+        if (ptr == nullptr) {
+            throw std::bad_alloc();
+        }
+        return static_cast<T*>(ptr);
+    }
+
+    void deallocate(T* ptr, std::size_t n) noexcept {
+        (void)ptr;
+        (void)n;
+    }
+
+    template<typename U, typename... Args>
+    void construct(U* ptr, Args&&... args) {
+        std::construct_at(ptr, std::forward<Args>(args)...);
+    }
+
+    template<typename U>
+    void destroy(U* ptr) {
+        ptr->~U();
+    }
+
+    bool operator==(const pool_allocator<T>& other) const noexcept { return pool_ == other.pool_; }
+
+    bool operator!=(const pool_allocator<T>& other) const noexcept { return !(*this == other); }
 };
 
 struct thread_pool {
@@ -993,7 +1082,7 @@ struct hash_map {
 
     slab_alloc sa_;
     elem_alloc ea_{sa_};
-    Slab* ptr_{};
+    Slab* ptr_{}; // TODO: remove
     int8_t* metas_{};
     Key* keys_{};
     Elem* elems_{};
@@ -1127,10 +1216,10 @@ struct hash_map {
 
     ~hash_map() { release(); }
 
-    [[nodiscard]] size_t size() const { return size_; }
-    [[nodiscard]] size_t capacity() const { return capacity_; }
-    [[nodiscard]] bool empty() const { return size_ == 0; }
-    [[nodiscard]] bool full() const { return size_ == capacity_; }
+    size_t size() const { return size_; }
+    size_t capacity() const { return capacity_; }
+    bool empty() const { return size_ == 0; }
+    bool full() const { return size_ == capacity_; }
 
     void clear() {
         if (size_) {
@@ -1239,7 +1328,7 @@ struct hash_map {
         }
     }
 
-    [[nodiscard]] bool contains(const Key& key) const {
+    bool contains(const Key& key) const {
         if (size_ == 0) {
             return false;
         }
@@ -1440,7 +1529,7 @@ struct hash_map {
         throw std::out_of_range("hash_map::at: key not found");
     }
 
-    [[nodiscard]] const Elem& at(const Key& key) const {
+    const Elem& at(const Key& key) const {
         if (size_ != 0) {
             const size_t hash = std::hash<Key>{}(key);
             const int8_t h2 = hash & 0x7f;
@@ -1462,6 +1551,49 @@ struct hash_map {
         throw std::out_of_range("hash_map::at: key not found");
     }
 
+    Elem* try_at(const Key& key) {
+        if (size_ != 0) {
+            const size_t hash = std::hash<Key>{}(key);
+            const int8_t h2 = hash & 0x7f;
+            size_t pos = (hash >> 7) % capacity_;
+
+            for (size_t probed = 0; probed < capacity_; ++probed) {
+                const int8_t m = metas_[pos];
+                if (m == h2) {
+                    if (keys_[pos] == key) {
+                        return *elems_[pos];
+                    }
+                } else if (m == EMPTY) {
+                    break;
+                }
+                pos = (pos + 1) % capacity_;
+            }
+        }
+
+        return nullptr;
+    }
+
+    const Elem* try_at(const Key& key) const {
+        if (size_ != 0) {
+            const size_t hash = std::hash<Key>{}(key);
+            const int8_t h2 = hash & 0x7f;
+            size_t pos = (hash >> 7) % capacity_;
+
+            for (size_t probed = 0; probed < capacity_; ++probed) {
+                const int8_t m = metas_[pos];
+                if (m == h2) {
+                    if (keys_[pos] == key) {
+                        return *elems_[pos];
+                    }
+                } else if (m == EMPTY) {
+                    break;
+                }
+                pos = (pos + 1) % capacity_;
+            }
+        }
+
+        return nullptr;
+    }
     struct Iterator {
         using iterator_category = std::bidirectional_iterator_tag;
         using value_type = std::pair<Key, Elem>;
@@ -1561,7 +1693,7 @@ struct slot_map {
     elem_alloc ea_;
     // KeyAlloc ka;
     // std::queue<uint32_t> freeSlots;
-    Slab* ptr_{};
+    Slab* ptr_{}; // TODO remove
     Elem* elems_{};
     bool* slots_{};
     size_t capacity_{};

@@ -10,6 +10,10 @@
 
 namespace Midori {
 
+Viewport::Viewport() {
+    ComputeViewMatrix();
+}
+
 void Viewport::Translate(glm::vec2 amount) {
     amount *= flip;
     glm::vec2 correctedAmount{};
@@ -156,6 +160,7 @@ bool Viewport::IsTileVisible(glm::ivec2 tilePos) const {
 }
 
 std::vector<glm::ivec2, arena_allocator<glm::ivec2>> Viewport::VisibleTiles(arena<>& arena) const {
+    ZoneScoped;
     SDL_assert(viewComputed && "View matrix read before ComputeViewMatrix()");
     constexpr glm::vec2 T_SIZE(TILE_WIDTH, TILE_HEIGHT);
 

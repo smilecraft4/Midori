@@ -2,15 +2,13 @@
 
 #include "defines.hpp"
 #include "colors.hpp"
-#include "tiles.hpp"
 #include <optional>
-#include <string>
 
 namespace Midori {
 
 struct LayerCreateInfo {
     std::optional<Layer> id;
-    std::string name{"Layer"};
+    std::string_view name{"Layer"};
     LayerHeight height{0};
     float opacity{1.0f};
     BlendMode blendMode{BlendMode::Alpha};
@@ -21,8 +19,6 @@ struct LayerCreateInfo {
 };
 
 struct LayerInfo {
-    hash_set<Tile> tiles;
-    std::string name;
     Layer id;
     LayerHeight height;
     float opacity;
@@ -43,7 +39,7 @@ struct LayerFileEntry {
     bool locked;
     bool mask;
     uint16_t nameLen;
-    // std::byte pad[2];
+    std::byte pad[2];
     // The remaining from here to here+nameLen are for the name (without terminator !!)
 };
 

@@ -1,12 +1,15 @@
 ﻿#pragma once
 
+#include "base.hpp"
 #include "defines.hpp"
 #include "errors.hpp"
 #include "tiles.hpp"
 #include "colors.hpp"
 
 #include <SDL3/SDL_gpu.h>
+#include <bitset>
 #include <cstddef>
+#include <expected>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <cstdint>
@@ -32,20 +35,14 @@ struct StrokePoint {
 };
 
 struct Renderer {
-    using TileTextureDownload = size_t;
-    using TileTextureUpload = size_t;
-
-    enum class TextureDownloadState : uint8_t {
-        None,        // slot available for use
-        Pending,     // waiting to start downloading data
-        Downloading, // retrieving the data, looking at fence to know if it can copied
-    };
-
-    enum class TextureUploadState : uint8_t {
-        None,      // slot available for use
-        Reserved,  // slot assigned to something
-        Pending,   // waiting to be uploaded
-        Uploading, // uploading, when done can be cleared (looking if the fence is nullptr)
+    enum class Operation : uint8_t {
+        New,
+        Duplicate,
+        Move,
+        Merge,
+        Paint,
+        Erase,
+        Destroy,
     };
 
     struct ViewportRenderData {
@@ -72,23 +69,29 @@ struct Renderer {
         std::uint32_t pointsNum = 0;
     };
 
-    struct TileTextureDownloadInfo {
-        std::atomic<TextureDownloadState> state{TextureDownloadState::None};
-        Tile tile;
-        std::byte* data{};
-        size_t fence;
-    };
-
-    struct TileTextureUploadInfo {
-        std::atomic<TextureUploadState> state{TextureUploadState::None};
-        Tile tile;
-        std::byte* data{};
-        size_t fence;
-    };
-
     struct MergeInfo {
         BlendMode blendMode;
         float opacity;
+    };
+
+    enum class StagingBufferState : uint8_t {
+        None,
+        Completed,
+        Transfering,
+        Done,
+    };
+
+    template<size_t Capacity = 0>
+    struct StagingBuffer {
+        SDL_GPUTransferBuffer* buffer{};
+        std::byte* data{};
+        SDL_GPUFence* fence{};
+
+        std::mutex mutex;
+        StagingBufferState state{};
+        std::bitset<Capacity> used{};
+        std::bitset<Capacity> commited{};
+        TileTransfer::ID ids[Capacity]{};
     };
 
     Renderer(const Renderer&) = delete;
@@ -101,11 +104,12 @@ struct Renderer {
 
     bool Init();
     bool Update();
-    bool CanQuit();
+    bool CanQuit() const;
     void Quit();
+    Error Render();
 
-    bool UpdateTileTextureUpload();
-    bool UpdateTileTextureDownload();
+    Error UpdateTileTextureUpload();
+    Error UpdateTileTextureDownload();
     bool UpdateUninitializedTextures();
     bool UpdateTileEdit();
 
@@ -118,45 +122,51 @@ struct Renderer {
     bool CreateLayerTexture(const CanvasView& view, Layer layer);
     void DestroyLayerTexture(const CanvasView& view, Layer layer);
 
-    Error CreateUninitializedTileTexture(const CanvasFile& file, Tile tile);
-    Error CreateTileTexture(const CanvasFile& file, Tile tile);
-    void DestroyTileTexture(const CanvasFile& file, Tile tile);
-    bool MergeTileTextures(const CanvasFile& file, Tile overTile, Tile belowTile, MergeInfo info);
-
-    std::optional<TileTextureUpload> ReserveTileTextureUpload(const CanvasFile& file, Tile tile);
-    bool FreeTileTextureUpload(const CanvasFile& file, TileTextureUpload slot);
-    bool CommitTileTextureUpload(const CanvasFile& file, TileTextureUpload slot);
-    TileTextureUploadInfo& GetTileTextureUploadInfo(const CanvasFile& file, TileTextureUpload slot);
-
-    std::optional<TileTextureDownload> DownloadTileTexture(const CanvasFile& file, Tile tile);
-    bool QueryTileTextureDownload(const CanvasFile& file, TileTextureDownload slot);
-    bool FreeTileTextureDownload(const CanvasFile& file, TileTextureDownload slot);
-    TileTextureDownloadInfo& GetTileTextureDownloadInfo(const CanvasFile& file, TileTextureDownload slot);
+    Error CreateUninitializedTileTexture(Tile tile);
+    Error CreateTileTexture(Tile tile);
+    void DestroyTileTexture(Tile tile);
+    bool MergeTileTextures(Tile overTile, Tile belowTile, MergeInfo info);
 
     bool BeginCopyPass();
-    SDL_GPUTexture* DuplicateTileTexture(const CanvasFile& file, Tile tile);
+    SDL_GPUTexture* DuplicateTileTexture(Tile tile);
     SDL_GPUTexture* DuplicateTileTexture(SDL_GPUTexture* texture) const;
     bool EndCopyPass(bool wait);
     void CancelCopyPass();
 
-    Error RenderCanvasView(const CanvasView& canvasView);
+    Error RenderCanvasView(CanvasView& canvasView);
     Error ResizeCanvasView(const CanvasView& canvasView);
+
+    Error MergeTiles(const CanvasFile& canvasFile, std::span<Tile> srcTiles, std::span<Tile> dstTiles, MergeInfo info);
     Error PaintTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, std::span<StrokePoint> points);
     Error EraseTiles(const CanvasFile& canvasFile, std::span<Tile> tiles, std::span<StrokePoint> points);
 
-    // std::vector<SDL_GPUTexture*> DuplicateTileTextures(std::span<TileCoord> srcTiles);
+    std::expected<TileStageBufferSlot, Error> ReserveTileUploadSlot(TileTransfer::ID id);
+    std::expected<TileStageBufferSlot, Error> GetTileUploadSlot(TileTransfer::ID id);
+    void* GetTileUploadSlotData(TileStageBufferSlot slot);
+    void CommitTileUploadSlot(TileStageBufferSlot slot);
+    void FreeTileUploadSlot(TileStageBufferSlot slot);
+
+    std::expected<TileStageBufferSlot, Error> QueueTileDownloadSlot(TileTransfer::ID id);
+    std::expected<TileStageBufferSlot, Error> GetTileDownloadSlot(TileTransfer::ID id);
+    void* GetTileDownloadSlotData(TileStageBufferSlot slot);
+    void FreeTileDownloadSlot(TileStageBufferSlot slot);
 
     App* app;
+    arena<> arena{1_MiB};
+
+    StagingBuffer<TILE_UPLOAD_BUFFER_CAPACITY> tileUploadStagingBuffers[TILE_MAX_UPLOAD_BUFFER];
+    StagingBuffer<TILE_DOWNLOAD_BUFFER_CAPACITY> tileDownloadStagingBuffers[TILE_MAX_DOWNLOAD_BUFFERS];
+
+    Operation currentOperation;
 
     hash_set<Tile> tileToDraw{1024};
     hash_set<Layer> layerToDraw{1024};
 
-    hash_map<Tile, SDL_GPUTexture*> tileTextures{2048};
+    hash_map<Tile, SDL_GPUTexture*, arena_allocator<Tile>> tileTextures{2048, arena};
 
-    hash_set<Tile> tileTexturesToInitialize{1024};
+    hash_set<Tile, arena_allocator<Tile>> tileTexturesToInitialize{1024, arena};
     SDL_GPUFence* tileTexturesToInitializeFence;
 
-    bool viewChanged = false;
     ViewportRenderData viewportRenderData;
     LayerRenderData layerRenderData;
     TileRenderData tileRenderData;
@@ -174,21 +184,12 @@ struct Renderer {
 
     SDL_GPUGraphicsPipeline* layerGraphicsPipeline{};
     SDL_GPUSampler* layerSampler{};
-    hash_map<Layer, SDL_GPUTexture*> layerTextures{1024};
+    hash_map<Layer, SDL_GPUTexture*, arena_allocator<Layer>> layerTextures{1024, arena};
 
     SDL_GPUGraphicsPipeline* tileGraphicsPipeline{};
     SDL_GPUSampler* tileSampler{};
 
-    SDL_GPUTransferBuffer* tileUploadBuffer{};
     SDL_GPUTransferBuffer* tileBlankTextureBuffer{};
-    std::byte* tileUploadBufferPtr{};
-    std::array<TileTextureUploadInfo, TILE_MAX_CONCURENT_UPLOADS> tileUploadSlots;
-    std::array<SDL_GPUFence*, TILE_MAX_INFLIGHT_UPLOADS> tileUploadSlotFences{};
-
-    SDL_GPUTransferBuffer* tileDownloadBuffer{};
-    std::byte* tileDownloadBufferPtr{};
-    std::array<TileTextureDownloadInfo, TILE_MAX_CONCURENT_DOWNLOADS> tileDownloadSlots;
-    std::array<SDL_GPUFence*, TILE_MAX_INFLIGHT_DOWNLOADS> tileDownloadSlotFences{};
 
     SDL_GPUComputePipeline* mergeComputePipeline{};
 

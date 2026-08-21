@@ -1,13 +1,16 @@
 ﻿#pragma once
 
 #include "base.hpp"
+#include "defines.hpp"
 #include "glm/vec2.hpp"
 #include "glm/mat4x4.hpp"
+#include <limits>
 
 namespace Midori {
 
 struct Viewport {
-public:
+    Viewport();
+
     void Translate(glm::vec2 amount);
     void Zoom(glm::vec2 origin, glm::vec2 amount);
     void Rotate(float amount);
