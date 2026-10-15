@@ -95,6 +95,9 @@ target_include_directories(midori PRIVATE
 )
 # Wacom's Wintab headers only; Wintab32.dll is loaded at runtime, so there is nothing to link.
 target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
+# DirectX-Headers: newer d3d12.h than the Windows SDK, plus the d3dx12 helpers. Headers only: the
+# library target would compile a format table nothing here uses.
+target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
 
 # SPDLOG_ACTIVE_LEVEL is defined here rather than in log.hpp so the precompiled spdlog header is
 # compiled with the same level as every source. The Windows defines make every translation unit see

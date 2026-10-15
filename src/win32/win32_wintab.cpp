@@ -6,6 +6,8 @@
 #include <iterator>
 #include <numbers>
 
+#include <tracy/Tracy.hpp>
+
 // Packet layout: absolute positions, tip pressure, orientation (tilt), button bits and status (for
 // the eraser bit). Buttons are absolute too: the current bit set, compared against the last packet.
 #define PACKETDATA (PK_X | PK_Y | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_BUTTONS | PK_STATUS)
@@ -47,6 +49,7 @@ void DispatchButton(Window window, Device device, Button button, bool down) noex
 } // namespace
 
 void WintabInit() noexcept {
+    ZoneScopedN("WintabInit");
     Wintab& wintab = gPlatformState.wintab;
     wintab.dll = LoadLibraryW(L"Wintab32.dll");
     if (!wintab.dll) {
@@ -119,6 +122,7 @@ void WintabTerminate() noexcept {
 }
 
 void WintabOpen(Window window) noexcept {
+    ZoneScopedN("WintabOpen");
     const Wintab& wintab = gPlatformState.wintab;
     if (!wintab.dll) {
         return;
@@ -153,6 +157,7 @@ void WintabActivate(Window window) noexcept {
 }
 
 void WintabHandlePackets(Window window) noexcept {
+    ZoneScopedN("WintabHandlePackets");
     const Wintab& wintab = gPlatformState.wintab;
     Win32Window& slot = gPlatformState.windows[window];
     if (!slot.tablet) {

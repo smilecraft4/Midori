@@ -2,9 +2,18 @@
 
 #include "win32_platform.hpp" // <windows.h> with the project's defines
 
-#include <d3d12.h>
+// DirectX-Headers (vendors/DirectX-Headers) before any SDK header, so its d3d12.h is the one used.
+#include <directx/d3d12.h>
+#include <directx/d3dx12_barriers.h>
+#include <directx/d3dx12_core.h>
+#include <directx/d3dx12_root_signature.h> // also holds the descriptor handle helpers
+
 #include <dcomp.h>
 #include <dxgi1_6.h>
+
+// GPU zones; includes <d3d12.h> itself, so it must come after DirectX-Headers. Without TRACY_ENABLE
+// its macros expand to nothing and TracyD3D12Ctx is a null void*.
+#include <tracy/TracyD3D12.hpp>
 
 #include <array>
 #include <cstdint>
@@ -51,7 +60,8 @@ struct GraphicsState {
     ID3D12Fence* fence;
     ID3D12DescriptorHeap* rtvs;
     IDCompositionDesktopDevice* composition;
-    std::uint64_t fenceValue; // last value signaled on `queue`
+    TracyD3D12Ctx gpuProfiler; // timestamp queries on `queue`, collected after each submit
+    std::uint64_t fenceValue;  // last value signaled on `queue`
     UINT rtvIncrement;
     UINT allocatorIndex;
 };

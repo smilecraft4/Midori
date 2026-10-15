@@ -8,6 +8,8 @@
 
 #include <span>
 
+#include <tracy/Tracy.hpp>
+
 namespace Midori {
 
 PlatformState gPlatformState{};
@@ -59,6 +61,8 @@ void DispatchResize(Window window) noexcept {
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ZoneScopedN("WindowProc");
+    ZoneValue(message);
     // WindowCreate passes the slot so every later message, WM_SIZE during creation included, finds it.
     if (message == WM_NCCREATE) {
         const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
@@ -161,6 +165,7 @@ void PlatformDispatch(Event event) noexcept {
 }
 
 Result<void> PlatformInit(PlatformInitInfo initInfo) noexcept {
+    ZoneScopedN("PlatformInit");
     MIDORI_ASSERT_ALWAYS(initInfo.hInstance, "PlatformInit needs the HINSTANCE passed to wWinMain");
     gPlatformState.hInstance = initInfo.hInstance;
     gPlatformState.nShowCmd = initInfo.nShowCmd;
@@ -188,6 +193,7 @@ Result<void> PlatformInit(PlatformInitInfo initInfo) noexcept {
 }
 
 void PlatformTerminate() noexcept {
+    ZoneScopedN("PlatformTerminate");
     for (const Win32Window& slot : gPlatformState.windows) {
         if (slot.hwnd) {
             DestroyWindow(slot.hwnd);
@@ -201,6 +207,7 @@ void PlatformTerminate() noexcept {
 }
 
 Result<Window> WindowCreate(WindowCreateInfo createInfo) noexcept {
+    ZoneScopedN("WindowCreate");
     Window window = kWindowInvalid;
     for (Window i = 0; i < kWindowMax; ++i) {
         if (!gPlatformState.windows[i].hwnd) {
@@ -306,6 +313,7 @@ Result<void> WindowSetTitle(Window window, std::string_view title) noexcept {
 }
 
 Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) noexcept {
+    ZoneScopedN("WindowSetDisplayMode");
     if (!WindowValid(window)) {
         return std::unexpected(Error::WindowInvalid);
     }

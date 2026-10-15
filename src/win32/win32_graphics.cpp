@@ -1,10 +1,12 @@
 #include "win32_graphics.hpp"
 
 #include "midori/log.hpp"
-#include "midori/trace.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <string_view>
+
+#include <tracy/Tracy.hpp>
 
 namespace Midori {
 
@@ -36,24 +38,14 @@ void LogHresult(const char* what, HRESULT hr) noexcept {
 }
 
 [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE Rtv(Window window, UINT buffer) noexcept {
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = gGraphicsState.rtvs->GetCPUDescriptorHandleForHeapStart();
-    handle.ptr += static_cast<SIZE_T>((window * kSwapChainBufferCount) + buffer) * gGraphicsState.rtvIncrement;
-    return handle;
-}
-
-[[nodiscard]] D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
-                                                D3D12_RESOURCE_STATES after) noexcept {
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = resource;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = before;
-    barrier.Transition.StateAfter = after;
-    return barrier;
+    return CD3DX12_CPU_DESCRIPTOR_HANDLE(gGraphicsState.rtvs->GetCPUDescriptorHandleForHeapStart(),
+                                         static_cast<INT>((window * kSwapChainBufferCount) + buffer),
+                                         gGraphicsState.rtvIncrement);
 }
 
 void WaitForFence(std::uint64_t value) noexcept {
     if (gGraphicsState.fence->GetCompletedValue() < value) {
+        ZoneScopedN("GraphicsWaitForFence");
         // A null event makes the call block until the value is reached.
         gGraphicsState.fence->SetEventOnCompletion(value, nullptr);
     }
@@ -102,45 +94,58 @@ void ReleaseWindow(Win32SwapChain& slot) noexcept {
 // Clears the windows' current back buffers in one command list, then presents them. Every window must
 // be ready for a frame.
 [[nodiscard]] Result<void> Submit(std::span<const Window> windows) noexcept {
-    MIDORI_TRACE_SCOPE("GraphicsSubmit");
+    ZoneScopedN("GraphicsSubmit");
+    ZoneValue(windows.size());
     GraphicsState& state = gGraphicsState;
 
     const UINT frame = state.allocatorIndex;
     WaitForFence(state.allocatorFences[frame]);
-    state.allocators[frame]->Reset();
-    state.list->Reset(state.allocators[frame], nullptr);
+    {
+        ZoneScopedN("GraphicsRecord");
+        state.allocators[frame]->Reset();
+        state.list->Reset(state.allocators[frame], nullptr);
+        {
+            // GPU zones record timestamp queries into the list, so they must close before it does.
+            TracyD3D12NamedZone(state.gpuProfiler, gpuFrameZone, state.list, "GpuFrame", true);
 
-    std::array<D3D12_RESOURCE_BARRIER, kWindowMax> toTarget{};
-    std::array<D3D12_RESOURCE_BARRIER, kWindowMax> toPresent{};
-    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kWindowMax> rtvs{};
-    for (std::size_t i = 0; i < windows.size(); ++i) {
-        const Win32SwapChain& slot = state.windows[windows[i]];
-        MIDORI_ASSERT(slot.frameReady, "window {} presented without a frame", windows[i]);
-        const UINT buffer = slot.swapChain->GetCurrentBackBufferIndex();
-        toTarget[i] =
-            Transition(slot.buffers[buffer], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        toPresent[i] =
-            Transition(slot.buffers[buffer], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-        rtvs[i] = Rtv(windows[i], buffer);
+            std::array<D3D12_RESOURCE_BARRIER, kWindowMax> toTarget{};
+            std::array<D3D12_RESOURCE_BARRIER, kWindowMax> toPresent{};
+            std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kWindowMax> rtvs{};
+            for (std::size_t i = 0; i < windows.size(); ++i) {
+                const Win32SwapChain& slot = state.windows[windows[i]];
+                MIDORI_ASSERT(slot.frameReady, "window {} presented without a frame", windows[i]);
+                const UINT buffer = slot.swapChain->GetCurrentBackBufferIndex();
+                toTarget[i] = CD3DX12_RESOURCE_BARRIER::Transition(slot.buffers[buffer], D3D12_RESOURCE_STATE_PRESENT,
+                                                                   D3D12_RESOURCE_STATE_RENDER_TARGET);
+                toPresent[i] = CD3DX12_RESOURCE_BARRIER::Transition(
+                    slot.buffers[buffer], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+                rtvs[i] = Rtv(windows[i], buffer);
+            }
+
+            const auto count = static_cast<UINT>(windows.size());
+            state.list->ResourceBarrier(count, toTarget.data());
+            for (std::size_t i = 0; i < windows.size(); ++i) {
+                TracyD3D12NamedZone(state.gpuProfiler, gpuClearZone, state.list, "GpuClearWindow", true);
+                // Only the source region is shown; the rest of the buffer is left as is.
+                const Win32SwapChain& slot = state.windows[windows[i]];
+                const CD3DX12_RECT rect(0, 0, static_cast<LONG>(slot.width), static_cast<LONG>(slot.height));
+                state.list->ClearRenderTargetView(rtvs[i], kBackground, 1, &rect);
+            }
+            state.list->ResourceBarrier(count, toPresent.data());
+        }
+        state.list->Close();
     }
 
-    const auto count = static_cast<UINT>(windows.size());
-    state.list->ResourceBarrier(count, toTarget.data());
-    for (std::size_t i = 0; i < windows.size(); ++i) {
-        // Only the source region is shown; the rest of the buffer is left as is.
-        const Win32SwapChain& slot = state.windows[windows[i]];
-        const D3D12_RECT rect{
-            .left = 0, .top = 0, .right = static_cast<LONG>(slot.width), .bottom = static_cast<LONG>(slot.height)};
-        state.list->ClearRenderTargetView(rtvs[i], kBackground, 1, &rect);
+    {
+        ZoneScopedN("GraphicsExecute");
+        ID3D12CommandList* lists[] = {state.list};
+        state.queue->ExecuteCommandLists(1, lists);
     }
-    state.list->ResourceBarrier(count, toPresent.data());
-    state.list->Close();
-
-    ID3D12CommandList* lists[] = {state.list};
-    state.queue->ExecuteCommandLists(1, lists);
 
     Result<void> result{};
     for (const Window window : windows) {
+        ZoneScopedN("GraphicsPresent");
+        ZoneValue(window);
         Win32SwapChain& slot = state.windows[window];
         slot.needsFrame = false;
         slot.frameReady = false;
@@ -156,13 +161,19 @@ void ReleaseWindow(Win32SwapChain& slot) noexcept {
     state.queue->Signal(state.fence, ++state.fenceValue);
     state.allocatorFences[frame] = state.fenceValue;
     state.allocatorIndex = (frame + 1) % kGraphicsFramesInFlight;
+    {
+        // Reads back the timestamps of earlier frames the GPU has finished; never waits.
+        ZoneScopedN("GpuProfilerCollect");
+        TracyD3D12Collect(state.gpuProfiler);
+    }
+    FrameMark;
     return result;
 }
 
 } // namespace
 
 Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
-    MIDORI_TRACE_SCOPE("GraphicsInit");
+    ZoneScopedN("GraphicsInit");
     GraphicsState& state = gGraphicsState;
     const auto fail = [](const char* what, HRESULT hr) {
         LogHresult(what, hr);
@@ -171,6 +182,7 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
     };
 
     if (initInfo.debugLayer) {
+        ZoneScopedN("D3D12EnableDebugLayer");
         ID3D12Debug* debug = nullptr;
         if (const HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debug)); SUCCEEDED(hr)) {
             debug->EnableDebugLayer();
@@ -180,15 +192,21 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
         }
     }
 
-    const UINT factoryFlags = initInfo.debugLayer ? DXGI_CREATE_FACTORY_DEBUG : 0;
-    if (const HRESULT hr = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&state.factory)); FAILED(hr)) {
-        return fail("CreateDXGIFactory2", hr);
+    {
+        ZoneScopedN("CreateDXGIFactory2");
+        const UINT factoryFlags = initInfo.debugLayer ? DXGI_CREATE_FACTORY_DEBUG : 0;
+        if (const HRESULT hr = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&state.factory)); FAILED(hr)) {
+            return fail("CreateDXGIFactory2", hr);
+        }
     }
     // The default adapter is the one the user's Windows graphics settings pick for this app, which
     // keeps laptops on the integrated GPU unless told otherwise.
-    if (const HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&state.device));
-        FAILED(hr)) {
-        return fail("D3D12CreateDevice", hr);
+    {
+        ZoneScopedN("D3D12CreateDevice");
+        if (const HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&state.device));
+            FAILED(hr)) {
+            return fail("D3D12CreateDevice", hr);
+        }
     }
 
     const D3D12_COMMAND_QUEUE_DESC queueDesc{.Type = D3D12_COMMAND_LIST_TYPE_DIRECT};
@@ -209,6 +227,15 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
     }
     // Created open; Submit expects it closed.
     state.list->Close();
+    {
+        // Allocates its query heap and readback buffer even while no profiler is connected.
+        ZoneScopedN("TracyD3D12Context");
+        state.gpuProfiler = TracyD3D12Context(state.device, state.queue);
+        if (state.gpuProfiler) {
+            [[maybe_unused]] constexpr std::string_view kName = "Main queue"; // unused without TRACY_ENABLE
+            TracyD3D12ContextName(state.gpuProfiler, kName.data(), static_cast<std::uint16_t>(kName.size()));
+        }
+    }
     if (const HRESULT hr = state.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.fence));
         FAILED(hr)) {
         return fail("ID3D12Device::CreateFence", hr);
@@ -223,13 +250,17 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
     }
     state.rtvIncrement = state.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-    if (const HRESULT hr = DCompositionCreateDevice2(nullptr, IID_PPV_ARGS(&state.composition)); FAILED(hr)) {
-        return fail("DCompositionCreateDevice2", hr);
+    {
+        ZoneScopedN("DCompositionCreateDevice2");
+        if (const HRESULT hr = DCompositionCreateDevice2(nullptr, IID_PPV_ARGS(&state.composition)); FAILED(hr)) {
+            return fail("DCompositionCreateDevice2", hr);
+        }
     }
     return {};
 }
 
 Result<void> GraphicsUpdate() noexcept {
+    ZoneScopedN("GraphicsUpdate");
     std::array<Window, kWindowMax> ready{};
     std::size_t count = 0;
     for (Window window = 0; window < kWindowMax; ++window) {
@@ -251,12 +282,18 @@ Result<void> GraphicsUpdate() noexcept {
 }
 
 void GraphicsTerminate() noexcept {
+    ZoneScopedN("GraphicsTerminate");
     GraphicsState& state = gGraphicsState;
     if (state.fence) {
         WaitIdle();
     }
     for (Win32SwapChain& slot : state.windows) {
         ReleaseWindow(slot);
+    }
+    // Drains its pending queries, so after WaitIdle and before the queue goes.
+    if (state.gpuProfiler) {
+        TracyD3D12Destroy(state.gpuProfiler);
+        state.gpuProfiler = nullptr;
     }
     Release(state.composition);
     Release(state.rtvs);
@@ -272,7 +309,7 @@ void GraphicsTerminate() noexcept {
 }
 
 Result<void> GraphicsWindowInit(GraphicsWindowInitInfo initInfo) noexcept {
-    MIDORI_TRACE_SCOPE("GraphicsWindowInit");
+    ZoneScopedN("GraphicsWindowInit");
     const Window window = initInfo.window;
     if (window >= kWindowMax || !gPlatformState.windows[window].hwnd || gGraphicsState.windows[window].swapChain) {
         return std::unexpected(Error::WindowInvalid);
@@ -308,9 +345,12 @@ Result<void> GraphicsWindowInit(GraphicsWindowInitInfo initInfo) noexcept {
         .Flags = kSwapChainFlags,
     };
     IDXGISwapChain1* swapChain1 = nullptr;
-    if (const HRESULT hr = state.factory->CreateSwapChainForComposition(state.queue, &desc, nullptr, &swapChain1);
-        FAILED(hr)) {
-        return fail("IDXGIFactory2::CreateSwapChainForComposition", hr);
+    {
+        ZoneScopedN("CreateSwapChainForComposition");
+        if (const HRESULT hr = state.factory->CreateSwapChainForComposition(state.queue, &desc, nullptr, &swapChain1);
+            FAILED(hr)) {
+            return fail("IDXGIFactory2::CreateSwapChainForComposition", hr);
+        }
     }
     const HRESULT queried = swapChain1->QueryInterface(IID_PPV_ARGS(&slot.swapChain));
     swapChain1->Release();
@@ -329,16 +369,19 @@ Result<void> GraphicsWindowInit(GraphicsWindowInitInfo initInfo) noexcept {
         slot.swapChain->SetSourceSize(slot.width, slot.height);
     }
 
-    if (const HRESULT hr = state.composition->CreateTargetForHwnd(hwnd, TRUE, &slot.target); FAILED(hr)) {
-        return fail("IDCompositionDesktopDevice::CreateTargetForHwnd", hr);
-    }
-    if (const HRESULT hr = state.composition->CreateVisual(&slot.visual); FAILED(hr)) {
-        return fail("IDCompositionDevice2::CreateVisual", hr);
-    }
-    slot.visual->SetContent(slot.swapChain);
-    slot.target->SetRoot(slot.visual);
-    if (const HRESULT hr = state.composition->Commit(); FAILED(hr)) {
-        return fail("IDCompositionDevice2::Commit", hr);
+    {
+        ZoneScopedN("DCompositionBind");
+        if (const HRESULT hr = state.composition->CreateTargetForHwnd(hwnd, TRUE, &slot.target); FAILED(hr)) {
+            return fail("IDCompositionDesktopDevice::CreateTargetForHwnd", hr);
+        }
+        if (const HRESULT hr = state.composition->CreateVisual(&slot.visual); FAILED(hr)) {
+            return fail("IDCompositionDevice2::CreateVisual", hr);
+        }
+        slot.visual->SetContent(slot.swapChain);
+        slot.target->SetRoot(slot.visual);
+        if (const HRESULT hr = state.composition->Commit(); FAILED(hr)) {
+            return fail("IDCompositionDevice2::Commit", hr);
+        }
     }
 
     slot.needsFrame = true;
@@ -346,6 +389,7 @@ Result<void> GraphicsWindowInit(GraphicsWindowInitInfo initInfo) noexcept {
 }
 
 Result<void> GraphicsWindowPresent(Window window) noexcept {
+    ZoneScopedN("GraphicsWindowPresent");
     if (!WindowValid(window)) {
         return std::unexpected(Error::WindowInvalid);
     }
@@ -354,6 +398,7 @@ Result<void> GraphicsWindowPresent(Window window) noexcept {
         return {};
     }
     if (!slot.frameReady) {
+        ZoneScopedN("GraphicsWaitForFrame");
         if (WaitForSingleObjectEx(slot.frameWait, kFrameWaitTimeoutMs, TRUE) != WAIT_OBJECT_0) {
             MIDORI_LOG_WARN("window {}: no frame after {} ms, present skipped", window, kFrameWaitTimeoutMs);
             return {};
@@ -365,6 +410,7 @@ Result<void> GraphicsWindowPresent(Window window) noexcept {
 }
 
 Result<void> GraphicsWindowTerminate(Window window) noexcept {
+    ZoneScopedN("GraphicsWindowTerminate");
     if (window >= kWindowMax) {
         return std::unexpected(Error::WindowInvalid);
     }
@@ -396,6 +442,7 @@ void GraphicsWindowFrameAcquired(Window window) noexcept {
 }
 
 Result<void> GraphicsWindowResize(Window window, UINT width, UINT height) noexcept {
+    ZoneScopedN("GraphicsWindowResize");
     // WM_SIZE also arrives during CreateWindowExW, before GraphicsWindowInit.
     if (!WindowValid(window)) {
         return {};
@@ -408,7 +455,7 @@ Result<void> GraphicsWindowResize(Window window, UINT width, UINT height) noexce
     }
 
     if (width > slot.bufferWidth || height > slot.bufferHeight) {
-        MIDORI_TRACE_SCOPE("GraphicsResizeBuffers");
+        ZoneScopedN("GraphicsResizeBuffers");
         WaitIdle();
         for (ID3D12Resource*& buffer : slot.buffers) {
             Release(buffer);

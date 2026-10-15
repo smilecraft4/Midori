@@ -6,6 +6,8 @@
 
 #include <utility>
 
+#include <tracy/Tracy.hpp>
+
 namespace Midori {
 
 namespace {
@@ -208,6 +210,7 @@ void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
 } // namespace
 
 bool InputHandleMessage(Window window, UINT message, WPARAM wParam, LPARAM lParam) noexcept {
+    ZoneScopedN("InputHandleMessage");
     switch (message) {
         case WM_KEYDOWN:
             DispatchKey(window, wParam, lParam, true);

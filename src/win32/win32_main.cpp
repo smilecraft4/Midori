@@ -1,11 +1,13 @@
 #include "midori/app.hpp"
 #include "midori/base.hpp"
 #include "midori/log.hpp"
-#include "midori/trace.hpp"
 #include "win32_graphics.hpp"
 #include "win32_platform.hpp"
 
 #include <array>
+#include <cstdint>
+
+#include <tracy/Tracy.hpp>
 
 using namespace Midori;
 
@@ -21,7 +23,10 @@ constexpr bool kGraphicsDebugLayer = false;
 
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance*/, _In_ LPWSTR /*lpCmdLine*/,
                     _In_ int nShowCmd) {
-    MIDORI_TRACE_SET_THREAD_NAME("Main");
+    // A plain function, only defined when the Tracy client is compiled in.
+#if defined(TRACY_ENABLE)
+    tracy::SetThreadName("Main");
+#endif
 
     if (!LogInit()) {
         return 1;
@@ -49,8 +54,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
         std::array<HANDLE, kWindowMax> handles{};
         std::array<Window, kWindowMax> windows{};
         const DWORD count = GraphicsFrameWaitables(handles, windows);
-        const DWORD wait =
-            MsgWaitForMultipleObjectsEx(count, handles.data(), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        DWORD wait = WAIT_FAILED;
+        {
+            // Idle time: long zones here mean the app was asleep.
+            ZoneScopedN("MainWait");
+            ZoneValue(count);
+            wait = MsgWaitForMultipleObjectsEx(count, handles.data(), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
         if (wait == WAIT_FAILED) {
             MIDORI_LOG_ERROR("MsgWaitForMultipleObjectsEx failed: {}", GetLastError());
             exitCode = 1;
@@ -61,15 +71,21 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
         }
 
         bool quit = false;
-        MSG msg{};
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                exitCode = static_cast<int>(msg.wParam);
-                quit = true;
-                break;
+        {
+            ZoneScopedN("MainMessages");
+            [[maybe_unused]] std::uint32_t handled = 0; // only read by ZoneValue
+            MSG msg{};
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    exitCode = static_cast<int>(msg.wParam);
+                    quit = true;
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+                ++handled;
             }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            ZoneValue(handled);
         }
         if (quit) {
             break;

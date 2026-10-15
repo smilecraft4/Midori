@@ -10,3 +10,6 @@
 [submodule "vendors/spdlog"]
 	path = vendors/spdlog
 	url = https://github.com/gabime/spdlog
+[submodule "vendors/DirectX-Headers"]
+	path = vendors/DirectX-Headers
+	url = https://github.com/microsoft/DirectX-Headers

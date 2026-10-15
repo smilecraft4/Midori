@@ -2,12 +2,13 @@
 
 #include "midori/base.hpp"
 #include "midori/log.hpp"
-#include "midori/trace.hpp"
 
 #include <bit>
 #include <cstdlib>
 #include <malloc.h>
 #include <new>
+
+#include <tracy/Tracy.hpp>
 
 namespace {
 
@@ -36,13 +37,13 @@ void* Heap::Allocate(std::size_t size, std::size_t alignment) noexcept {
     MIDORI_ASSERT(std::has_single_bit(alignment), "alignment {} is not a power of two", alignment);
     void* ptr = _aligned_malloc(size, alignment);
     MIDORI_ASSERT_ALWAYS(ptr, "out of memory allocating {} bytes (alignment {})", size, alignment);
-    MIDORI_TRACE_ALLOC(ptr, size);
+    TracyAlloc(ptr, size);
     return ptr;
 }
 
 void Heap::Deallocate(void* ptr) noexcept {
     if (ptr) {
-        MIDORI_TRACE_FREE(ptr);
+        TracyFree(ptr);
     }
     _aligned_free(ptr);
 }
@@ -54,9 +55,9 @@ void* Heap::Reallocate(void* ptr, std::size_t newSize, std::size_t alignment) no
     MIDORI_ASSERT_ALWAYS(newPtr, "out of memory reallocating to {} bytes (alignment {})", newSize, alignment);
     // Reported after the call, but free before alloc: the block may not have moved.
     if (ptr) {
-        MIDORI_TRACE_FREE(ptr);
+        TracyFree(ptr);
     }
-    MIDORI_TRACE_ALLOC(newPtr, newSize);
+    TracyAlloc(newPtr, newSize);
     return newPtr;
 }
 
@@ -84,7 +85,7 @@ void* NewUnaligned(std::size_t size) noexcept {
     // malloc(0) may return null; new must return a unique pointer.
     void* ptr = std::malloc(size ? size : 1);
     if (ptr) {
-        MIDORI_TRACE_ALLOC(ptr, size);
+        TracyAlloc(ptr, size);
     }
     return ptr;
 }
@@ -92,7 +93,7 @@ void* NewUnaligned(std::size_t size) noexcept {
 void* NewAligned(std::size_t size, std::align_val_t alignment) noexcept {
     void* ptr = _aligned_malloc(size ? size : 1, static_cast<std::size_t>(alignment));
     if (ptr) {
-        MIDORI_TRACE_ALLOC(ptr, size);
+        TracyAlloc(ptr, size);
     }
     return ptr;
 }
@@ -131,13 +132,13 @@ void* operator new[](std::size_t size, std::align_val_t alignment, const std::no
 
 void operator delete(void* ptr) noexcept {
     if (ptr) {
-        MIDORI_TRACE_FREE(ptr);
+        TracyFree(ptr);
         std::free(ptr);
     }
 }
 void operator delete(void* ptr, std::align_val_t /*alignment*/) noexcept {
     if (ptr) {
-        MIDORI_TRACE_FREE(ptr);
+        TracyFree(ptr);
         _aligned_free(ptr);
     }
 }
