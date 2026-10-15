@@ -1,0 +1,15 @@
+// Generated from src/version.h.in. Do not edit the copy in build/ -- change this file, or the version in project(), instead.
+#pragma once
+
+#define MIDORI_NAME           "@PROJECT_NAME@"
+#define MIDORI_VERSION_STRING "@PROJECT_VERSION@"
+#define MIDORI_VERSION_MAJOR  @PROJECT_VERSION_MAJOR@
+#define MIDORI_VERSION_MINOR  @PROJECT_VERSION_MINOR@
+#define MIDORI_VERSION_PATCH  @PROJECT_VERSION_PATCH@
+
+#define MIDORI_COMPILER       "@MIDORI_COMPILER@"
+#define MIDORI_ARCHITECTURE   "@MIDORI_ARCHITECTURE@"
+
+#ifndef MIDORI_PROFILE
+#define MIDORI_PROFILE "unknown"
+#endif

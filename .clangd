@@ -1,0 +1,7 @@
+CompileFlags:
+  # Each preset builds into build/<preset>; point this at the one you configure.
+  CompilationDatabase: build/msvc
+  # cl.exe supports AddressSanitizer with the debug CRT (/MDd); clang's driver rejects the pair.
+  Remove: [/fsanitize=address, -fsanitize=address]
+  # The build turns this off for clang-cl only (see CMakeLists.txt); cl's commands lack it.
+  Add: [-Wno-missing-field-initializers]

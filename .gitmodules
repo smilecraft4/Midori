@@ -1,0 +1,12 @@
+[submodule "vendors/tracy"]
+	path = vendors/tracy
+	url = https://github.com/wolfpld/tracy
+[submodule "vendors/imgui"]
+	path = vendors/imgui
+	url = https://github.com/ocornut/imgui
+[submodule "vendors/freetype"]
+	path = vendors/freetype
+	url = https://github.com/freetype/freetype
+[submodule "vendors/spdlog"]
+	path = vendors/spdlog
+	url = https://github.com/gabime/spdlog

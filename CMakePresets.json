@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21 },
+  "configurePresets": [
+    {
+      "name": "windows",
+      "hidden": true,
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /D_HAS_EXCEPTIONS=0"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "clang",
+      "displayName": "Windows x64 - clang-cl",
+      "description": "Builds from any shell: clang-cl finds the MSVC toolchain and SDK itself. No sanitizers.",
+      "inherits": "windows",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
+    },
+    {
+      "name": "msvc",
+      "displayName": "Windows x64 - MSVC",
+      "description": "Configure AND build from a VS developer prompt; cl.exe reads INCLUDE/LIB from the environment. Debug uses AddressSanitizer (replacing /RTC1, which it is incompatible with); run from the same prompt so the ASan runtime DLL is on PATH.",
+      "inherits": "windows",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_CXX_FLAGS_DEBUG": "/Z7 /Ob0 /Od /fsanitize=address"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "clang-debug", "configurePreset": "clang", "configuration": "Debug" },
+    { "name": "clang-release", "configurePreset": "clang", "configuration": "Release" },
+    { "name": "msvc-debug", "configurePreset": "msvc", "configuration": "Debug" },
+    { "name": "msvc-release", "configurePreset": "msvc", "configuration": "Release" }
+  ]
+}
