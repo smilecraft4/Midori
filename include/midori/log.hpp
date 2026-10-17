@@ -10,6 +10,12 @@
 
 #include <utility>
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#define MIDORI_COLD __declspec(noinline)
+#else
+#define MIDORI_COLD [[gnu::cold, gnu::noinline]]
+#endif
+
 namespace Midori {
 
 [[nodiscard]] Result<void> LogInit() noexcept;

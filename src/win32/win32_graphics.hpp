@@ -31,20 +31,21 @@ constexpr UINT kGraphicsFramesInFlight = 2;
 constexpr UINT kSwapChainBufferCount = 2; // latency is bounded by the frame waitable, not the count
 
 // A composition swap chain shown in the window through DirectComposition, so it can blend with the
-// desktop (premultiplied alpha). Buffers are allocated at least at the size of the window's monitor;
-// resizing within them only changes the source size, so it never reallocates.
+// desktop (premultiplied alpha). Its buffers are exactly the client area: composition swap chains
+// must use DXGI_SCALING_STRETCH, which scales a smaller source region (SetSourceSize) up to the whole
+// buffer, so oversized buffers would not show pixels 1:1.
 struct Win32SwapChain {
     std::array<ID3D12Resource*, kSwapChainBufferCount> buffers;
     IDXGISwapChain4* swapChain; // null marks the slot free
     IDCompositionTarget* target;
     IDCompositionVisual2* visual;
     HANDLE frameWait; // frame latency waitable, signaled when the swap chain can take a frame
-    UINT bufferWidth;
+    UINT bufferWidth; // the last non-empty client area; kept while minimized
     UINT bufferHeight;
-    UINT width;      // source size: the client area, 0 while minimized
+    UINT width;       // the client area, 0 while minimized
     UINT height;
-    bool needsFrame; // content changed since the last present
-    bool frameReady; // `frameWait` was consumed and no frame presented since
+    bool needsFrame;  // content changed since the last present
+    bool frameReady;  // `frameWait` was consumed and no frame presented since
 };
 
 // The win32 graphics backend's state. Owned by the main thread, like PlatformState. A window id
@@ -59,14 +60,16 @@ struct GraphicsState {
     ID3D12GraphicsCommandList* list; // closed between submits
     ID3D12Fence* fence;
     ID3D12DescriptorHeap* rtvs;
+    ID3D12RootSignature* tileRootSignature; // embedded in tile.vs.hlsl
+    ID3D12PipelineState* tilePipeline;
+    ID3D12DescriptorHeap* views;            // shader visible: the tile pool SRV
+    ID3D12Resource* tilePool;               // Texture2DArray, one slice per tile
     IDCompositionDesktopDevice* composition;
-    TracyD3D12Ctx gpuProfiler; // timestamp queries on `queue`, collected after each submit
-    std::uint64_t fenceValue;  // last value signaled on `queue`
+    TracyD3D12Ctx gpuProfiler;              // timestamp queries on `queue`, collected after each submit
+    std::uint64_t fenceValue;               // last value signaled on `queue`
     UINT rtvIncrement;
     UINT allocatorIndex;
 };
-
-extern GraphicsState gGraphicsState;
 
 // Fills `handles` with the frame waitables of the windows that need a frame and are not ready for one
 // yet, and `windows` with their ids. Returns the count. The message loop waits on them with messages.

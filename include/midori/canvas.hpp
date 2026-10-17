@@ -73,22 +73,9 @@ struct Viewport {
     float rot{0.0f};
 };
 
-[[nodiscard]] constexpr Viewport ViewportMove(Viewport viewport, float amountX, float amountY) noexcept {
-    viewport.posX += amountX;
-    viewport.posY += amountY;
-    return viewport;
-}
-
-[[nodiscard]] constexpr Viewport ViewportZoom(Viewport viewport, float amountX, float amountY) noexcept {
-    viewport.zoomX *= amountX;
-    viewport.zoomY *= amountY;
-    return viewport;
-}
-
-[[nodiscard]] constexpr Viewport ViewportRotate(Viewport viewport, float amount) noexcept {
-    viewport.rot += amount;
-    return viewport;
-}
+[[nodiscard]] Viewport ViewportMove(Viewport viewport, float amountX, float amountY) noexcept;
+[[nodiscard]] Viewport ViewportZoom(Viewport viewport, float amountX, float amountY) noexcept;
+[[nodiscard]] Viewport ViewportRotate(Viewport viewport, float amount) noexcept;
 
 struct CanvasViewCreateInfo {
     Viewport viewport{};

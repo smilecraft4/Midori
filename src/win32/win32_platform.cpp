@@ -1,14 +1,38 @@
 #include "win32_platform.hpp"
+
+// Packet layout: absolute positions, tip pressure, orientation (tilt), button bits and status (for
+// the eraser bit). Buttons are absolute too: the current bit set, compared against the last packet.
+#define PACKETDATA (PK_X | PK_Y | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_BUTTONS | PK_STATUS)
+#define PACKETMODE 0
+#include <pktdef.h>
+
 #include "win32_graphics.hpp"
 
 #include "midori/app.hpp"
 #include "midori/base.hpp"
+#include "midori/input.hpp"
 #include "midori/log.hpp"
 #include "win32_resource.h"
 
+#include <windowsx.h>
+
+#include <cmath>
+#include <iterator>
+#include <numbers>
 #include <span>
+#include <utility>
 
 #include <tracy/Tracy.hpp>
+
+namespace {
+
+[[noreturn]] void BreakAndAbort() noexcept {
+    if (IsDebuggerPresent()) {
+        DebugBreak();
+    }
+    std::abort();
+}
+} // namespace
 
 namespace Midori {
 
@@ -26,6 +50,14 @@ constexpr LRESULT kTabletDisableGestures = 0x00000001  // press and hold
                                          | 0x00010000; // flicks
 
 constexpr DWORD kWindowedStyle = WS_OVERLAPPEDWINDOW;
+
+constexpr int kWintabQueueSize = 128;
+
+void PlatformDispatch(Event event) noexcept {
+    if (const auto result = AppEvent(event); !result) {
+        MIDORI_LOG_ERROR("AppEvent failed: {}", ErrorMessage(result.error()));
+    }
+}
 
 [[nodiscard]] bool WindowValid(Window window) noexcept {
     return window < kWindowMax && gPlatformState.windows[window].hwnd;
@@ -58,6 +90,436 @@ void DispatchResize(Window window) noexcept {
         .window = window,
     };
     PlatformDispatch(event);
+}
+
+// Mouse messages Windows synthesizes from pen or touch input carry this signature.
+constexpr LPARAM kPenSignatureMask = 0xFFFFFF00;
+constexpr LPARAM kPenSignature = 0xFF515700;
+
+[[nodiscard]] Key KeyOffset(Key first, WPARAM offset) noexcept {
+    return static_cast<Key>(std::to_underlying(first) + offset);
+}
+
+[[nodiscard]] Key KeyFromMessage(WPARAM vk, LPARAM lParam) noexcept {
+    const bool extended = (lParam & (1 << 24)) != 0;
+    if (vk >= 'A' && vk <= 'Z') {
+        return KeyOffset(Key::A, vk - 'A');
+    }
+    if (vk >= '0' && vk <= '9') {
+        return KeyOffset(Key::Num0, vk - '0');
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        return KeyOffset(Key::F1, vk - VK_F1);
+    }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+        return KeyOffset(Key::NumPad0, vk - VK_NUMPAD0);
+    }
+    switch (vk) {
+        case VK_ESCAPE:
+            return Key::Escape;
+        case VK_TAB:
+            return Key::Tab;
+        case VK_CAPITAL:
+            return Key::CapsLock;
+        case VK_BACK:
+            return Key::Backspace;
+        case VK_RETURN:
+            return extended ? Key::NumPadEnter : Key::Enter;
+        case VK_SPACE:
+            return Key::Space;
+        case VK_INSERT:
+            return Key::Insert;
+        case VK_DELETE:
+            return Key::Delete;
+        case VK_HOME:
+            return Key::Home;
+        case VK_END:
+            return Key::End;
+        case VK_PRIOR:
+            return Key::PageUp;
+        case VK_NEXT:
+            return Key::PageDown;
+        case VK_LEFT:
+            return Key::Left;
+        case VK_RIGHT:
+            return Key::Right;
+        case VK_UP:
+            return Key::Up;
+        case VK_DOWN:
+            return Key::Down;
+        case VK_OEM_MINUS:
+            return Key::Minus;
+        case VK_OEM_PLUS:
+            return Key::Equal;
+        case VK_OEM_4:
+            return Key::LeftBracket;
+        case VK_OEM_6:
+            return Key::RightBracket;
+        case VK_OEM_5:
+            return Key::Backslash;
+        case VK_OEM_1:
+            return Key::Semicolon;
+        case VK_OEM_7:
+            return Key::Apostrophe;
+        case VK_OEM_3:
+            return Key::Grave;
+        case VK_OEM_COMMA:
+            return Key::Comma;
+        case VK_OEM_PERIOD:
+            return Key::Period;
+        case VK_OEM_2:
+            return Key::Slash;
+        case VK_DECIMAL:
+            return Key::NumPadDecimal;
+        case VK_DIVIDE:
+            return Key::NumPadDivide;
+        case VK_MULTIPLY:
+            return Key::NumPadMultiply;
+        case VK_SUBTRACT:
+            return Key::NumPadSubtract;
+        case VK_ADD:
+            return Key::NumPadAdd;
+        case VK_NUMLOCK:
+            return Key::NumLock;
+        case VK_SCROLL:
+            return Key::ScrollLock;
+        case VK_SNAPSHOT:
+            return Key::PrintScreen;
+        case VK_PAUSE:
+            return Key::Pause;
+        case VK_APPS:
+            return Key::Menu;
+        // Messages only say "shift", "control" or "alt": the scancode and extended bit tell the side.
+        case VK_SHIFT: {
+            const UINT scancode = (static_cast<UINT>(lParam) >> 16) & 0xFF;
+            return MapVirtualKeyW(scancode, MAPVK_VSC_TO_VK_EX) == VK_RSHIFT ? Key::RightShift : Key::LeftShift;
+        }
+        case VK_CONTROL:
+            return extended ? Key::RightCtrl : Key::LeftCtrl;
+        case VK_MENU:
+            return extended ? Key::RightAlt : Key::LeftAlt;
+        case VK_LWIN:
+            return Key::LeftSuper;
+        case VK_RWIN:
+            return Key::RightSuper;
+        default:
+            return Key::Unknown;
+    }
+}
+
+[[nodiscard]] KeyMod CurrentKeyMods() noexcept {
+    constexpr struct {
+        int vk;
+        KeyMod mod;
+    } kMods[] = {
+        {.vk = VK_LSHIFT, .mod = KeyMod::LShift},  {.vk = VK_RSHIFT, .mod = KeyMod::RShift},
+        {.vk = VK_LCONTROL, .mod = KeyMod::LCtrl}, {.vk = VK_RCONTROL, .mod = KeyMod::RCtrl},
+        {.vk = VK_LMENU, .mod = KeyMod::LAlt},     {.vk = VK_RMENU, .mod = KeyMod::RAlt},
+        {.vk = VK_LWIN, .mod = KeyMod::LSuper},    {.vk = VK_RWIN, .mod = KeyMod::RSuper},
+    };
+    KeyMod mods = KeyMod::None;
+    for (const auto& [vk, mod] : kMods) {
+        if (GetKeyState(vk) < 0) {
+            mods |= mod;
+        }
+    }
+    return mods;
+}
+
+void DispatchKey(Window window, WPARAM wParam, LPARAM lParam, bool down) noexcept {
+    // Bit 30 is the key's previous state: down and down again is auto-repeat.
+    InputState inputState = InputState::Release;
+    if (down) {
+        inputState = (lParam & (1 << 30)) != 0 ? InputState::Hold : InputState::Press;
+    }
+    Event event{};
+    event.type = EventType::Key;
+    event.key = KeyEvent{
+        .window = window,
+        .device = kDeviceSystem,
+        .key = KeyFromMessage(wParam, lParam),
+        .keyMods = CurrentKeyMods(),
+        .inputState = inputState,
+    };
+    PlatformDispatch(event);
+}
+
+// The tablet reports the pen itself; the mouse messages it also generates would double every stroke.
+[[nodiscard]] bool FromPen(Window window) noexcept {
+    const Win32Window& slot = gPlatformState.windows[window];
+    return slot.tablet && (slot.tabletProximity || (GetMessageExtraInfo() & kPenSignatureMask) == kPenSignature);
+}
+
+void HandleButton(Window window, Button button, bool down) noexcept {
+    if (FromPen(window)) {
+        return;
+    }
+    HWND hwnd = gPlatformState.windows[window].hwnd;
+    // Keep receiving the release when it happens outside the window.
+    if (down) {
+        SetCapture(hwnd);
+    } else if (GetCapture() == hwnd) {
+        ReleaseCapture();
+    }
+    Event event{};
+    event.type = EventType::Button;
+    event.button = ButtonEvent{
+        .window = window,
+        .device = kDeviceSystem,
+        .button = button,
+        .inputState = down ? InputState::Press : InputState::Release,
+    };
+    PlatformDispatch(event);
+}
+
+void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
+    Event event{};
+    event.type = EventType::Pointer;
+    event.pointer = PointerEvent{
+        .posX = static_cast<float>(GET_X_LPARAM(lParam)),
+        .posY = static_cast<float>(GET_Y_LPARAM(lParam)),
+        .pressure = (wParam & (MK_LBUTTON | MK_MBUTTON | MK_RBUTTON)) ? 1.0f : 0.0f,
+        .tiltX = 0.0f,
+        .tiltY = 0.0f,
+        .window = window,
+        .device = kDeviceSystem,
+    };
+    PlatformDispatch(event);
+}
+
+// Keyboard and mouse messages. Returns true when the message was consumed.
+[[nodiscard]] bool InputHandleMessage(Window window, UINT message, WPARAM wParam, LPARAM lParam) noexcept {
+    ZoneScopedN("InputHandleMessage");
+    switch (message) {
+        case WM_KEYDOWN:
+            DispatchKey(window, wParam, lParam, true);
+            return true;
+        case WM_KEYUP:
+            DispatchKey(window, wParam, lParam, false);
+            return true;
+        // Alt combinations arrive as system keys. They are consumed so Alt alone does not open the
+        // (absent) window menu and steal the next key, except Alt+F4 which DefWindowProc turns into close.
+        case WM_SYSKEYDOWN:
+            DispatchKey(window, wParam, lParam, true);
+            return wParam != VK_F4;
+        case WM_SYSKEYUP:
+            DispatchKey(window, wParam, lParam, false);
+            return true;
+        case WM_SYSCHAR:
+            // No menu: swallowing it also stops the error beep on Alt+letter.
+            return true;
+
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+            HandleButton(window, Button::Left, message == WM_LBUTTONDOWN);
+            return true;
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+            HandleButton(window, Button::Middle, message == WM_MBUTTONDOWN);
+            return true;
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+            HandleButton(window, Button::Right, message == WM_RBUTTONDOWN);
+            return true;
+        case WM_MOUSEMOVE:
+            if (!FromPen(window)) {
+                DispatchMouseMove(window, wParam, lParam);
+            }
+            return true;
+        default:
+            return false;
+    }
+}
+
+template<typename F>
+[[nodiscard]] F WintabLoad(HMODULE dll, const char* name) noexcept {
+    return reinterpret_cast<F>(GetProcAddress(dll, name));
+}
+
+void WintabTerminate() noexcept {
+    if (gPlatformState.wintab.dll) {
+        FreeLibrary(gPlatformState.wintab.dll);
+    }
+    gPlatformState.wintab = {};
+}
+
+void WintabUnavailable(const char* reason) noexcept {
+    MIDORI_LOG_INFO("Wintab unavailable ({}): pen input falls back to the mouse", reason);
+    WintabTerminate();
+}
+
+void WintabInit() noexcept {
+    ZoneScopedN("WintabInit");
+    Wintab& wintab = gPlatformState.wintab;
+    wintab.dll = LoadLibraryW(L"Wintab32.dll");
+    if (!wintab.dll) {
+        WintabUnavailable("Wintab32.dll not found");
+        return;
+    }
+    wintab.info = WintabLoad<decltype(wintab.info)>(wintab.dll, "WTInfoW");
+    wintab.open = WintabLoad<decltype(wintab.open)>(wintab.dll, "WTOpenW");
+    wintab.close = WintabLoad<decltype(wintab.close)>(wintab.dll, "WTClose");
+    wintab.packetsGet = WintabLoad<decltype(wintab.packetsGet)>(wintab.dll, "WTPacketsGet");
+    wintab.overlap = WintabLoad<decltype(wintab.overlap)>(wintab.dll, "WTOverlap");
+    wintab.queueSizeSet = WintabLoad<decltype(wintab.queueSizeSet)>(wintab.dll, "WTQueueSizeSet");
+    if (!wintab.info || !wintab.open || !wintab.close || !wintab.packetsGet || !wintab.overlap
+        || !wintab.queueSizeSet) {
+        WintabUnavailable("Wintab32.dll is missing entry points");
+        return;
+    }
+    // WTInfo(0, 0, nullptr) is non-zero when the tablet service is running.
+    if (!wintab.info(0, 0, nullptr)) {
+        WintabUnavailable("no tablet service");
+        return;
+    }
+
+    // The default system context keeps the system cursor following the pen.
+    LOGCONTEXTW& context = wintab.context;
+    if (!wintab.info(WTI_DEFSYSCTX, 0, &context)) {
+        WintabUnavailable("no default context");
+        return;
+    }
+
+    AXIS pressure{};
+    wintab.info(WTI_DEVICES, DVC_NPRESSURE, &pressure);
+    wintab.maxPressure = pressure.axMax > 0 ? static_cast<float>(pressure.axMax) : 1.0f;
+
+    AXIS orientation[3]{};
+    if (wintab.info(WTI_DEVICES, DVC_ORIENTATION, orientation) && orientation[0].axMax > 0
+        && orientation[1].axMax > 0) {
+        wintab.maxAzimuth = static_cast<float>(orientation[0].axMax);
+        wintab.maxAltitude = static_cast<float>(orientation[1].axMax);
+    }
+
+    // The screen area the driver maps the tablet to, in screen pixels.
+    wintab.screenX = static_cast<float>(context.lcSysOrgX);
+    wintab.screenY = static_cast<float>(context.lcSysOrgY);
+    wintab.screenWidth = static_cast<float>(context.lcSysExtX);
+    wintab.screenHeight = static_cast<float>(context.lcSysExtY);
+
+    // Report the full tablet resolution instead of screen pixels, for sub-pixel positions. A negative
+    // Y extent flips the axis so Y grows downwards like the screen.
+    context.lcOptions |= CXO_MESSAGES | CXO_SYSTEM;
+    context.lcPktData = PACKETDATA;
+    context.lcPktMode = PACKETMODE;
+    context.lcMoveMask = PACKETDATA;
+    context.lcBtnUpMask = context.lcBtnDnMask;
+    context.lcOutOrgX = 0;
+    context.lcOutOrgY = 0;
+    context.lcOutExtX = context.lcInExtX;
+    context.lcOutExtY = -context.lcInExtY;
+    wintab.tabletWidth = static_cast<float>(context.lcInExtX);
+    wintab.tabletHeight = static_cast<float>(context.lcInExtY);
+
+    MIDORI_LOG_INFO("Wintab: {} pressure levels, tilt {}", pressure.axMax + 1, wintab.maxAltitude > 0 ? "yes" : "no");
+}
+
+void WintabOpen(Window window) noexcept {
+    ZoneScopedN("WintabOpen");
+    const Wintab& wintab = gPlatformState.wintab;
+    if (!wintab.dll) {
+        return;
+    }
+    Win32Window& slot = gPlatformState.windows[window];
+    LOGCONTEXTW context = wintab.context;
+    slot.tablet = wintab.open(slot.hwnd, &context, TRUE);
+    if (!slot.tablet) {
+        MIDORI_LOG_WARN("WTOpen failed for window {}: no pen input there", window);
+        return;
+    }
+    // The default queue holds a handful of packets; a fast pen overflows it between messages.
+    if (!wintab.queueSizeSet(slot.tablet, kWintabQueueSize)) {
+        MIDORI_LOG_WARN("WTQueueSizeSet({}) failed: packets may be dropped", kWintabQueueSize);
+    }
+}
+
+void WintabClose(Window window) noexcept {
+    Win32Window& slot = gPlatformState.windows[window];
+    if (slot.tablet) {
+        gPlatformState.wintab.close(slot.tablet);
+        slot.tablet = nullptr;
+    }
+}
+
+void WintabActivate(Window window) noexcept {
+    // The focused window's context goes on top, so it is the one receiving packets.
+    const Win32Window& slot = gPlatformState.windows[window];
+    if (slot.tablet) {
+        gPlatformState.wintab.overlap(slot.tablet, TRUE);
+    }
+}
+
+void WintabDispatchButton(Window window, Device device, Button button, bool down) noexcept {
+    Event event{};
+    event.type = EventType::Button;
+    event.button = ButtonEvent{
+        .window = window,
+        .device = device,
+        .button = button,
+        .inputState = down ? InputState::Press : InputState::Release,
+    };
+    PlatformDispatch(event);
+}
+
+void WintabHandlePackets(Window window) noexcept {
+    ZoneScopedN("WintabHandlePackets");
+    const Wintab& wintab = gPlatformState.wintab;
+    Win32Window& slot = gPlatformState.windows[window];
+    if (!slot.tablet) {
+        return;
+    }
+
+    // Drain the whole queue at once: one WT_PACKET can stand for many packets.
+    PACKET packets[kWintabQueueSize];
+    const int count = wintab.packetsGet(slot.tablet, kWintabQueueSize, packets);
+
+    POINT clientOrigin{};
+    ClientToScreen(slot.hwnd, &clientOrigin);
+    const float originX = static_cast<float>(clientOrigin.x) - wintab.screenX;
+    const float originY = static_cast<float>(clientOrigin.y) - wintab.screenY;
+    const float scaleX = wintab.screenWidth / wintab.tabletWidth;
+    const float scaleY = wintab.screenHeight / wintab.tabletHeight;
+
+    for (int i = 0; i < count; ++i) {
+        const PACKET& packet = packets[i];
+        const Device device = (packet.pkStatus & TPS_INVERT) ? kDeviceEraser : kDevicePen;
+
+        float tiltX = 0.0f;
+        float tiltY = 0.0f;
+        if (wintab.maxAltitude > 0.0f) {
+            // Azimuth: clockwise from the tablet's top. Altitude: from the tablet's plane, 90 deg = upright.
+            const float azimuth = static_cast<float>(packet.pkOrientation.orAzimuth) / wintab.maxAzimuth * 2.0f
+                                * std::numbers::pi_v<float>;
+            const float altitude = static_cast<float>(std::abs(packet.pkOrientation.orAltitude)) / wintab.maxAltitude
+                                 * 0.5f * std::numbers::pi_v<float>;
+            const float lean = std::cos(altitude);
+            tiltX = lean * std::sin(azimuth);
+            tiltY = -lean * std::cos(azimuth);
+        }
+
+        Event event{};
+        event.type = EventType::Pointer;
+        event.pointer = PointerEvent{
+            .posX = (static_cast<float>(packet.pkX) * scaleX) - originX,
+            .posY = (static_cast<float>(packet.pkY) * scaleY) - originY,
+            .pressure = static_cast<float>(packet.pkNormalPressure) / wintab.maxPressure,
+            .tiltX = tiltX,
+            .tiltY = tiltY,
+            .window = window,
+            .device = device,
+        };
+        PlatformDispatch(event);
+
+        // Bit 0 is the tip, bits 1 and 2 the barrel buttons.
+        const DWORD changed = packet.pkButtons ^ slot.tabletButtons;
+        constexpr Button kButtons[] = {Button::Left, Button::Right, Button::Middle};
+        for (DWORD bit = 0; bit < std::size(kButtons); ++bit) {
+            if (changed & (1u << bit)) {
+                WintabDispatchButton(window, device, kButtons[bit], (packet.pkButtons & (1u << bit)) != 0);
+            }
+        }
+        slot.tabletButtons = packet.pkButtons;
+    }
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -158,12 +620,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
 } // namespace
 
-void PlatformDispatch(Event event) noexcept {
-    if (const auto result = AppEvent(event); !result) {
-        MIDORI_LOG_ERROR("AppEvent failed: {}", ErrorMessage(result.error()));
-    }
-}
-
 Result<void> PlatformInit(PlatformInitInfo initInfo) noexcept {
     ZoneScopedN("PlatformInit");
     MIDORI_ASSERT_ALWAYS(initInfo.hInstance, "PlatformInit needs the HINSTANCE passed to wWinMain");
@@ -175,12 +631,9 @@ Result<void> PlatformInit(PlatformInitInfo initInfo) noexcept {
         .cbSize = sizeof(WNDCLASSEXW),
         .lpfnWndProc = WindowProc,
         .hInstance = initInfo.hInstance,
-        .hIcon = static_cast<HICON>(LoadImageW(initInfo.hInstance, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON,
-                                               GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0)),
+        .hIcon = LoadIconW(initInfo.hInstance, MAKEINTRESOURCEW(IDI_ICON1)),
         .hCursor = LoadCursorW(nullptr, IDC_ARROW),
         .lpszClassName = kWindowClassName,
-        .hIconSm = static_cast<HICON>(LoadImageW(initInfo.hInstance, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON,
-                                                 GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0)),
     };
     gPlatformState.windowClass = RegisterClassExW(&windowClass);
     if (!gPlatformState.windowClass) {
@@ -364,4 +817,86 @@ Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) 
     return {};
 }
 
+void AssertAbort() noexcept {
+    spdlog::default_logger_raw()->flush();
+    BreakAndAbort();
+}
+
 } // namespace Midori
+
+// Global new/delete, replaced so every C++ allocation (the STL's and spdlog's included) shows up in
+// Tracy's memory view. Only the base forms are defined: the standard library's array, sized and
+// nothrow-delete forms forward to them. The nothrow new forms are defined too, because the default
+// ones call the throwing form, which aborts here instead of throwing. Aligned forms must use
+// _aligned_malloc/_aligned_free: free() cannot release an aligned block.
+//
+// Performance: while a profiler is connected, every TracyAlloc/TracyFree (here and in Heap) takes
+// Tracy's serial lock, so all threads' allocations are serialized through one mutex. If a capture
+// shows freezes, stalls or contention around allocation-heavy code, look here first: compare a run
+// with -DTRACY_ENABLE=OFF, or stop tracking the global new/delete and keep only Heap.
+//
+// Exit: the plain TracyAlloc/TracyFree assume Tracy's profiler is alive. Frees that run during
+// static destruction, after the profiler has shut down, can touch a dead profiler. If the app
+// crashes on exit inside Tracy, switch these to TracySecureAlloc/TracySecureFree, which check that
+// the profiler is still available first (at the cost of one extra check per call).
+
+void* operator new(std::size_t size) {
+    void* ptr = std::malloc(size ? size : 1);
+    if (!ptr) [[unlikely]] {
+        OutputDebugStringA("Midori: out of memory in operator new\n");
+        BreakAndAbort();
+    }
+    TracyAlloc(ptr, size);
+    return ptr;
+}
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    void* ptr = _aligned_malloc(size ? size : 1, static_cast<std::size_t>(alignment));
+    if (!ptr) [[unlikely]] {
+        OutputDebugStringA("Midori: out of memory in operator new\n");
+        BreakAndAbort();
+    }
+    TracyAlloc(ptr, size);
+    return ptr;
+}
+
+void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+    void* ptr = std::malloc(size ? size : 1);
+    if (ptr) {
+        TracyAlloc(ptr, size);
+    }
+    return ptr;
+}
+void* operator new[](std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+    void* ptr = std::malloc(size ? size : 1);
+    if (ptr) {
+        TracyAlloc(ptr, size);
+    }
+    return ptr;
+}
+void* operator new(std::size_t size, std::align_val_t alignment, const std::nothrow_t& /*tag*/) noexcept {
+    void* ptr = _aligned_malloc(size ? size : 1, static_cast<std::size_t>(alignment));
+    if (ptr) {
+        TracyAlloc(ptr, size);
+    }
+    return ptr;
+}
+void* operator new[](std::size_t size, std::align_val_t alignment, const std::nothrow_t& /*tag*/) noexcept {
+    void* ptr = _aligned_malloc(size ? size : 1, static_cast<std::size_t>(alignment));
+    if (ptr) {
+        TracyAlloc(ptr, size);
+    }
+    return ptr;
+}
+
+void operator delete(void* ptr) noexcept {
+    if (ptr) {
+        TracyFree(ptr);
+        std::free(ptr);
+    }
+}
+void operator delete(void* ptr, std::align_val_t /*alignment*/) noexcept {
+    if (ptr) {
+        TracyFree(ptr);
+        _aligned_free(ptr);
+    }
+}

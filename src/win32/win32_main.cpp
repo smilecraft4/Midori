@@ -47,20 +47,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
         return 1;
     }
 
-    // Sleeps until a message arrives or a window that needs a frame can take one, handles every
-    // pending message, then presents what is ready. Ends when the last window is destroyed (WM_QUIT).
     int exitCode = 0;
     for (;;) {
         std::array<HANDLE, kWindowMax> handles{};
         std::array<Window, kWindowMax> windows{};
         const DWORD count = GraphicsFrameWaitables(handles, windows);
         DWORD wait = WAIT_FAILED;
-        {
-            // Idle time: long zones here mean the app was asleep.
-            ZoneScopedN("MainWait");
-            ZoneValue(count);
-            wait = MsgWaitForMultipleObjectsEx(count, handles.data(), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        }
+        wait = MsgWaitForMultipleObjectsEx(count, handles.data(), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (wait == WAIT_FAILED) {
             MIDORI_LOG_ERROR("MsgWaitForMultipleObjectsEx failed: {}", GetLastError());
             exitCode = 1;
@@ -99,7 +92,6 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
     }
 
     AppTerminate();
-    // Destroys the windows, which releases their swap chains, so it runs before GraphicsTerminate.
     PlatformTerminate();
     GraphicsTerminate();
     LogTerminate();

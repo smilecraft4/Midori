@@ -16,7 +16,7 @@
 
 #include <array>
 
-#include "midori/input.hpp"
+#include "midori/input.hpp"    // IWYU pragma: export
 #include "midori/platform.hpp" // IWYU pragma: export
 
 namespace Midori {
@@ -70,19 +70,5 @@ struct PlatformState {
 };
 
 extern PlatformState gPlatformState;
-
-// Hands an event to AppEvent and logs a failure (win32_platform.cpp).
-void PlatformDispatch(Event event) noexcept;
-
-// Keyboard and mouse messages. Returns true when the message was consumed (win32_input.cpp).
-[[nodiscard]] bool InputHandleMessage(Window window, UINT message, WPARAM wParam, LPARAM lParam) noexcept;
-
-// Wintab pen input (win32_wintab.cpp). Every call is a no-op without a tablet.
-void WintabInit() noexcept;
-void WintabTerminate() noexcept;
-void WintabOpen(Window window) noexcept;
-void WintabClose(Window window) noexcept;
-void WintabActivate(Window window) noexcept;
-void WintabHandlePackets(Window window) noexcept;
 
 } // namespace Midori
