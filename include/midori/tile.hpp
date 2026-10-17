@@ -9,38 +9,46 @@
 
 namespace Midori {
 
-using TileKey = std::uint64_t;
-constexpr std::size_t kTileXBitSize = 25;
-constexpr std::size_t kTileXBitOffset = 0;
-constexpr std::size_t kTileYBitSize = 25;
-constexpr std::size_t kTileYBitOffset = kTileXBitSize;
-constexpr std::size_t kTileMipBitSize = 2;
-constexpr std::size_t kTileMipBitOffset = kTileYBitOffset + kTileYBitSize;
-constexpr std::size_t kTileLayerBitSize = 12;
-constexpr std::size_t kTileLayerBitOffset = kTileMipBitOffset + kTileMipBitSize;
-static_assert((kTileLayerBitOffset + kTileLayerBitSize) <= sizeof(TileKey) * 8);
-
 using TileAxis = std::int32_t;
 
 using TileMip = std::uint8_t;
 constexpr TileMip kTileMipMax = 0b11 + 1; // 256, 128, 64, 32
 
-struct Tile {
-    Canvas canvas{kCanvasInvalid};
-    TileMip mip{};
-    Layer layer{kLayerInvalid};
+struct TileGridPos {
     TileAxis x{};
     TileAxis y{};
 };
 
-struct TileNewInfo {
-    Tile tile;
-    PixelFormat pixelFormat;
-    bool initializeTexture;
+struct Tile {
+    Canvas canvas{kCanvasInvalid};
+    TileMip mip{};
+    Layer layer{kLayerInvalid};
+    TileGridPos gridPos{};
 };
-[[nodiscard]] Result<void> TileNew(TileNewInfo newInfo) noexcept;
 
-[[nodiscard]] Result<void> TileLoad(Tile tile) noexcept;
+// Flipping the sign bit of x and y (offset binary) keeps -1 next to 0 in sorted order.
+constexpr TileKey TileKeyMake(Layer layer, TileMip mip, TileGridPos gridPos) noexcept {
+    return ((static_cast<TileKey>(static_cast<std::uint32_t>(gridPos.x) & ((TileKey{1} << kTileXBitSize) - 1))
+             ^ (TileKey{1} << (kTileXBitSize - 1)))
+            << kTileXBitOffset)
+         | ((static_cast<TileKey>(static_cast<std::uint32_t>(gridPos.y) & ((TileKey{1} << kTileYBitSize) - 1))
+             ^ (TileKey{1} << (kTileYBitSize - 1)))
+            << kTileYBitOffset)
+         | (static_cast<TileKey>(mip) << kTileMipBitOffset) | //
+           (static_cast<TileKey>(layer) << kTileLayerBitOffset);
+}
+
+constexpr TileKey TileGridPosKey(TileKey key) noexcept {
+    return key & ~kTileLayerMask;
+}
+
+constexpr TileKey TileGridPosLayerKey(TileKey gridPosKey, Layer layer) noexcept {
+    return gridPosKey | (static_cast<TileKey>(layer) << kTileLayerBitOffset);
+}
+
+constexpr TileMip TileKeyMip(TileKey key) noexcept {
+    return static_cast<TileMip>((key >> kTileMipBitOffset) & ((TileKey{1} << kTileMipBitSize) - 1));
+}
 
 struct TileDuplicateInfo {
     Tile srcTile;
@@ -70,10 +78,6 @@ struct TileMoveInfo {
 [[nodiscard]] Result<void> TileUnload(Tile tile) noexcept;
 
 [[nodiscard]] Result<void> TileDelete(Tile tile) noexcept;
-
-[[nodiscard]] Result<void> TileCache(Tile tile) noexcept;
-
-[[nodiscard]] Result<void> TileSave(Tile tile) noexcept;
 
 using TileTextureTransferSlot = std::uint8_t;
 

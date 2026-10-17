@@ -15,6 +15,9 @@ struct AppState {
     std::array<WindowState, kWindowMax> windows;
     std::array<CanvasState, kCanvasMax> canvases;
     std::array<CanvasState, kCanvasViewMax> canvasViews;
+    // Shared by every window. Bumped at the start of a frame, right before the views report their visible
+    // tile grid positions, so a tile with an older `visibleFrame` is shown nowhere.
+    std::uint32_t frame;
 };
 
 [[nodiscard]] Result<void> AppInit(AppInitInfo initInfo) noexcept;
