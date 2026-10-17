@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -26,43 +27,60 @@ using CanvasView = std::uint8_t;
 constexpr CanvasView kCanvasViewMax = 16;
 constexpr CanvasView kCanvasViewInvalid = std::numeric_limits<CanvasView>::max();
 
+enum struct LayerFlags : std::uint8_t {
+    None = 0,
+    Folder = 1 << 0,
+    Locked = 1 << 1,
+    Mask = 1 << 2,
+    Internal = 1 << 3,
+    Deleted = 1 << 4, // out of the order; the save deletes its entry and tile range, then frees its id
+    Dirty = 1 << 5,   // changed since the last save
+};
+template<>
+inline constexpr bool kEnumFlags<LayerFlags> = true;
+
 struct LayerCreateInfo {
     float opacity{1.0f};
     Layer id{kLayerInvalid}; // if `kLayerInvalid` get any available id
     Layer height{};
-    Layer childsNum{};       // if `childsNum > 0` this layer is a folder
     BlendMode blendMode{};
-    bool locked{};
-    bool mask{};
-    bool internal_{};
-    bool persisted_{};
-    bool dirty_{};
+    LayerFlags flags{};
 };
 
+// Indexed by layer id.
 struct LayerState {
     float opacity{1.0f};
-    Layer id{kLayerInvalid};
-    Layer height{};
-    Layer childsNum{}; // if `childsNum > 0` this layer is a folder
+    std::uint32_t contentGeneration{}; // folders: bumped when anything inside changes how it looks
+    std::uint32_t tileCount{};         // tiles in memory or in the file
+    Layer descendants{};               // folders: the heights [height - descendants, height) are inside
     BlendMode blendMode{};
-    bool locked{};
-    bool mask{};
-    bool internal_{};
-    bool persisted_{};
-    bool dirty_{};
+    LayerFlags flags{};
 };
 
-// Ordered mip, y, x, layer from the top bit down, so a grid position's layers are adjacent in sorted order.
+// One file record per layer id, written with a memcpy.
+struct LayerFileEntry {
+    std::array<char, kLayerNameLenMax> name;
+    float opacity;
+    std::uint32_t contentGeneration;
+    std::uint32_t tileCount;
+    Layer descendants;
+    BlendMode blendMode;
+    LayerFlags flags; // Deleted and Dirty are never written
+};
+static_assert(std::is_trivially_copyable_v<LayerFileEntry>);
+static_assert(sizeof(LayerFileEntry) == kLayerNameLenMax + 16);
+
+// Ordered layer, mip, y, x from the top bit down, so a layer's tiles are one key range.
 using TileKey = std::uint64_t;
-constexpr std::size_t kTileLayerBitSize = 12;
-constexpr std::size_t kTileLayerBitOffset = 0;
 constexpr std::size_t kTileXBitSize = 25;
-constexpr std::size_t kTileXBitOffset = kTileLayerBitOffset + kTileLayerBitSize;
+constexpr std::size_t kTileXBitOffset = 0;
 constexpr std::size_t kTileYBitSize = 25;
 constexpr std::size_t kTileYBitOffset = kTileXBitOffset + kTileXBitSize;
 constexpr std::size_t kTileMipBitSize = 2;
 constexpr std::size_t kTileMipBitOffset = kTileYBitOffset + kTileYBitSize;
-static_assert((kTileMipBitOffset + kTileMipBitSize) <= sizeof(TileKey) * 8);
+constexpr std::size_t kTileLayerBitSize = 12;
+constexpr std::size_t kTileLayerBitOffset = kTileMipBitOffset + kTileMipBitSize;
+static_assert((kTileLayerBitOffset + kTileLayerBitSize) <= sizeof(TileKey) * 8);
 constexpr TileKey kTileLayerMask = ((TileKey{1} << kTileLayerBitSize) - 1) << kTileLayerBitOffset;
 
 // Flags only describe finished work; work in flight is in TileTransfer.
@@ -133,14 +151,19 @@ struct CanvasState {
     std::vector<TileGridPosState> gridPositions;
     std::unordered_map<TileKey, std::uint32_t> gridPosIndices;
     std::vector<TileAtlasCell> freeAtlasCells;
-    std::vector<TileKey> uploads;                         // RAM cached tiles waiting for an upload slot
-    std::vector<TileRead> reads;                          // tiles waiting for a read + decompress + upload job
-    std::vector<TileDownload> downloads;                  // tiles waiting for a download slot
-    std::vector<TileKey> cacheSaves;                      // evicted tiles saved from their cache entry
-    std::vector<TileKey> visibleDirty;                    // dirty grid positions shown this frame, not queued yet
-    std::vector<TileKey> composites;                      // visible dirty grid positions with every layer tile loaded
+    std::vector<TileKey> uploads;        // RAM cached tiles waiting for an upload slot
+    std::vector<TileRead> reads;         // tiles waiting for a read + decompress + upload job
+    std::vector<TileDownload> downloads; // tiles waiting for a download slot
+    std::vector<TileKey> cacheSaves;     // evicted tiles saved from their cache entry
+    std::vector<TileKey> visibleDirty;   // dirty grid positions shown this frame, not queued yet
+    std::vector<TileKey> composites;     // visible dirty grid positions with every layer tile loaded
+    std::vector<Layer> layersOrder;      // layersOrder[height] = id, bottom to top; saved as one entry
+    std::vector<Layer> freeLayers;       // largest first, so pop_back gives the smallest
+    std::array<LayerState, kLayerMax> layers;
+    std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
     std::string_view filename;
     std::array<CanvasView, kCanvasViewMax> canvasViews{}; // the first `canvasViewsNum` are valid
+    Layer largestLayer{};
     std::uint8_t canvasViewsNum{};
     PixelFormat pixelFormat{};
 };
@@ -179,27 +202,5 @@ struct CanvasViewState {
 
 [[nodiscard]] Result<CanvasView> CanvasViewCreate(CanvasViewCreateInfo createInfo) noexcept;
 [[nodiscard]] Result<void> CanvasViewDestroy(CanvasView canvasView) noexcept;
-
-struct PaintStrokePoint {
-    Color::Linear color{};
-    float posX{};
-    float posY{};
-    float radiusX{};
-    float radiusY{};
-    float rot{};
-    float hardness{};
-    float flow{};
-};
-
-struct EraseStrokePoint {
-    float posX{};
-    float posY{};
-    float radiusX{};
-    float radiusY{};
-    float rot{};
-    float hardness{};
-    float flow{};
-    float opacity{};
-};
 
 } // namespace Midori
