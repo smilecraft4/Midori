@@ -31,9 +31,10 @@ struct Win32Window {
     WINDOWPLACEMENT restore; // placement before entering fullscreen
     WindowState state;
     HWND hwnd;
-    HCTX tablet;          // Wintab context, null without a tablet
-    DWORD tabletButtons;  // button bits of the last tablet packet, to detect press and release
-    bool tabletProximity; // pen in range: mouse messages it generates are ignored
+    HCTX tablet;           // Wintab context, null without a tablet
+    DWORD tabletButtons;   // button bits of the last tablet packet, to detect press and release
+    wchar_t highSurrogate; // first half of a UTF-16 pair from WM_CHAR, 0 when none is pending
+    bool tabletProximity;  // pen in range: mouse messages it generates are ignored
 };
 
 // Wintab32.dll entry points, loaded at PlatformInit. All null when no tablet driver is installed.

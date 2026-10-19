@@ -194,9 +194,12 @@ enum struct EventType : std::uint8_t {
     Unknown,
 
     WindowResize,
+    WindowFocus,
     Key,
+    Text,
     Button,
     Pointer,
+    Wheel,
 };
 
 // Client-area size in physical pixels; 0x0 while minimized. Also sent when the DPI changes.
@@ -207,12 +210,24 @@ struct WindowResizeEvent {
     Window window;
 };
 
+// Losing focus means every held key and button is released without an event.
+struct WindowFocusEvent {
+    Window window;
+    bool focused;
+};
+
 struct KeyEvent {
     Window window;
     Device device;
     Key key;
     KeyMod keyMods;
     InputState inputState;
+};
+
+// One Unicode codepoint of typed text, after the keyboard layout and dead keys are applied.
+struct TextEvent {
+    char32_t codepoint;
+    Window window;
 };
 
 struct ButtonEvent {
@@ -235,13 +250,24 @@ struct PointerEvent {
     Device device;
 };
 
+// In wheel notches, fractional for precise touchpads. +x scrolls right, +y scrolls up (away from the user).
+struct WheelEvent {
+    float deltaX;
+    float deltaY;
+    Window window;
+    Device device;
+};
+
 struct Event {
     EventType type{};
     union {
         KeyEvent key;
+        TextEvent text;
         ButtonEvent button;
         PointerEvent pointer;
+        WheelEvent wheel;
         WindowResizeEvent windowResize;
+        WindowFocusEvent windowFocus;
     };
 };
 

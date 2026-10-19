@@ -12,6 +12,7 @@
 #include "midori/base.hpp"
 #include "midori/input.hpp"
 #include "midori/log.hpp"
+#include "midori/ui.hpp"
 #include "win32_resource.h"
 
 #include <windowsx.h>
@@ -287,6 +288,52 @@ void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
     PlatformDispatch(event);
 }
 
+// WM_CHAR sends UTF-16 units: a codepoint above U+FFFF arrives as two messages. Control characters
+// are not text; they arrive as key events.
+void DispatchText(Window window, WPARAM wParam) noexcept {
+    Win32Window& slot = gPlatformState.windows[window];
+    const auto unit = static_cast<char32_t>(wParam);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+        slot.highSurrogate = static_cast<wchar_t>(unit);
+        return;
+    }
+    char32_t codepoint = unit;
+    if (unit >= 0xDC00 && unit <= 0xDFFF) {
+        if (!slot.highSurrogate) {
+            return;
+        }
+        codepoint = 0x10000 + ((static_cast<char32_t>(slot.highSurrogate) - 0xD800) << 10) + (unit - 0xDC00);
+    }
+    slot.highSurrogate = 0;
+    if (codepoint < 0x20 || codepoint == 0x7F) {
+        return;
+    }
+    Event event{};
+    event.type = EventType::Text;
+    event.text = TextEvent{.codepoint = codepoint, .window = window};
+    PlatformDispatch(event);
+}
+
+void DispatchWheel(Window window, WPARAM wParam, bool horizontal) noexcept {
+    const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+    Event event{};
+    event.type = EventType::Wheel;
+    event.wheel = WheelEvent{
+        .deltaX = horizontal ? delta : 0.0f,
+        .deltaY = horizontal ? 0.0f : delta,
+        .window = window,
+        .device = kDeviceSystem,
+    };
+    PlatformDispatch(event);
+}
+
+void DispatchFocus(Window window, bool focused) noexcept {
+    Event event{};
+    event.type = EventType::WindowFocus;
+    event.windowFocus = WindowFocusEvent{.window = window, .focused = focused};
+    PlatformDispatch(event);
+}
+
 // Keyboard and mouse messages. Returns true when the message was consumed.
 [[nodiscard]] bool InputHandleMessage(Window window, UINT message, WPARAM wParam, LPARAM lParam) noexcept {
     ZoneScopedN("InputHandleMessage");
@@ -308,6 +355,9 @@ void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
         case WM_SYSCHAR:
             // No menu: swallowing it also stops the error beep on Alt+letter.
             return true;
+        case WM_CHAR:
+            DispatchText(window, wParam);
+            return true;
 
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:
@@ -325,6 +375,10 @@ void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
             if (!FromPen(window)) {
                 DispatchMouseMove(window, wParam, lParam);
             }
+            return true;
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+            DispatchWheel(window, wParam, message == WM_MOUSEHWHEEL);
             return true;
         default:
             return false;
@@ -584,6 +638,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 WintabActivate(window);
             }
             break;
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+            DispatchFocus(window, message == WM_SETFOCUS);
+            return 0;
         case WT_PACKET:
             WintabHandlePackets(window);
             return 0;
@@ -600,6 +658,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (const auto res = GraphicsWindowTerminate(window); !res) {
                 MIDORI_LOG_ERROR("GraphicsWindowTerminate failed: {}", ErrorMessage(res.error()));
             }
+            UiWindowTerminate(window);
             slot = {};
             bool anyWindowLeft = false;
             for (const Win32Window& other : gPlatformState.windows) {
@@ -715,7 +774,12 @@ Result<Window> WindowCreate(WindowCreateInfo createInfo) noexcept {
     }
     SetWindowPos(hwnd, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 
-    if (const auto res = GraphicsWindowInit(GraphicsWindowInitInfo{.window = window}); !res) {
+    const auto ui = UiWindowInit(window);
+    if (!ui) {
+        DestroyWindow(hwnd);
+        return std::unexpected(ui.error());
+    }
+    if (const auto res = GraphicsWindowInit(GraphicsWindowInitInfo{.ui = *ui, .window = window}); !res) {
         DestroyWindow(hwnd);
         return std::unexpected(res.error());
     }

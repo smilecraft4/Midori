@@ -3,6 +3,8 @@
 #include "midori/base.hpp"
 #include "midori/platform.hpp"
 
+struct ImGuiContext;
+
 namespace Midori {
 
 // Graphics calls belong to the thread that called GraphicsInit, the same one as platform calls.
@@ -17,6 +19,7 @@ struct GraphicsInitInfo;
 void GraphicsTerminate() noexcept;
 
 struct GraphicsWindowInitInfo {
+    ImGuiContext* ui; // the window's UI context; its renderer backend lives until GraphicsWindowTerminate
     Window window;
 };
 
@@ -24,5 +27,7 @@ struct GraphicsWindowInitInfo {
 // Presents the window now, waiting until it can take a frame.
 [[nodiscard]] Result<void> GraphicsWindowPresent(Window window) noexcept;
 [[nodiscard]] Result<void> GraphicsWindowTerminate(Window window) noexcept;
+// The window gets a frame at its next vblank, from GraphicsUpdate.
+void GraphicsWindowRequestFrame(Window window) noexcept;
 
 } // namespace Midori

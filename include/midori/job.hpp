@@ -3,8 +3,12 @@
 #include "midori/base.hpp"
 #include "midori/tile.hpp"
 #include <cstdint>
+#include <limits>
 
 namespace Midori {
+
+using Worker = std::uint8_t;
+constexpr Worker kWorkerInvalid = std::numeric_limits<Worker>::max();
 
 enum struct JobType : std::uint8_t {
     TileLoad,
@@ -30,6 +34,19 @@ struct Job {
     Error error;
 };
 
-[[nodiscard]] Result<void> JobSubmit(Job job) noexcept;
+using JobExecuteFn = Result<void>(Worker, Job);
+
+struct JobsInitInfo {
+    Worker workerCount{kWorkerInvalid}; // by default uses `std::ceil(2, std::thread::hardware_concurrency() - 2)`
+    JobExecuteFn executeFn;
+};
+
+Result<void> JobsInit(JobsInitInfo initInfo) noexcept;
+Result<void> JobsUpdate() noexcept;
+void JobsTerminate() noexcept;
+void JobsWait() noexcept;
+bool JobsBusy() noexcept;
+
+Result<void> JobSubmit(Job job) noexcept;
 
 } // namespace Midori

@@ -40,11 +40,31 @@ set(TRACY_ONLY_LOCALHOST ON)
 set(TRACY_STATIC ON)
 add_subdirectory(vendors/tracy)
 
+# Only the DX12 renderer backend is built: input comes from Midori's own events, not imgui_impl_win32.
+add_library(imgui STATIC
+    vendors/imgui/imgui.cpp
+    vendors/imgui/imgui_demo.cpp
+    vendors/imgui/imgui_draw.cpp
+    vendors/imgui/imgui_tables.cpp
+    vendors/imgui/imgui_widgets.cpp
+    vendors/imgui/backends/imgui_impl_dx12.cpp
+)
+target_include_directories(imgui SYSTEM PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendors/imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendors/imgui/backends
+)
+target_compile_definitions(imgui PUBLIC
+    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    IMGUI_USE_WCHAR32
+)
+target_link_libraries(imgui PRIVATE d3d12 dxgi d3dcompiler)
+
 set(MIDORI_SOURCES
     src/app.cpp
     src/base.cpp
     src/canvas.cpp
     src/color.cpp
+    src/ui.cpp
 )
 
 set(MIDORI_SOURCES_WIN32
@@ -119,6 +139,6 @@ target_precompile_headers(midori PRIVATE
     <string_view>
 )
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient d3d12 dxgi dxguid dcomp)
+target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui d3d12 dxgi dxguid dcomp)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})

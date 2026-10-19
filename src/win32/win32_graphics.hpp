@@ -29,6 +29,8 @@ struct GraphicsInitInfo {
 
 constexpr UINT kGraphicsFramesInFlight = 2;
 constexpr UINT kSwapChainBufferCount = 2; // latency is bounded by the frame waitable, not the count
+// SRVs for UI textures. A context holds its font atlas, plus the replaced one while the atlas grows.
+constexpr UINT kUiTextureMax = 4 * kWindowMax;
 
 // A composition swap chain shown in the window through DirectComposition, so it can blend with the
 // desktop (premultiplied alpha). Its buffers are exactly the client area: composition swap chains
@@ -39,6 +41,7 @@ struct Win32SwapChain {
     IDXGISwapChain4* swapChain; // null marks the slot free
     IDCompositionTarget* target;
     IDCompositionVisual2* visual;
+    ImGuiContext* ui; // its DX12 renderer backend was initialized by GraphicsWindowInit
     HANDLE frameWait; // frame latency waitable, signaled when the swap chain can take a frame
     UINT bufferWidth; // the last non-empty client area; kept while minimized
     UINT bufferHeight;
@@ -50,6 +53,7 @@ struct Win32SwapChain {
 
 // The win32 graphics backend's state. Owned by the main thread, like PlatformState. A window id
 // indexes `windows`; window `w` owns RTVs [w * kSwapChainBufferCount, (w + 1) * kSwapChainBufferCount).
+// `views` holds the tile pool SRV at 0, then the UI texture SRVs; `uiTextures` marks the used ones.
 struct GraphicsState {
     std::array<Win32SwapChain, kWindowMax> windows;
     std::array<ID3D12CommandAllocator*, kGraphicsFramesInFlight> allocators;
@@ -62,13 +66,15 @@ struct GraphicsState {
     ID3D12DescriptorHeap* rtvs;
     ID3D12RootSignature* tileRootSignature; // embedded in tile.vs.hlsl
     ID3D12PipelineState* tilePipeline;
-    ID3D12DescriptorHeap* views;            // shader visible: the tile pool SRV
+    ID3D12DescriptorHeap* views;            // shader visible: the tile pool SRV, then UI textures
     ID3D12Resource* tilePool;               // Texture2DArray, one slice per tile
     IDCompositionDesktopDevice* composition;
     TracyD3D12Ctx gpuProfiler;              // timestamp queries on `queue`, collected after each submit
     std::uint64_t fenceValue;               // last value signaled on `queue`
     UINT rtvIncrement;
+    UINT viewIncrement;
     UINT allocatorIndex;
+    std::array<bool, kUiTextureMax> uiTextures;
 };
 
 // Fills `handles` with the frame waitables of the windows that need a frame and are not ready for one

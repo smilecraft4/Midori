@@ -22,6 +22,9 @@ struct AppState {
 
 [[nodiscard]] Result<void> AppInit(AppInitInfo initInfo) noexcept;
 [[nodiscard]] Result<void> AppEvent(Event event) noexcept;
+// The renderer is about to draw this window: last chance to update what it shows. Runs inside the
+// renderer's submit, so it must not create or destroy windows.
+void AppWindowFrame(Window window) noexcept;
 void AppTerminate() noexcept;
 
 [[nodiscard]] Result<void> AppCanvasNew(Window window) noexcept;
