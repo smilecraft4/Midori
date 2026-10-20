@@ -2,6 +2,8 @@
 #include "midori/log.hpp"
 
 #include <chrono>
+#include <cmath>
+#include <numbers>
 #include <utility>
 
 #include <imgui.h>
@@ -154,6 +156,8 @@ constexpr float kFirstFrameSeconds = 1.0f / 60.0f;
             return event.windowResize.window;
         case EventType::WindowFocus:
             return event.windowFocus.window;
+        case EventType::WindowDestroy:
+            return event.windowDestroy.window;
         case EventType::Key:
             return event.key.window;
         case EventType::Text:
@@ -200,7 +204,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.BackendPlatformName = "midori";
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // No keyboard navigation: Space would press the focused widget instead of navigating the canvas.
     // imgui.cpp's default Win32 IME handler places the candidate window over this handle.
     ImGui::GetMainViewport()->PlatformHandleRaw = *hwnd;
     ApplyDpiScale(state->dpiScale);
@@ -234,6 +238,8 @@ bool UiEvent(const Event& event) noexcept {
             return false;
         case EventType::WindowFocus:
             io.AddFocusEvent(event.windowFocus.focused);
+            return false;
+        case EventType::WindowDestroy:
             return false;
         case EventType::Key: {
             // ImGui repeats held keys itself.
@@ -273,7 +279,7 @@ bool UiEvent(const Event& event) noexcept {
     return false;
 }
 
-void UiWindowFrame(Window window) noexcept {
+void UiWindowFrame(Window window, Viewport* viewport) noexcept {
     ZoneScopedN("UiWindowFrame");
     MIDORI_ASSERT(window < kWindowMax && gUiState.contexts[window], "UiWindowFrame: no context for window {}", window);
     const auto state = WindowGetState(window);
@@ -293,7 +299,21 @@ void UiWindowFrame(Window window) noexcept {
     io.DisplaySize = ImVec2(static_cast<float>(state->width), static_cast<float>(state->height));
 
     ImGui::NewFrame();
-    ImGui::ShowDemoWindow();
+    // ImGui::ShowDemoWindow();
+    if (viewport) {
+        if (ImGui::Begin("View")) {
+            ImGui::Text("Zoom %.1f%%  Rotation %.1f deg", std::abs(viewport->zoomX) * 100.0f,
+                        viewport->rot * 180.0f / std::numbers::pi_v<float>);
+            if (ImGui::Button("Flip X")) {
+                *viewport = ViewportZoom(*viewport, -1.0f, 1.0f);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Flip Y")) {
+                *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
+            }
+        }
+        ImGui::End();
+    }
     ImGui::Render();
 }
 

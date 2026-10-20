@@ -195,6 +195,7 @@ enum struct EventType : std::uint8_t {
 
     WindowResize,
     WindowFocus,
+    WindowDestroy,
     Key,
     Text,
     Button,
@@ -214,6 +215,11 @@ struct WindowResizeEvent {
 struct WindowFocusEvent {
     Window window;
     bool focused;
+};
+
+// The window is going away; its id may be reused by the next WindowCreate.
+struct WindowDestroyEvent {
+    Window window;
 };
 
 struct KeyEvent {
@@ -268,6 +274,7 @@ struct Event {
         WheelEvent wheel;
         WindowResizeEvent windowResize;
         WindowFocusEvent windowFocus;
+        WindowDestroyEvent windowDestroy;
     };
 };
 

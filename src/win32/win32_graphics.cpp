@@ -39,15 +39,6 @@ struct Matrix4 {
     std::array<float, 16> m;
 };
 
-[[nodiscard]] constexpr Matrix4 Matrix4Identity() noexcept {
-    return Matrix4{.m = {
-                       1.0f, 0.0f, 0.0f, 0.0f, //
-                       0.0f, 1.0f, 0.0f, 0.0f, //
-                       0.0f, 0.0f, 1.0f, 0.0f, //
-                       0.0f, 0.0f, 0.0f, 1.0f  //
-                   }};
-}
-
 // Maps [left, right] x [top, bottom] x [nearZ, farZ] to D3D clip space: x to [-1, 1], y to [1, -1] (so
 // `top` lands at the top of the viewport whichever way y grows) and z to [0, 1].
 [[nodiscard]] constexpr Matrix4 Matrix4Orthographic(float left, float right, float top, float bottom, float nearZ,
@@ -71,6 +62,34 @@ struct Matrix4 {
                        -(left + right) / width,
                        -(top + bottom) / height,
                        -nearZ / depth,
+                       1.0f, //
+                   }};
+}
+
+// The rows of view = ((canvas - pos) * R(rot)) * S(zoomX, zoomY), see Viewport.
+[[nodiscard]] Matrix4 Matrix4CanvasToView(Viewport viewport) noexcept {
+    const float c = std::cos(viewport.rot);
+    const float s = std::sin(viewport.rot);
+    const float m00 = c * viewport.zoomX;
+    const float m01 = s * viewport.zoomY;
+    const float m10 = -s * viewport.zoomX;
+    const float m11 = c * viewport.zoomY;
+    return Matrix4{.m = {
+                       m00,
+                       m01,
+                       0.0f,
+                       0.0f, //
+                       m10,
+                       m11,
+                       0.0f,
+                       0.0f, //
+                       0.0f,
+                       0.0f,
+                       1.0f,
+                       0.0f, //
+                       -((viewport.posX * m00) + (viewport.posY * m10)),
+                       -((viewport.posX * m01) + (viewport.posY * m11)),
+                       0.0f,
                        1.0f, //
                    }};
 }
@@ -243,33 +262,41 @@ void ReleaseWindow(Win32SwapChain& slot) noexcept {
                 const CD3DX12_RECT rect(0, 0, static_cast<LONG>(slot.width), static_cast<LONG>(slot.height));
                 state.list->ClearRenderTargetView(rtvs[i], kBackground, 1, &rect);
 
-                // One canvas view covering the client area, rebuilt every frame so a resize or DPI change
-                // shows on the next present. The projection spans the view in DIPs, so a canvas unit keeps
-                // its physical size at any DPI; the viewport maps clip space back to physical pixels.
-                // View space (0, 0) is the center of the view, y down. The center is floored to a whole
-                // physical pixel so canvas edges stay on pixel boundaries when the size is odd.
-                const float width = static_cast<float>(slot.width);
-                const float height = static_cast<float>(slot.height);
-                const float dpiScale = gPlatformState.windows[windows[i]].state.dpiScale;
-                const float centerX = std::floor(width * 0.5f);
-                const float centerY = std::floor(height * 0.5f);
-                const ViewportConstants viewport{
-                    .canvasToView = Matrix4Identity(),
-                    .viewToClip = Matrix4Orthographic(-centerX / dpiScale, (width - centerX) / dpiScale,
-                                                      -centerY / dpiScale, (height - centerY) / dpiScale, 0.0f, 1.0f),
-                };
-                const CD3DX12_VIEWPORT target(0.0f, 0.0f, width, height);
                 // Set per window: the previous window's UI left its own pipeline bound.
                 state.list->SetPipelineState(state.tilePipeline);
                 state.list->SetGraphicsRootSignature(state.tileRootSignature);
                 state.list->SetGraphicsRootDescriptorTable(kTilePoolRootParameter, ViewGpu(kTilePoolView));
                 state.list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
                 state.list->OMSetRenderTargets(1, &rtvs[i], FALSE, nullptr);
-                state.list->RSSetViewports(1, &target);
                 state.list->RSSetScissorRects(1, &rect);
-                state.list->SetGraphicsRoot32BitConstants(kViewportRootParameter, kViewportConstantCount, &viewport, 0);
-                state.list->SetGraphicsRoot32BitConstant(kTileSliceRootParameter, 0, 0);
-                state.list->DrawInstanced(kTileVertexCount, 1, 0, 0);
+                for (const CanvasViewState& view : gAppState.canvasViews) {
+                    if (view.id == kCanvasViewInvalid || view.window != windows[i]) {
+                        continue;
+                    }
+                    // Every view covers the whole client area for now, rebuilt every frame so a resize or
+                    // DPI change shows on the next present. The projection spans the view in DIPs, so a
+                    // canvas unit keeps its physical size at any DPI; the viewport maps clip space back to
+                    // physical pixels. View space (0, 0) is the center of the view, y down. The center is
+                    // floored to a whole physical pixel so canvas edges stay on pixel boundaries when the
+                    // size is odd.
+                    const float width = static_cast<float>(slot.width);
+                    const float height = static_cast<float>(slot.height);
+                    const float dpiScale = gPlatformState.windows[windows[i]].state.dpiScale;
+                    const float centerX = std::floor(width * 0.5f);
+                    const float centerY = std::floor(height * 0.5f);
+                    const ViewportConstants viewport{
+                        .canvasToView = Matrix4CanvasToView(view.viewport),
+                        .viewToClip =
+                            Matrix4Orthographic(-centerX / dpiScale, (width - centerX) / dpiScale, -centerY / dpiScale,
+                                                (height - centerY) / dpiScale, 0.0f, 1.0f),
+                    };
+                    const CD3DX12_VIEWPORT target(0.0f, 0.0f, width, height);
+                    state.list->RSSetViewports(1, &target);
+                    state.list->SetGraphicsRoot32BitConstants(kViewportRootParameter, kViewportConstantCount, &viewport,
+                                                              0);
+                    state.list->SetGraphicsRoot32BitConstant(kTileSliceRootParameter, 0, 0);
+                    state.list->DrawInstanced(kTileVertexCount, 1, 0, 0);
+                }
 
                 // Straight-alpha "over" blending, which also leaves the target premultiplied.
                 if (slot.ui) {

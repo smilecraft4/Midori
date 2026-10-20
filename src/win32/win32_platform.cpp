@@ -334,6 +334,13 @@ void DispatchFocus(Window window, bool focused) noexcept {
     PlatformDispatch(event);
 }
 
+void DispatchDestroy(Window window) noexcept {
+    Event event{};
+    event.type = EventType::WindowDestroy;
+    event.windowDestroy = WindowDestroyEvent{.window = window};
+    PlatformDispatch(event);
+}
+
 // Keyboard and mouse messages. Returns true when the message was consumed.
 [[nodiscard]] bool InputHandleMessage(Window window, UINT message, WPARAM wParam, LPARAM lParam) noexcept {
     ZoneScopedN("InputHandleMessage");
@@ -654,6 +661,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             // The renderer paints the whole client area; erasing first would only flicker.
             return 1;
         case WM_DESTROY: {
+            DispatchDestroy(window);
             WintabClose(window);
             if (const auto res = GraphicsWindowTerminate(window); !res) {
                 MIDORI_LOG_ERROR("GraphicsWindowTerminate failed: {}", ErrorMessage(res.error()));

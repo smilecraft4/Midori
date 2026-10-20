@@ -65,6 +65,7 @@ set(MIDORI_SOURCES
     src/canvas.cpp
     src/color.cpp
     src/ui.cpp
+    src/viewport.cpp
 )
 
 set(MIDORI_SOURCES_WIN32

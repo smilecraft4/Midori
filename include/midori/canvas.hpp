@@ -3,6 +3,7 @@
 #include "midori/base.hpp"
 #include "midori/color.hpp"
 #include "midori/platform.hpp"
+#include "midori/viewport.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -144,7 +145,8 @@ struct CanvasCreateInfo {
 };
 
 // Owned and touched by the main thread only: jobs and the graphics backend drain the tile request queues
-// and report back through the Tile*Done calls on the main thread.
+// and report back through the Tile*Done calls on the main thread. Lives in AppState::canvases, indexed by
+// its id.
 struct CanvasState {
     std::vector<TileState> tiles;
     std::unordered_map<TileKey, std::uint32_t> tileIndices;
@@ -162,26 +164,13 @@ struct CanvasState {
     std::array<LayerState, kLayerMax> layers;
     std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
     std::string_view filename;
-    std::array<CanvasView, kCanvasViewMax> canvasViews{}; // the first `canvasViewsNum` are valid
     Layer largestLayer{};
-    std::uint8_t canvasViewsNum{};
+    Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
 };
 
 [[nodiscard]] Result<Canvas> CanvasCreate(CanvasCreateInfo createInfo) noexcept;
 [[nodiscard]] Result<void> CanvasDestroy(Canvas canvas) noexcept;
-
-struct Viewport {
-    float posX{0.0f};
-    float posY{0.0f};
-    float zoomX{1.0f};
-    float zoomY{1.0f};
-    float rot{0.0f};
-};
-
-[[nodiscard]] Viewport ViewportMove(Viewport viewport, float amountX, float amountY) noexcept;
-[[nodiscard]] Viewport ViewportZoom(Viewport viewport, float amountX, float amountY) noexcept;
-[[nodiscard]] Viewport ViewportRotate(Viewport viewport, float amount) noexcept;
 
 struct CanvasViewCreateInfo {
     Viewport viewport{};
@@ -193,9 +182,11 @@ struct CanvasViewCreateInfo {
     Window window{kWindowInvalid};
 };
 
+// Lives in AppState::canvasViews, indexed by its id. Attached to `canvas` and owned by `window`: it is
+// destroyed with the window.
 struct CanvasViewState {
     Viewport viewport;
-    CanvasView id{kCanvasViewInvalid};
+    CanvasView id{kCanvasViewInvalid}; // kCanvasViewInvalid marks the slot free
     Canvas canvas{kCanvasInvalid};
     Window window{kWindowInvalid};
 };

@@ -17,6 +17,8 @@ enum struct Error : std::uint8_t {
     GraphicsInitFailed,
     GraphicsWindowInitFailed,
     GraphicsDeviceLost,
+    CanvasLimitReached,
+    CanvasViewLimitReached,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -37,6 +39,10 @@ enum struct Error : std::uint8_t {
             return "graphics window initialization failed";
         case Error::GraphicsDeviceLost:
             return "graphics device lost";
+        case Error::CanvasLimitReached:
+            return "canvas limit reached";
+        case Error::CanvasViewLimitReached:
+            return "canvas view limit reached";
     }
     return "unknown error";
 }
