@@ -1,7 +1,10 @@
 #pragma once
 
 #include "midori/base.hpp"
+#include "midori/canvas.hpp"
 #include "midori/platform.hpp"
+#include <cstddef>
+#include <span>
 
 struct ImGuiContext;
 
@@ -29,5 +32,11 @@ struct GraphicsWindowInitInfo {
 [[nodiscard]] Result<void> GraphicsWindowTerminate(Window window) noexcept;
 // The window gets a frame at its next vblank, from GraphicsUpdate.
 void GraphicsWindowRequestFrame(Window window) noexcept;
+
+// Both wait for the GPU. Pixels are kTileBytes per cell, mip 0 only. A download first fills pending new tiles.
+[[nodiscard]] Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells,
+                                                 std::span<std::byte> pixels) noexcept;
+[[nodiscard]] Result<void> GraphicsTilesUpload(std::span<const TileAtlasCell> cells,
+                                               std::span<const std::byte* const> pixels) noexcept;
 
 } // namespace Midori

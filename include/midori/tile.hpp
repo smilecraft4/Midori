@@ -10,6 +10,8 @@
 namespace Midori {
 
 using TileAxis = std::int32_t;
+constexpr TileAxis kTileSize = 256; // canvas units, and texels at mip 0
+constexpr std::size_t kTileBytes = std::size_t{kTileSize} * kTileSize * 4; // mip 0, 8-bit RGBA
 
 using TileMip = std::uint8_t;
 constexpr TileMip kTileMipMax = 0b11 + 1; // 256, 128, 64, 32
@@ -36,6 +38,14 @@ constexpr TileKey TileKeyMake(Layer layer, TileMip mip, TileGridPos gridPos) noe
             << kTileYBitOffset)
          | (static_cast<TileKey>(mip) << kTileMipBitOffset) | //
            (static_cast<TileKey>(layer) << kTileLayerBitOffset);
+}
+
+constexpr TileGridPos TileKeyGridPos(TileKey key) noexcept {
+    const auto axis = [key](std::size_t offset, std::size_t size) {
+        const auto stored = static_cast<std::int64_t>((key >> offset) & ((TileKey{1} << size) - 1));
+        return static_cast<TileAxis>(stored - (std::int64_t{1} << (size - 1)));
+    };
+    return TileGridPos{.x = axis(kTileXBitOffset, kTileXBitSize), .y = axis(kTileYBitOffset, kTileYBitSize)};
 }
 
 constexpr TileKey TileGridPosKey(TileKey key) noexcept {
@@ -77,6 +87,9 @@ struct TileMoveInfo {
 
 [[nodiscard]] Result<void> TileUnload(Tile tile) noexcept;
 
+// Resident only for now: a new tile takes an atlas cell and starts as the test pattern. Creating a tile
+// that exists or deleting one that does not does nothing.
+[[nodiscard]] Result<void> TileNew(Tile tile) noexcept;
 [[nodiscard]] Result<void> TileDelete(Tile tile) noexcept;
 
 using TileTextureTransferSlot = std::uint8_t;

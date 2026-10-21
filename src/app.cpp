@@ -1,11 +1,16 @@
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
 #include "midori/log.hpp"
+#include "midori/tile.hpp"
 #include "midori/ui.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <memory>
+#include <filesystem>
+#include <format>
+#include <string>
+#include <string_view>
+#include <system_error>
 
 #include <tracy/Tracy.hpp>
 
@@ -20,6 +25,11 @@ namespace {
 // Pointer travel, in DIPs, that doubles or halves the zoom.
 constexpr float kZoomDragDips = 200.0f;
 
+constexpr std::string_view kCanvasTypeName = "Midori canvas";
+constexpr std::string_view kCanvasExtension = "mori";
+
+static_assert(kCanvasViewMax >= kWindowMax, "a window without a view always finds a free one");
+
 // Every window has one view over its whole client area for now; with several, this becomes a hit test.
 [[nodiscard]] CanvasView WindowCanvasView(Window window) noexcept {
     for (const CanvasViewState& view : gAppState.canvasViews) {
@@ -30,12 +40,14 @@ constexpr float kZoomDragDips = 200.0f;
     return kCanvasViewInvalid;
 }
 
-// In place: a CanvasState is too large for a temporary on the stack.
-void CanvasReset(CanvasState& canvas) noexcept {
-    std::destroy_at(&canvas);
-    std::construct_at(&canvas);
+[[nodiscard]] bool CanvasShownElsewhere(Canvas canvas, CanvasView view) noexcept {
+    return std::ranges::any_of(gAppState.canvasViews, [canvas, view](const CanvasViewState& other) {
+        return other.id != kCanvasViewInvalid && other.id != view && other.canvas == canvas;
+    });
 }
 
+// A canvas nobody can see is gone: its unsaved changes were saved or discarded before, see
+// CanvasViewReleaseConfirmed.
 void CanvasViewDetach(CanvasView view) noexcept {
     CanvasViewState& viewState = gAppState.canvasViews[view];
     const Canvas canvas = viewState.canvas;
@@ -43,12 +55,196 @@ void CanvasViewDetach(CanvasView view) noexcept {
     if (gAppState.navigate.view == view) {
         gAppState.navigate = {};
     }
-    // No files yet: a canvas nobody can see is gone.
-    if (std::ranges::none_of(gAppState.canvasViews, [canvas](const CanvasViewState& other) {
-            return other.id != kCanvasViewInvalid && other.canvas == canvas;
-        })) {
-        CanvasReset(gAppState.canvases[canvas]);
+    if (!CanvasShownElsewhere(canvas, kCanvasViewInvalid)) {
+        CanvasDestroy(canvas);
     }
+}
+
+[[nodiscard]] std::string CanvasName(const CanvasState& canvas) noexcept {
+    return canvas.path.empty() ? std::string("Untitled") : PathUtf8(canvas.path.filename());
+}
+
+void CanvasTitlesUpdate(Canvas canvas) noexcept {
+    const CanvasState& state = gAppState.canvases[canvas];
+    const std::string title = std::format("{}{} - {}", CanvasName(state), state.modified ? "*" : "", MIDORI_NAME);
+    for (const CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id != kCanvasViewInvalid && view.canvas == canvas) {
+            if (const auto res = WindowSetTitle(view.window, title); !res) {
+                MIDORI_LOG_ERROR("WindowSetTitle failed: {}", ErrorMessage(res.error()));
+            }
+        }
+    }
+}
+
+// The window's view shows `canvas` from now on, with a fresh viewport.
+void WindowShowCanvas(Window window, Canvas canvas) noexcept {
+    AppState& app = gAppState;
+    CanvasView view = WindowCanvasView(window);
+    if (view != kCanvasViewInvalid) {
+        if (app.canvasViews[view].canvas == canvas) {
+            return;
+        }
+        CanvasViewDetach(view);
+    } else {
+        const auto it = std::ranges::find(app.canvasViews, kCanvasViewInvalid, &CanvasViewState::id);
+        MIDORI_ASSERT(it != app.canvasViews.end(), "no free canvas view");
+        view = static_cast<CanvasView>(it - app.canvasViews.begin());
+    }
+    app.canvasViews[view] = CanvasViewState{.viewport = {}, .id = view, .canvas = canvas, .window = window};
+    CanvasTitlesUpdate(canvas);
+}
+
+// Dialogs run their own message loop; AppEvent drops what arrives meanwhile.
+[[nodiscard]] DialogChoice AppAskSave(Window window, std::string_view name) noexcept {
+    const std::string instruction = std::format("Do you want to save changes to {}?", name);
+    gAppState.modal = true;
+    const DialogChoice choice = DialogAsk(DialogAskInfo{
+        .title = MIDORI_NAME,
+        .instruction = instruction,
+        .content = "Your changes will be lost if you don't save them.",
+        .yes = "Save",
+        .no = "Don't Save",
+        .window = window,
+    });
+    gAppState.modal = false;
+    return choice;
+}
+
+void AppError(Window window, std::string_view instruction, Error error) noexcept {
+    const std::string content = std::format("Reason: {}.", ErrorMessage(error));
+    gAppState.modal = true;
+    DialogError(window, MIDORI_NAME, instruction, content);
+    gAppState.modal = false;
+}
+
+[[nodiscard]] Result<std::filesystem::path> AppFileDialog(Window window, bool save,
+                                                          const std::filesystem::path& initial) noexcept {
+    const DialogFileInfo info{
+        .initial = initial,
+        .typeName = kCanvasTypeName,
+        .extension = kCanvasExtension,
+        .window = window,
+    };
+    gAppState.modal = true;
+    auto path = save ? DialogFileSave(info) : DialogFileOpen(info);
+    gAppState.modal = false;
+    if (!path) {
+        AppError(window, "Could not show the file dialog", path.error());
+    }
+    return path;
+}
+
+// True once the canvas is on disk, false when the user canceled. Failures were shown to the user.
+[[nodiscard]] Result<bool> CanvasSaveWithDialogs(Window window, Canvas canvas, bool saveAs) noexcept {
+    const CanvasState& state = gAppState.canvases[canvas];
+    if (!saveAs && state.file.env) {
+        if (const auto res = CanvasSave(canvas); !res) {
+            AppError(window, std::format("Could not save {}", CanvasName(state)), res.error());
+            return std::unexpected(res.error());
+        }
+        CanvasTitlesUpdate(canvas);
+        return true;
+    }
+
+    std::filesystem::path initial = state.path;
+    if (initial.empty()) {
+        initial = "Untitled";
+        initial.replace_extension(kCanvasExtension);
+    }
+    const auto path = AppFileDialog(window, true, initial);
+    if (!path) {
+        return std::unexpected(path.error());
+    }
+    if (path->empty()) {
+        return false;
+    }
+    if (const auto res = CanvasSaveAs(canvas, *path); !res) {
+        AppError(window, std::format("Could not save {}", PathUtf8(path->filename())), res.error());
+        return std::unexpected(res.error());
+    }
+    CanvasTitlesUpdate(canvas);
+    return true;
+}
+
+// Before `view` stops showing its canvas. False when the user cancels, or the save they asked for did not
+// happen.
+[[nodiscard]] bool CanvasViewReleaseConfirmed(CanvasView view) noexcept {
+    const Window window = gAppState.canvasViews[view].window;
+    const Canvas canvas = gAppState.canvasViews[view].canvas;
+    if (!gAppState.canvases[canvas].modified || CanvasShownElsewhere(canvas, view)) {
+        return true;
+    }
+    switch (AppAskSave(window, CanvasName(gAppState.canvases[canvas]))) {
+        case DialogChoice::Yes: {
+            const auto saved = CanvasSaveWithDialogs(window, canvas, false);
+            return saved && *saved;
+        }
+        case DialogChoice::No:
+            return true;
+        case DialogChoice::Cancel:
+            return false;
+    }
+    return false;
+}
+
+[[nodiscard]] Result<void> WindowCanvasSave(Window window, bool saveAs) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return {};
+    }
+    if (const auto saved = CanvasSaveWithDialogs(window, gAppState.canvasViews[view].canvas, saveAs); !saved) {
+        return std::unexpected(saved.error());
+    }
+    return {};
+}
+
+// Replaces the window's canvas without asking: callers confirm first. Failures are shown to the user.
+[[nodiscard]] Result<void> WindowOpenFile(Window window, const std::filesystem::path& path) noexcept {
+    // Already open, and so locked: show that canvas.
+    std::error_code ec;
+    for (const CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id != kCanvasInvalid && !canvas.path.empty() && std::filesystem::equivalent(canvas.path, path, ec)) {
+            WindowShowCanvas(window, canvas.id);
+            return {};
+        }
+    }
+    const auto canvas = CanvasOpen(path);
+    if (!canvas) {
+        AppError(window, std::format("Could not open {}", PathUtf8(path.filename())), canvas.error());
+        return std::unexpected(canvas.error());
+    }
+    WindowShowCanvas(window, *canvas);
+    return {};
+}
+
+// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as.
+[[nodiscard]] Result<void> FileShortcut(const KeyEvent& key) noexcept {
+    if (key.inputState != InputState::Press || !HasAnyFlag(key.keyMods, KeyMod::Ctrl)) {
+        return {};
+    }
+    switch (key.key) {
+        case Key::N:
+            return AppCanvasNew(key.window);
+        case Key::O:
+            return AppCanvasOpen(key.window);
+        case Key::S:
+            return HasAnyFlag(key.keyMods, KeyMod::Shift) ? AppCanvasSaveAs(key.window) : AppCanvasSave(key.window);
+        default:
+            return {};
+    }
+}
+
+struct ViewPoint {
+    float x;
+    float y;
+};
+
+// Client-area physical pixels to view DIPs around the view center, floored to a whole pixel like the
+// renderer's projection.
+[[nodiscard]] ViewPoint ViewPointFromPointer(const WindowState& window, float pointerX, float pointerY) noexcept {
+    const float centerX = std::floor(static_cast<float>(window.width) * 0.5f);
+    const float centerY = std::floor(static_cast<float>(window.height) * 0.5f);
+    return ViewPoint{.x = (pointerX - centerX) / window.dpiScale, .y = (pointerY - centerY) / window.dpiScale};
 }
 
 [[nodiscard]] NavigateMode NavigateModeFromMods(KeyMod keyMods) noexcept {
@@ -78,14 +274,8 @@ void NavigateUpdate() noexcept {
     if (!windowState) {
         return;
     }
-    // View DIPs around the view center, floored to a whole pixel like the renderer's projection.
-    const float centerX = std::floor(static_cast<float>(windowState->width) * 0.5f);
-    const float centerY = std::floor(static_cast<float>(windowState->height) * 0.5f);
-    const float scale = windowState->dpiScale;
-    const float startX = (navigate.pointerStartX - centerX) / scale;
-    const float startY = (navigate.pointerStartY - centerY) / scale;
-    const float x = (gAppState.pointerX - centerX) / scale;
-    const float y = (gAppState.pointerY - centerY) / scale;
+    const auto [startX, startY] = ViewPointFromPointer(*windowState, navigate.pointerStartX, navigate.pointerStartY);
+    const auto [x, y] = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
     const Viewport start = navigate.viewportStart;
 
     switch (navigate.mode) {
@@ -174,34 +364,81 @@ void NavigateEnd() noexcept {
     }
 }
 
+// Left press creates the layer 0 tile under the pointer, right press deletes it.
+[[nodiscard]] Result<void> TileEdit(const ButtonEvent& button) noexcept {
+    const bool create = button.button == Button::Left;
+    if (button.inputState != InputState::Press || (!create && button.button != Button::Right)) {
+        return {};
+    }
+    const CanvasView view = WindowCanvasView(button.window);
+    if (view == kCanvasViewInvalid) {
+        return {};
+    }
+    const CanvasViewState& viewState = gAppState.canvasViews[view];
+    const auto windowState = WindowGetState(viewState.window);
+    if (!windowState) {
+        return std::unexpected(windowState.error());
+    }
+    const ViewPoint point = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
+    // Moving the view by minus the point's offset brings the canvas point under it to the center.
+    const Viewport under = ViewportMove(viewState.viewport, -point.x, -point.y);
+    const Tile tile{
+        .canvas = viewState.canvas,
+        .mip = 0,
+        .layer = 0,
+        .gridPos = {.x = static_cast<TileAxis>(std::floor(under.posX / static_cast<float>(kTileSize))),
+                    .y = static_cast<TileAxis>(std::floor(under.posY / static_cast<float>(kTileSize)))},
+    };
+    const bool wasModified = gAppState.canvases[tile.canvas].modified;
+    const auto res = create ? TileNew(tile) : TileDelete(tile);
+    if (!wasModified && gAppState.canvases[tile.canvas].modified) {
+        CanvasTitlesUpdate(tile.canvas);
+    }
+    return res;
+}
+
 } // namespace
 
-Result<void> AppInit(AppInitInfo /*initInfo*/) noexcept {
+Result<void> AppInit(AppInitInfo initInfo) noexcept {
     ZoneScopedN("AppInit");
     MIDORI_LOG_INFO("{} v{} {}-{} {}", MIDORI_NAME, MIDORI_VERSION_STRING, MIDORI_COMPILER, MIDORI_ARCHITECTURE,
                     MIDORI_PROFILE);
 
-    // The platform owns the window and destroys it in PlatformTerminate.
-    const auto window = WindowCreate(WindowCreateInfo{.title = MIDORI_NAME " 1"});
-    if (!window) {
-        MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(window.error()));
-        return std::unexpected(window.error());
-    }
-    if (const auto res = AppCanvasNew(*window); !res) {
-        MIDORI_LOG_ERROR("AppCanvasNew failed: {}", ErrorMessage(res.error()));
-        return std::unexpected(res.error());
+    gAppState.freeAtlasCells.reserve(kTileAtlasCellMax);
+    for (TileAtlasCell cell = kTileAtlasCellMax; cell-- > 0;) {
+        if (cell != kTileAtlasCellPattern) {
+            gAppState.freeAtlasCells.push_back(cell);
+        }
     }
 
-    // if (const auto res = WindowCreate(WindowCreateInfo{.title = MIDORI_NAME " 2"}); !res) {
-    //     MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(res.error()));
-    //     return std::unexpected(res.error());
-    // }
-
+    // One window per file, or one new canvas. A file that fails to open leaves a new canvas in its window.
+    // The platform owns the windows and destroys them in PlatformTerminate.
+    const std::size_t windowCount = std::max<std::size_t>(initInfo.files.size(), 1);
+    for (std::size_t i = 0; i < windowCount; ++i) {
+        const auto window = WindowCreate(WindowCreateInfo{.title = MIDORI_NAME});
+        if (!window) {
+            MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(window.error()));
+            // Files already shown keep the app running; without any window it cannot start.
+            return i == 0 ? std::unexpected(window.error()) : Result<void>{};
+        }
+        if (i < initInfo.files.size() && WindowOpenFile(*window, initInfo.files[i])) {
+            continue;
+        }
+        if (const auto res = AppCanvasNew(*window); !res) {
+            MIDORI_LOG_ERROR("AppCanvasNew failed: {}", ErrorMessage(res.error()));
+            return std::unexpected(res.error());
+        }
+    }
     return {};
 }
 
 Result<void> AppEvent(Event event) noexcept {
     ZoneScopedN("AppEvent");
+    // Only what keeps the windows consistent gets through while a dialog is up.
+    if (gAppState.modal && event.type != EventType::WindowResize && event.type != EventType::WindowFocus
+        && event.type != EventType::WindowDestroy) {
+        return {};
+    }
     const bool uiWants = UiEvent(event);
     if (Navigate(event, uiWants) || uiWants) {
         return {};
@@ -214,6 +451,8 @@ Result<void> AppEvent(Event event) noexcept {
         case EventType::WindowFocus:
             MIDORI_LOG_TRACE("window {}: focus {}", event.windowFocus.window, event.windowFocus.focused);
             break;
+        case EventType::WindowClose:
+            return AppWindowClose(event.windowClose.window);
         case EventType::WindowDestroy:
             // The window owns its views.
             for (CanvasViewState& view : gAppState.canvasViews) {
@@ -226,7 +465,7 @@ Result<void> AppEvent(Event event) noexcept {
             MIDORI_LOG_TRACE("window {}: key {} state {} mods {:#04x}", event.key.window,
                              std::to_underlying(event.key.key), std::to_underlying(event.key.inputState),
                              std::to_underlying(event.key.keyMods));
-            break;
+            return FileShortcut(event.key);
         case EventType::Text:
             MIDORI_LOG_TRACE("window {}: text U+{:04X}", event.text.window,
                              static_cast<std::uint32_t>(event.text.codepoint));
@@ -234,6 +473,9 @@ Result<void> AppEvent(Event event) noexcept {
         case EventType::Button:
             MIDORI_LOG_TRACE("window {}: device {} button {} state {}", event.button.window, event.button.device,
                              std::to_underlying(event.button.button), std::to_underlying(event.button.inputState));
+            if (const auto res = TileEdit(event.button); !res) {
+                MIDORI_LOG_ERROR("TileEdit failed: {}", ErrorMessage(res.error()));
+            }
             break;
         case EventType::Pointer:
             MIDORI_LOG_TRACE("window {}: device {} pointer {:.2f},{:.2f} pressure {:.3f} tilt {:.2f},{:.2f}",
@@ -254,32 +496,109 @@ void AppWindowFrame(Window window) noexcept {
     ZoneScopedN("AppWindowFrame");
     const CanvasView view = WindowCanvasView(window);
     Viewport* viewport = view != kCanvasViewInvalid ? &gAppState.canvasViews[view].viewport : nullptr;
-    UiWindowFrame(window, viewport);
+    if (const UiCommand command = UiWindowFrame(window, viewport); command != UiCommand::None) {
+        gAppState.command = command;
+        gAppState.commandWindow = window;
+    }
     // ImGui animates and trickles queued input over several frames, so keep presenting while it is shown.
     GraphicsWindowRequestFrame(window);
 }
 
-void AppTerminate() noexcept {}
+Result<void> AppUpdate() noexcept {
+    ZoneScopedN("AppUpdate");
+    const UiCommand command = std::exchange(gAppState.command, UiCommand::None);
+    const Window window = gAppState.commandWindow;
+    if (command == UiCommand::None || !WindowGetState(window)) {
+        return {};
+    }
+    switch (command) {
+        case UiCommand::CanvasNew:
+            return AppCanvasNew(window);
+        case UiCommand::CanvasOpen:
+            return AppCanvasOpen(window);
+        case UiCommand::CanvasSave:
+            return AppCanvasSave(window);
+        case UiCommand::CanvasSaveAs:
+            return AppCanvasSaveAs(window);
+        case UiCommand::Exit:
+            // Closes every window, stopping at the first the user keeps open.
+            for (Window other = 0; other < kWindowMax; ++other) {
+                if (!WindowGetState(other)) {
+                    continue;
+                }
+                if (const auto res = AppWindowClose(other); !res) {
+                    return res;
+                }
+                if (WindowGetState(other)) {
+                    break;
+                }
+            }
+            return {};
+        case UiCommand::None:
+            break;
+    }
+    return {};
+}
+
+// The windows still open are destroyed after this, by PlatformTerminate.
+void AppTerminate() noexcept {
+    ZoneScopedN("AppTerminate");
+    gAppState.canvasViews = {};
+    for (const CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id != kCanvasInvalid) {
+            CanvasDestroy(canvas.id);
+        }
+    }
+}
 
 Result<void> AppCanvasNew(Window window) noexcept {
     ZoneScopedN("AppCanvasNew");
-    AppState& app = gAppState;
-    const auto canvasIt = std::ranges::find(app.canvases, kCanvasInvalid, &CanvasState::id);
-    if (canvasIt == app.canvases.end()) {
-        MIDORI_LOG_ERROR("AppCanvasNew: all {} canvases are in use", kCanvasMax);
-        return std::unexpected(Error::CanvasLimitReached);
+    if (const CanvasView view = WindowCanvasView(window);
+        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
+        return {};
     }
-    const auto viewIt = std::ranges::find(app.canvasViews, kCanvasViewInvalid, &CanvasViewState::id);
-    if (viewIt == app.canvasViews.end()) {
-        MIDORI_LOG_ERROR("AppCanvasNew: all {} canvas views are in use", kCanvasViewMax);
-        return std::unexpected(Error::CanvasViewLimitReached);
+    const auto canvas = CanvasNew();
+    if (!canvas) {
+        AppError(window, "Could not create a canvas", canvas.error());
+        return std::unexpected(canvas.error());
     }
-    const auto canvas = static_cast<Canvas>(canvasIt - app.canvases.begin());
-    const auto view = static_cast<CanvasView>(viewIt - app.canvasViews.begin());
-
-    canvasIt->id = canvas;
-    *viewIt = CanvasViewState{.viewport = {}, .id = view, .canvas = canvas, .window = window};
+    WindowShowCanvas(window, *canvas);
     return {};
+}
+
+Result<void> AppCanvasOpen(Window window) noexcept {
+    ZoneScopedN("AppCanvasOpen");
+    if (const CanvasView view = WindowCanvasView(window);
+        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
+        return {};
+    }
+    const auto path = AppFileDialog(window, false, {});
+    if (!path) {
+        return std::unexpected(path.error());
+    }
+    if (path->empty()) {
+        return {};
+    }
+    return WindowOpenFile(window, *path);
+}
+
+Result<void> AppCanvasSave(Window window) noexcept {
+    ZoneScopedN("AppCanvasSave");
+    return WindowCanvasSave(window, false);
+}
+
+Result<void> AppCanvasSaveAs(Window window) noexcept {
+    ZoneScopedN("AppCanvasSaveAs");
+    return WindowCanvasSave(window, true);
+}
+
+Result<void> AppWindowClose(Window window) noexcept {
+    ZoneScopedN("AppWindowClose");
+    if (const CanvasView view = WindowCanvasView(window);
+        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
+        return {};
+    }
+    return WindowDestroy(window);
 }
 
 } // namespace Midori

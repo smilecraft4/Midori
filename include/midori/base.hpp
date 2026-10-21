@@ -19,6 +19,11 @@ enum struct Error : std::uint8_t {
     GraphicsDeviceLost,
     CanvasLimitReached,
     CanvasViewLimitReached,
+    TileAtlasFull,
+    CanvasOpenFailed,
+    CanvasSaveFailed,
+    GraphicsTransferFailed,
+    DialogFailed,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -43,6 +48,16 @@ enum struct Error : std::uint8_t {
             return "canvas limit reached";
         case Error::CanvasViewLimitReached:
             return "canvas view limit reached";
+        case Error::TileAtlasFull:
+            return "tile atlas full";
+        case Error::CanvasOpenFailed:
+            return "canvas open failed";
+        case Error::CanvasSaveFailed:
+            return "canvas save failed";
+        case Error::GraphicsTransferFailed:
+            return "graphics transfer failed";
+        case Error::DialogFailed:
+            return "dialog failed";
     }
     return "unknown error";
 }

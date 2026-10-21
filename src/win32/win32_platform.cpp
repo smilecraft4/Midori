@@ -15,12 +15,15 @@
 #include "midori/ui.hpp"
 #include "win32_resource.h"
 
+#include <commctrl.h>
+#include <commdlg.h>
 #include <windowsx.h>
 
 #include <cmath>
 #include <iterator>
 #include <numbers>
 #include <span>
+#include <string>
 #include <utility>
 
 #include <tracy/Tracy.hpp>
@@ -78,6 +81,84 @@ void Utf8ToWide(std::string_view text, std::span<wchar_t> out) noexcept {
     const int written = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(),
                                             static_cast<int>(out.size() - 1));
     out[static_cast<std::size_t>(written)] = L'\0';
+}
+
+[[nodiscard]] std::wstring WideFromUtf8(std::string_view text) noexcept {
+    std::wstring wide(static_cast<std::size_t>(
+                          MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0)),
+                      L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(),
+                        static_cast<int>(wide.size()));
+    return wide;
+}
+
+[[nodiscard]] HWND DialogOwner(Window window) noexcept {
+    return WindowValid(window) ? gPlatformState.windows[window].hwnd : nullptr;
+}
+
+// The pressed button's id; IDCANCEL when the dialog cannot show. The first custom button is the default.
+int DialogTask(Window window, std::string_view title, std::string_view instruction, std::string_view content,
+               PCWSTR icon, std::span<const TASKDIALOG_BUTTON> buttons,
+               TASKDIALOG_COMMON_BUTTON_FLAGS commonButtons) noexcept {
+    const std::wstring wideTitle = WideFromUtf8(title);
+    const std::wstring wideInstruction = WideFromUtf8(instruction);
+    const std::wstring wideContent = WideFromUtf8(content);
+    TASKDIALOGCONFIG config{};
+    config.cbSize = sizeof(config);
+    config.hwndParent = DialogOwner(window);
+    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    config.dwCommonButtons = commonButtons;
+    config.pszWindowTitle = wideTitle.c_str();
+    config.pszMainIcon = icon;
+    config.pszMainInstruction = wideInstruction.c_str();
+    config.pszContent = wideContent.empty() ? nullptr : wideContent.c_str();
+    config.cButtons = static_cast<UINT>(buttons.size());
+    config.pButtons = buttons.data();
+    config.nDefaultButton = buttons.empty() ? 0 : buttons.front().nButtonID;
+    int pressed = IDCANCEL;
+    if (const HRESULT hr = TaskDialogIndirect(&config, &pressed, nullptr, nullptr); FAILED(hr)) {
+        MIDORI_LOG_ERROR("TaskDialogIndirect failed: {:#010x}", static_cast<std::uint32_t>(hr));
+        return IDCANCEL;
+    }
+    return pressed;
+}
+
+// Long enough for the longest Windows path.
+constexpr DWORD kDialogPathMax = 32768;
+
+// "Name (*.ext)\0*.ext\0", the string's own terminator ending the list.
+[[nodiscard]] std::wstring DialogFilter(const DialogFileInfo& info) noexcept {
+    const std::wstring extension = WideFromUtf8(info.extension);
+    std::wstring filter = WideFromUtf8(info.typeName) + L" (*." + extension + L")";
+    filter.push_back(L'\0');
+    filter += L"*." + extension;
+    filter.push_back(L'\0');
+    return filter;
+}
+
+[[nodiscard]] Result<std::filesystem::path> DialogFile(const DialogFileInfo& info, bool save) noexcept {
+    const std::wstring filter = DialogFilter(info);
+    const std::wstring extension = WideFromUtf8(info.extension);
+    std::wstring file = info.initial.wstring();
+    file.resize(kDialogPathMax, L'\0');
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = DialogOwner(info.window);
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = kDialogPathMax;
+    ofn.lpstrDefExt = extension.c_str();
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    if (save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn)) {
+        file.resize(wcslen(file.c_str()));
+        return std::filesystem::path(std::move(file));
+    }
+    if (const DWORD error = CommDlgExtendedError(); error != 0) {
+        MIDORI_LOG_ERROR("{} failed: {:#x}", save ? "GetSaveFileNameW" : "GetOpenFileNameW", error);
+        return std::unexpected(Error::DialogFailed);
+    }
+    return std::filesystem::path();
 }
 
 void DispatchResize(Window window) noexcept {
@@ -331,6 +412,13 @@ void DispatchFocus(Window window, bool focused) noexcept {
     Event event{};
     event.type = EventType::WindowFocus;
     event.windowFocus = WindowFocusEvent{.window = window, .focused = focused};
+    PlatformDispatch(event);
+}
+
+void DispatchClose(Window window) noexcept {
+    Event event{};
+    event.type = EventType::WindowClose;
+    event.windowClose = WindowCloseEvent{.window = window};
     PlatformDispatch(event);
 }
 
@@ -660,6 +748,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         case WM_ERASEBKGND:
             // The renderer paints the whole client area; erasing first would only flicker.
             return 1;
+        case WM_CLOSE:
+            // The app destroys the window once nothing would be lost.
+            DispatchClose(window);
+            return 0;
         case WM_DESTROY: {
             DispatchDestroy(window);
             WintabClose(window);
@@ -818,6 +910,41 @@ Result<void*> WindowGetNativeHandle(Window window) noexcept {
         return std::unexpected(Error::WindowInvalid);
     }
     return static_cast<void*>(gPlatformState.windows[window].hwnd);
+}
+
+DialogChoice DialogAsk(const DialogAskInfo& info) noexcept {
+    ZoneScopedN("DialogAsk");
+    const std::wstring yes = WideFromUtf8(info.yes);
+    const std::wstring no = WideFromUtf8(info.no);
+    const std::array buttons{
+        TASKDIALOG_BUTTON{.nButtonID = IDYES, .pszButtonText = yes.c_str()},
+        TASKDIALOG_BUTTON{.nButtonID = IDNO, .pszButtonText = no.c_str()},
+    };
+    switch (
+        DialogTask(info.window, info.title, info.instruction, info.content, nullptr, buttons, TDCBF_CANCEL_BUTTON)) {
+        case IDYES:
+            return DialogChoice::Yes;
+        case IDNO:
+            return DialogChoice::No;
+        default:
+            return DialogChoice::Cancel;
+    }
+}
+
+void DialogError(Window window, std::string_view title, std::string_view instruction,
+                 std::string_view content) noexcept {
+    ZoneScopedN("DialogError");
+    DialogTask(window, title, instruction, content, TD_ERROR_ICON, {}, TDCBF_OK_BUTTON);
+}
+
+Result<std::filesystem::path> DialogFileOpen(const DialogFileInfo& info) noexcept {
+    ZoneScopedN("DialogFileOpen");
+    return DialogFile(info, false);
+}
+
+Result<std::filesystem::path> DialogFileSave(const DialogFileInfo& info) noexcept {
+    ZoneScopedN("DialogFileSave");
+    return DialogFile(info, true);
 }
 
 Result<WindowState> WindowGetState(Window window) noexcept {

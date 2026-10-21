@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <string_view>
 
 #include <imgui.h>
@@ -31,8 +32,7 @@ constexpr float kBackground[4] = {0.5f, 0.5f, 0.5f, 0.5f};
 
 constexpr UINT kTileVertexCount = 4;
 constexpr DXGI_FORMAT kTileFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-constexpr UINT kTileTexels = 256;
-constexpr UINT16 kTilePoolSize = 64;
+constexpr UINT kTileTexels = kTileSize;
 
 // Row-major, row vectors: p' = p * M, matching `row_major` and mul(p, M) in HLSL.
 struct Matrix4 {
@@ -105,13 +105,20 @@ struct ViewportConstants {
     Matrix4 canvasToView; // view: pan, zoom, rotation; canvas units to DIPs
     Matrix4 viewToClip;   // orthographic projection of the view's rectangle, origin at its center; DIPs to clip
 };
+// One tile's draw. Mirrors the TileDraw cbuffer in common.hlsli.
+struct TileDrawConstants {
+    TileGridPos gridPos;
+    std::uint32_t slice;
+};
 constexpr UINT kViewportRootParameter = 0;
-constexpr UINT kTileSliceRootParameter = 1;
+constexpr UINT kTileDrawRootParameter = 1;
 constexpr UINT kTilePoolRootParameter = 2;
 constexpr UINT kTilePoolView = 0;
 constexpr UINT kUiTextureFirstView = 1;
 constexpr UINT kViewportConstantCount = sizeof(ViewportConstants) / sizeof(std::uint32_t);
 static_assert(kViewportConstantCount == 32, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
+constexpr UINT kTileDrawConstantCount = sizeof(TileDrawConstants) / sizeof(std::uint32_t);
+static_assert(kTileDrawConstantCount == 3, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
 constexpr DXGI_FORMAT kSwapChainFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 constexpr UINT kSwapChainFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 // Upper bound on waiting for a frame inside the modal size loop, so a stuck GPU cannot hang the UI.
@@ -214,8 +221,95 @@ void ReleaseWindow(Win32SwapChain& slot) noexcept {
     slot = {};
 }
 
-// Clears the windows' current back buffers and draws the tile and the UI in one command list, then
-// presents them. Every window must be ready for a frame.
+[[nodiscard]] UINT TilePoolSubresource(TileAtlasCell cell) noexcept {
+    return D3D12CalcSubresource(0, cell, 0, kTileMipMax, kTileAtlasCellMax);
+}
+
+// New tiles start as a copy of the pattern cell, mip 0 only like the pool's view. They are Loaded once the
+// copy is recorded: draws recorded after it see the copy.
+void RecordTileCreates() noexcept {
+    GraphicsState& state = gGraphicsState;
+    if (std::ranges::all_of(gAppState.canvases, [](const CanvasState& canvas) { return canvas.creates.empty(); })) {
+        return;
+    }
+    ZoneScopedN("RecordTileCreates");
+    TracyD3D12NamedZone(state.gpuProfiler, gpuCreatesZone, state.list, "GpuTileCreates", true);
+
+    // Separate calls: the pattern's transition starts from the state the first one leaves it in.
+    const UINT pattern = TilePoolSubresource(kTileAtlasCellPattern);
+    const CD3DX12_RESOURCE_BARRIER toCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    const CD3DX12_RESOURCE_BARRIER toSource = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE, pattern);
+    state.list->ResourceBarrier(1, &toCopy);
+    state.list->ResourceBarrier(1, &toSource);
+
+    const CD3DX12_TEXTURE_COPY_LOCATION src(state.tilePool, pattern);
+    for (CanvasState& canvas : gAppState.canvases) {
+        for (const TileKey key : canvas.creates) {
+            const auto it = canvas.tileIndices.find(key);
+            MIDORI_ASSERT(it != canvas.tileIndices.end(), "created tile {:#018x} is gone", key);
+            TileState& tile = canvas.tiles[it->second];
+            const CD3DX12_TEXTURE_COPY_LOCATION dst(state.tilePool, TilePoolSubresource(tile.cell));
+            state.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            tile.flags |= TileFlags::Loaded | TileFlags::Editable;
+        }
+        canvas.creates.clear();
+    }
+
+    const CD3DX12_RESOURCE_BARRIER fromSource = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST, pattern);
+    const CD3DX12_RESOURCE_BARRIER toShader = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    state.list->ResourceBarrier(1, &fromSource);
+    state.list->ResourceBarrier(1, &toShader);
+}
+
+// Outside Submit: waits for the GPU so the current allocator is free, and opens the list on it.
+void ListBeginAndWait() noexcept {
+    GraphicsState& state = gGraphicsState;
+    WaitIdle();
+    state.allocators[state.allocatorIndex]->Reset();
+    state.list->Reset(state.allocators[state.allocatorIndex], nullptr);
+}
+
+void ListExecuteAndWait() noexcept {
+    GraphicsState& state = gGraphicsState;
+    state.list->Close();
+    ID3D12CommandList* lists[] = {state.list};
+    state.queue->ExecuteCommandLists(1, lists);
+    state.queue->Signal(state.fence, ++state.fenceValue);
+    state.allocatorFences[state.allocatorIndex] = state.fenceValue;
+    WaitIdle();
+}
+
+// A buffer holding `count` tiles back to back; the pool's mip 0 rows need no padding.
+[[nodiscard]] Result<ID3D12Resource*> TileBufferCreate(D3D12_HEAP_TYPE heapType, std::size_t count) noexcept {
+    const CD3DX12_HEAP_PROPERTIES heap(heapType);
+    const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(count * kTileBytes);
+    const D3D12_RESOURCE_STATES initial =
+        heapType == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COPY_DEST;
+    ID3D12Resource* buffer = nullptr;
+    if (const HRESULT hr = gGraphicsState.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, initial,
+                                                                          nullptr, IID_PPV_ARGS(&buffer));
+        FAILED(hr)) {
+        LogHresult("ID3D12Device::CreateCommittedResource", hr);
+        return std::unexpected(Error::GraphicsTransferFailed);
+    }
+    return buffer;
+}
+
+[[nodiscard]] D3D12_PLACED_SUBRESOURCE_FOOTPRINT TileBufferFootprint(std::size_t index) noexcept {
+    const D3D12_RESOURCE_DESC poolDesc = gGraphicsState.tilePool->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    gGraphicsState.device->GetCopyableFootprints(&poolDesc, 0, 1, 0, &footprint, nullptr, nullptr, nullptr);
+    MIDORI_ASSERT(std::size_t{footprint.Footprint.RowPitch} * kTileTexels == kTileBytes, "padded tile rows");
+    footprint.Offset = index * kTileBytes;
+    return footprint;
+}
+
+// Fills new tiles, then clears the windows' current back buffers and draws their resident tiles and the UI
+// in one command list, then presents them. Every window must be ready for a frame.
 [[nodiscard]] Result<void> Submit(std::span<const Window> windows) noexcept {
     ZoneScopedN("GraphicsSubmit");
     ZoneValue(windows.size());
@@ -238,6 +332,7 @@ void ReleaseWindow(Win32SwapChain& slot) noexcept {
         {
             // GPU zones record timestamp queries into the list, so they must close before it does.
             TracyD3D12NamedZone(state.gpuProfiler, gpuFrameZone, state.list, "GpuFrame", true);
+            RecordTileCreates();
 
             std::array<D3D12_RESOURCE_BARRIER, kWindowMax> toTarget{};
             std::array<D3D12_RESOURCE_BARRIER, kWindowMax> toPresent{};
@@ -294,8 +389,15 @@ void ReleaseWindow(Win32SwapChain& slot) noexcept {
                     state.list->RSSetViewports(1, &target);
                     state.list->SetGraphicsRoot32BitConstants(kViewportRootParameter, kViewportConstantCount, &viewport,
                                                               0);
-                    state.list->SetGraphicsRoot32BitConstant(kTileSliceRootParameter, 0, 0);
-                    state.list->DrawInstanced(kTileVertexCount, 1, 0, 0);
+                    for (const TileState& tile : gAppState.canvases[view.canvas].tiles) {
+                        if (!HasAnyFlag(tile.flags, TileFlags::Loaded)) {
+                            continue;
+                        }
+                        const TileDrawConstants draw{.gridPos = TileKeyGridPos(tile.key), .slice = tile.cell};
+                        state.list->SetGraphicsRoot32BitConstants(kTileDrawRootParameter, kTileDrawConstantCount, &draw,
+                                                                  0);
+                        state.list->DrawInstanced(kTileVertexCount, 1, 0, 0);
+                    }
                 }
 
                 // Straight-alpha "over" blending, which also leaves the target premultiplied.
@@ -466,7 +568,7 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
 
         const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
         const CD3DX12_RESOURCE_DESC poolDesc =
-            CD3DX12_RESOURCE_DESC::Tex2D(kTileFormat, kTileTexels, kTileTexels, kTilePoolSize, kTileMipMax, 1, 0,
+            CD3DX12_RESOURCE_DESC::Tex2D(kTileFormat, kTileTexels, kTileTexels, kTileAtlasCellMax, kTileMipMax, 1, 0,
                                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         if (const HRESULT hr = state.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &poolDesc,
                                                                      D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
@@ -480,11 +582,14 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
             .Format = kTileFormat,
             .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
             .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-            .Texture2DArray = {.MostDetailedMip = 0, .MipLevels = 1, .FirstArraySlice = 0, .ArraySize = kTilePoolSize},
+            .Texture2DArray = {.MostDetailedMip = 0,
+                               .MipLevels = 1,
+                               .FirstArraySlice = 0,
+                               .ArraySize = kTileAtlasCellMax},
         };
         state.device->CreateShaderResourceView(state.tilePool, &srvDesc, ViewCpu(kTilePoolView));
 
-        // Test pattern in slice 0: uv gradient over a 32-texel checker.
+        // Test pattern in its cell: uv gradient over a 32-texel checker.
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
         UINT64 uploadSize = 0;
         state.device->GetCopyableFootprints(&poolDesc, 0, 1, 0, &footprint, nullptr, nullptr, &uploadSize);
@@ -517,7 +622,7 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
         upload->Unmap(0, nullptr);
 
         state.list->Reset(state.allocators[0], nullptr);
-        const CD3DX12_TEXTURE_COPY_LOCATION dst(state.tilePool, 0);
+        const CD3DX12_TEXTURE_COPY_LOCATION dst(state.tilePool, TilePoolSubresource(kTileAtlasCellPattern));
         const CD3DX12_TEXTURE_COPY_LOCATION src(upload, footprint);
         state.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         const CD3DX12_RESOURCE_BARRIER toShader = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -731,6 +836,88 @@ Result<void> GraphicsWindowTerminate(Window window) noexcept {
 void GraphicsWindowRequestFrame(Window window) noexcept {
     MIDORI_ASSERT(WindowValid(window), "frame requested for invalid window {}", window);
     gGraphicsState.windows[window].needsFrame = true;
+}
+
+Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells, std::span<std::byte> pixels) noexcept {
+    ZoneScopedN("GraphicsTilesDownload");
+    MIDORI_ASSERT(pixels.size() == cells.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), cells.size());
+    GraphicsState& state = gGraphicsState;
+    if (cells.empty()) {
+        return {};
+    }
+    const auto readback = TileBufferCreate(D3D12_HEAP_TYPE_READBACK, cells.size());
+    if (!readback) {
+        return std::unexpected(readback.error());
+    }
+
+    ListBeginAndWait();
+    RecordTileCreates();
+    const CD3DX12_RESOURCE_BARRIER toSource = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    state.list->ResourceBarrier(1, &toSource);
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const CD3DX12_TEXTURE_COPY_LOCATION dst(*readback, TileBufferFootprint(i));
+        const CD3DX12_TEXTURE_COPY_LOCATION src(state.tilePool, TilePoolSubresource(cells[i]));
+        state.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    const CD3DX12_RESOURCE_BARRIER toShader = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    state.list->ResourceBarrier(1, &toShader);
+    ListExecuteAndWait();
+
+    void* mapped = nullptr;
+    const D3D12_RANGE read{.Begin = 0, .End = pixels.size()};
+    if (const HRESULT hr = (*readback)->Map(0, &read, &mapped); FAILED(hr)) {
+        LogHresult("ID3D12Resource::Map", hr);
+        (*readback)->Release();
+        return std::unexpected(Error::GraphicsTransferFailed);
+    }
+    std::memcpy(pixels.data(), mapped, pixels.size());
+    const D3D12_RANGE noWrite{.Begin = 0, .End = 0};
+    (*readback)->Unmap(0, &noWrite);
+    (*readback)->Release();
+    return {};
+}
+
+Result<void> GraphicsTilesUpload(std::span<const TileAtlasCell> cells,
+                                 std::span<const std::byte* const> pixels) noexcept {
+    ZoneScopedN("GraphicsTilesUpload");
+    MIDORI_ASSERT(pixels.size() == cells.size(), "{} pixel spans for {} tiles", pixels.size(), cells.size());
+    GraphicsState& state = gGraphicsState;
+    if (cells.empty()) {
+        return {};
+    }
+    const auto upload = TileBufferCreate(D3D12_HEAP_TYPE_UPLOAD, cells.size());
+    if (!upload) {
+        return std::unexpected(upload.error());
+    }
+    void* mapped = nullptr;
+    const D3D12_RANGE noRead{.Begin = 0, .End = 0};
+    if (const HRESULT hr = (*upload)->Map(0, &noRead, &mapped); FAILED(hr)) {
+        LogHresult("ID3D12Resource::Map", hr);
+        (*upload)->Release();
+        return std::unexpected(Error::GraphicsTransferFailed);
+    }
+    for (std::size_t i = 0; i < pixels.size(); ++i) {
+        std::memcpy(static_cast<std::byte*>(mapped) + (i * kTileBytes), pixels[i], kTileBytes);
+    }
+    (*upload)->Unmap(0, nullptr);
+
+    ListBeginAndWait();
+    const CD3DX12_RESOURCE_BARRIER toCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    state.list->ResourceBarrier(1, &toCopy);
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const CD3DX12_TEXTURE_COPY_LOCATION dst(state.tilePool, TilePoolSubresource(cells[i]));
+        const CD3DX12_TEXTURE_COPY_LOCATION src(*upload, TileBufferFootprint(i));
+        state.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    const CD3DX12_RESOURCE_BARRIER toShader = CD3DX12_RESOURCE_BARRIER::Transition(
+        state.tilePool, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    state.list->ResourceBarrier(1, &toShader);
+    ListExecuteAndWait();
+    (*upload)->Release();
+    return {};
 }
 
 DWORD GraphicsFrameWaitables(std::span<HANDLE, kWindowMax> handles, std::span<Window, kWindowMax> windows) noexcept {

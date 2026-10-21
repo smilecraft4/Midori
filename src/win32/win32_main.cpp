@@ -4,14 +4,38 @@
 #include "win32_graphics.hpp"
 #include "win32_platform.hpp"
 
+#include <shellapi.h>
+
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <system_error>
+#include <vector>
 
 #include <tracy/Tracy.hpp>
 
 using namespace Midori;
 
 namespace {
+
+// Every argument after the executable is a file to open, such as the one double-clicked in Explorer.
+// Relative paths are made absolute against the working directory.
+[[nodiscard]] std::vector<std::filesystem::path> CommandLineFiles() noexcept {
+    std::vector<std::filesystem::path> files;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) {
+        MIDORI_LOG_ERROR("CommandLineToArgvW failed: {}", GetLastError());
+        return files;
+    }
+    for (int i = 1; i < argc; ++i) {
+        std::error_code ec;
+        std::filesystem::path file = std::filesystem::absolute(argv[i], ec);
+        files.push_back(ec ? std::filesystem::path(argv[i]) : std::move(file));
+    }
+    LocalFree(static_cast<void*>(argv));
+    return files;
+}
 
 #if defined(MIDORI_DEBUG)
 constexpr bool kGraphicsDebugLayer = true;
@@ -40,7 +64,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
         LogTerminate();
         return 1;
     }
-    if (!AppInit(AppInitInfo{})) {
+    const std::vector<std::filesystem::path> files = CommandLineFiles();
+    if (!AppInit(AppInitInfo{.files = files})) {
         PlatformTerminate();
         GraphicsTerminate();
         LogTerminate();
@@ -82,6 +107,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
         }
         if (quit) {
             break;
+        }
+
+        if (const auto res = AppUpdate(); !res) {
+            MIDORI_LOG_ERROR("AppUpdate failed: {}", ErrorMessage(res.error()));
         }
 
         if (const auto res = GraphicsUpdate(); !res) {

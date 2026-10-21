@@ -7,11 +7,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
-#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+
+struct MDBX_env;
 
 namespace Midori {
 
@@ -71,6 +73,35 @@ struct LayerFileEntry {
 static_assert(std::is_trivially_copyable_v<LayerFileEntry>);
 static_assert(sizeof(LayerFileEntry) == kLayerNameLenMax + 16);
 
+constexpr std::uint32_t kCanvasFileMagic = 0x4F44494D; // "MIDO"
+constexpr std::uint32_t kCanvasFileVersion = 1;
+
+// Keys of the meta table.
+enum struct CanvasFileMeta : std::uint32_t {
+    Header,      // CanvasFileHeader
+    LayersOrder, // CanvasState::layersOrder, raw
+};
+
+// Written with a memcpy.
+struct CanvasFileHeader {
+    std::uint32_t magic;
+    std::uint32_t version;
+    Layer largestLayer;
+    PixelFormat pixelFormat;
+    std::uint8_t reserved; // zero
+};
+static_assert(std::is_trivially_copyable_v<CanvasFileHeader>);
+static_assert(sizeof(CanvasFileHeader) == 12);
+
+// The open canvas file, kept open (and locked) while the canvas lives. Tables: meta keyed by CanvasFileMeta,
+// layers keyed by layer id, tiles keyed by TileKey.
+struct CanvasFile {
+    MDBX_env* env{}; // null while the canvas has no file
+    std::uint32_t metaDbi{};
+    std::uint32_t layersDbi{};
+    std::uint32_t tilesDbi{};
+};
+
 // Ordered layer, mip, y, x from the top bit down, so a layer's tiles are one key range.
 using TileKey = std::uint64_t;
 constexpr std::size_t kTileXBitSize = 25;
@@ -109,6 +140,9 @@ inline constexpr bool kEnumFlags<TileTransfer> = true;
 
 using TileAtlasCell = std::uint16_t;
 constexpr TileAtlasCell kTileAtlasCellInvalid = std::numeric_limits<TileAtlasCell>::max();
+constexpr TileAtlasCell kTileAtlasCellMax = 64; // one tile pool shared by every canvas
+// Holds the test pattern new tiles start from; never handed out.
+constexpr TileAtlasCell kTileAtlasCellPattern = 0;
 
 // A tile not visible in the current frame may lose its atlas cell; the lowest `visibleFrame` loses it first.
 struct TileState {
@@ -139,20 +173,17 @@ struct TileDownload {
     TileTransfer purpose; // Cache or Save
 };
 
-struct CanvasCreateInfo {
-    std::string_view filename;
-    PixelFormat pixelFormat{};
-};
-
 // Owned and touched by the main thread only: jobs and the graphics backend drain the tile request queues
 // and report back through the Tile*Done calls on the main thread. Lives in AppState::canvases, indexed by
 // its id.
 struct CanvasState {
+    std::filesystem::path path; // empty until first saved
     std::vector<TileState> tiles;
     std::unordered_map<TileKey, std::uint32_t> tileIndices;
     std::vector<TileGridPosState> gridPositions;
     std::unordered_map<TileKey, std::uint32_t> gridPosIndices;
-    std::vector<TileAtlasCell> freeAtlasCells;
+    std::vector<TileKey> creates;        // new tiles waiting for their atlas cell to be filled
+    std::vector<TileKey> tileDeletes;    // tiles in the file deleted since the last save
     std::vector<TileKey> uploads;        // RAM cached tiles waiting for an upload slot
     std::vector<TileRead> reads;         // tiles waiting for a read + decompress + upload job
     std::vector<TileDownload> downloads; // tiles waiting for a download slot
@@ -163,14 +194,23 @@ struct CanvasState {
     std::vector<Layer> freeLayers;       // largest first, so pop_back gives the smallest
     std::array<LayerState, kLayerMax> layers;
     std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
-    std::string_view filename;
+    CanvasFile file;
     Layer largestLayer{};
     Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
+    bool modified{}; // changed since the last save, or since created
 };
 
-[[nodiscard]] Result<Canvas> CanvasCreate(CanvasCreateInfo createInfo) noexcept;
-[[nodiscard]] Result<void> CanvasDestroy(Canvas canvas) noexcept;
+// These never ask the user anything; the App* calls wrap them with dialogs.
+[[nodiscard]] Result<Canvas> CanvasNew() noexcept;
+// Every tile in the file is made resident.
+[[nodiscard]] Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept;
+// Writes what changed since the last save into the canvas's file, in one transaction. The canvas must have one.
+[[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
+// Writes the whole canvas into a new file that then replaces `path`, and keeps it as the canvas's file.
+[[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
+// Unsaved changes are lost.
+void CanvasDestroy(Canvas canvas) noexcept;
 
 struct CanvasViewCreateInfo {
     Viewport viewport{};

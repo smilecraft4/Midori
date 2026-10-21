@@ -156,6 +156,8 @@ constexpr float kFirstFrameSeconds = 1.0f / 60.0f;
             return event.windowResize.window;
         case EventType::WindowFocus:
             return event.windowFocus.window;
+        case EventType::WindowClose:
+            return event.windowClose.window;
         case EventType::WindowDestroy:
             return event.windowDestroy.window;
         case EventType::Key:
@@ -239,6 +241,7 @@ bool UiEvent(const Event& event) noexcept {
         case EventType::WindowFocus:
             io.AddFocusEvent(event.windowFocus.focused);
             return false;
+        case EventType::WindowClose:
         case EventType::WindowDestroy:
             return false;
         case EventType::Key: {
@@ -279,12 +282,12 @@ bool UiEvent(const Event& event) noexcept {
     return false;
 }
 
-void UiWindowFrame(Window window, Viewport* viewport) noexcept {
+UiCommand UiWindowFrame(Window window, Viewport* viewport) noexcept {
     ZoneScopedN("UiWindowFrame");
     MIDORI_ASSERT(window < kWindowMax && gUiState.contexts[window], "UiWindowFrame: no context for window {}", window);
     const auto state = WindowGetState(window);
     if (!state) {
-        return;
+        return UiCommand::None;
     }
     ImGui::SetCurrentContext(gUiState.contexts[window]);
     ImGuiIO& io = ImGui::GetIO();
@@ -300,6 +303,30 @@ void UiWindowFrame(Window window, Viewport* viewport) noexcept {
 
     ImGui::NewFrame();
     // ImGui::ShowDemoWindow();
+    UiCommand command = UiCommand::None;
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("New", "Ctrl+N")) {
+                command = UiCommand::CanvasNew;
+            }
+            if (ImGui::MenuItem("Open...", "Ctrl+O")) {
+                command = UiCommand::CanvasOpen;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save", "Ctrl+S", false, viewport != nullptr)) {
+                command = UiCommand::CanvasSave;
+            }
+            if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, viewport != nullptr)) {
+                command = UiCommand::CanvasSaveAs;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Exit", "Alt+F4")) {
+                command = UiCommand::Exit;
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
     if (viewport) {
         if (ImGui::Begin("View")) {
             ImGui::Text("Zoom %.1f%%  Rotation %.1f deg", std::abs(viewport->zoomX) * 100.0f,
@@ -315,6 +342,7 @@ void UiWindowFrame(Window window, Viewport* viewport) noexcept {
         ImGui::End();
     }
     ImGui::Render();
+    return command;
 }
 
 } // namespace Midori

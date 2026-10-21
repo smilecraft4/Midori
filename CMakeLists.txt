@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 project(Midori
     VERSION 0.1.0
     DESCRIPTION "Infinite rasterized painting app"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 if(NOT WIN32 OR NOT MSVC)
@@ -34,7 +34,7 @@ set(SPDLOG_SYSTEM_INCLUDES ON)
 set(SPDLOG_NO_EXCEPTIONS ON)
 add_subdirectory(vendors/spdlog)
 
-set(TRACY_ENABLE ON)
+set(TRACY_ENABLE OFF)
 set(TRACY_ON_DEMAND ON)
 set(TRACY_ONLY_LOCALHOST ON)
 set(TRACY_STATIC ON)
@@ -59,11 +59,18 @@ target_compile_definitions(imgui PUBLIC
 )
 target_link_libraries(imgui PRIVATE d3d12 dxgi d3dcompiler)
 
+# Static: Windows Vista and later run its thread-local destructors without DllMain.
+add_library(mdbx STATIC vendors/libmdbx/mdbx.c)
+target_include_directories(mdbx SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendors/libmdbx)
+target_compile_definitions(mdbx PRIVATE _WIN32_WINNT=0x0A00)
+target_link_libraries(mdbx PRIVATE ntdll)
+
 set(MIDORI_SOURCES
     src/app.cpp
     src/base.cpp
     src/canvas.cpp
     src/color.cpp
+    src/tile.cpp
     src/ui.cpp
     src/viewport.cpp
 )
@@ -103,6 +110,16 @@ set_target_properties(midori PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
 
+# The ASan runtime lives next to cl.exe, only on PATH in a VS developer prompt: ship it next to the exe.
+string(FIND "${CMAKE_CXX_FLAGS_DEBUG}" "/fsanitize=address" MIDORI_ASAN_FLAG)
+if(NOT MIDORI_ASAN_FLAG EQUAL -1)
+    cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH MIDORI_COMPILER_DIR)
+    add_custom_command(TARGET midori POST_BUILD
+        COMMAND "$<$<CONFIG:Debug>:${CMAKE_COMMAND};-E;copy_if_different;${MIDORI_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll;$<TARGET_FILE_DIR:midori>>"
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
 target_include_directories(midori PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -140,6 +157,6 @@ target_precompile_headers(midori PRIVATE
     <string_view>
 )
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui d3d12 dxgi dxguid dcomp)
+target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})

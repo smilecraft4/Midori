@@ -31,8 +31,19 @@ void UiWindowTerminate(Window window) noexcept;
 // window's last frame, so it lags the event by up to one frame.
 [[nodiscard]] bool UiEvent(const Event& event) noexcept;
 
+// Picked from the menu bar. The frame is built inside the renderer's submit, where no dialog can open, so
+// the app runs it later.
+enum struct UiCommand : std::uint8_t {
+    None,
+    CanvasNew,
+    CanvasOpen,
+    CanvasSave,
+    CanvasSaveAs,
+    Exit,
+};
+
 // Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
 // panel edits `viewport`, and is hidden while the window shows no canvas view (null).
-void UiWindowFrame(Window window, Viewport* viewport) noexcept;
+[[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport) noexcept;
 
 } // namespace Midori

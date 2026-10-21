@@ -4,12 +4,17 @@
 #include "midori/canvas.hpp"
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
+#include "midori/ui.hpp"
 #include <array>
-#include <string_view>
+#include <filesystem>
+#include <span>
+#include <vector>
 
 namespace Midori {
 
-struct AppInitInfo {};
+struct AppInitInfo {
+    std::span<const std::filesystem::path> files; // from the command line, each opened in its own window
+};
 
 enum struct NavigateMode : std::uint8_t {
     None,
@@ -33,14 +38,18 @@ struct AppState {
     std::array<WindowState, kWindowMax> windows;
     std::array<CanvasState, kCanvasMax> canvases;
     std::array<CanvasViewState, kCanvasViewMax> canvasViews;
+    std::vector<TileAtlasCell> freeAtlasCells; // of the tile pool every canvas shares
     NavigateState navigate;
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible
     // tile grid positions, so a tile with an older `visibleFrame` is shown nowhere.
     std::uint32_t frame;
-    float pointerX; // last pointer position, client-area physical pixels of the window it moved in
+    float pointerX;    // last pointer position, client-area physical pixels of the window it moved in
     float pointerY;
-    KeyMod keyMods; // as of the last key event
+    KeyMod keyMods;    // as of the last key event
+    Window commandWindow;
+    UiCommand command; // picked during `commandWindow`'s frame, run by the next AppUpdate
     bool spaceDown;
+    bool modal;        // a dialog is up: its message loop still delivers events, which are dropped
 };
 
 extern AppState gAppState;
@@ -50,12 +59,19 @@ extern AppState gAppState;
 // The renderer is about to draw this window: last chance to update what it shows. Runs inside the
 // renderer's submit, so it must not create or destroy windows.
 void AppWindowFrame(Window window) noexcept;
+// Once per main loop iteration, outside any submit: runs the UI command of the last frame.
+[[nodiscard]] Result<void> AppUpdate() noexcept;
 void AppTerminate() noexcept;
 
+// The window shows a canvas, replacing its current one once the user has saved or discarded unsaved
+// changes. Canceling any dialog is not an error. Failures are shown to the user, then returned.
 [[nodiscard]] Result<void> AppCanvasNew(Window window) noexcept;
-[[nodiscard]] Result<void> AppCanvasOpen(Window window, std::string_view filename) noexcept;
-[[nodiscard]] Result<void> AppCanvasSave(Canvas canvas) noexcept;
-[[nodiscard]] Result<void> AppCanvasSaveAs(Canvas canvas, std::string_view filename) noexcept;
+[[nodiscard]] Result<void> AppCanvasOpen(Window window) noexcept;
+// Asks for a file when the canvas has none.
+[[nodiscard]] Result<void> AppCanvasSave(Window window) noexcept;
+[[nodiscard]] Result<void> AppCanvasSaveAs(Window window) noexcept;
+// The user asked to close the window: destroys it once unsaved changes are saved or discarded.
+[[nodiscard]] Result<void> AppWindowClose(Window window) noexcept;
 
 [[nodiscard]] Result<void> AppPaintMode() noexcept;
 [[nodiscard]] Result<void> AppEraseMode() noexcept;

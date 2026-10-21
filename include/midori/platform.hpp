@@ -2,7 +2,9 @@
 
 #include "midori/base.hpp"
 #include <cstdint>
+#include <filesystem>
 #include <limits>
+#include <string>
 #include <string_view>
 
 namespace Midori {
@@ -62,5 +64,45 @@ struct WindowState {
 [[nodiscard]] Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) noexcept;
 
 [[nodiscard]] Result<void*> WindowGetNativeHandle(Window window) noexcept;
+
+[[nodiscard]] inline std::string PathUtf8(const std::filesystem::path& path) noexcept {
+    const std::u8string text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+// Dialogs are modal to `window` (kWindowInvalid for none) and block in their own message loop, which keeps
+// delivering events for every window.
+
+enum struct DialogChoice : std::uint8_t {
+    Yes,
+    No,
+    Cancel,
+};
+
+// Text is UTF-8. The instruction is the headline; the content, which may be empty, explains it.
+struct DialogAskInfo {
+    std::string_view title;
+    std::string_view instruction;
+    std::string_view content;
+    std::string_view yes; // button labels; a Cancel button always follows them
+    std::string_view no;
+    Window window{kWindowInvalid};
+};
+
+// Yes is the default button. Cancel when the dialog cannot show, so nothing proceeds unasked.
+[[nodiscard]] DialogChoice DialogAsk(const DialogAskInfo& info) noexcept;
+void DialogError(Window window, std::string_view title, std::string_view instruction,
+                 std::string_view content) noexcept;
+
+struct DialogFileInfo {
+    std::filesystem::path initial; // save: the suggested file
+    std::string_view typeName;     // UTF-8, as the file type filter shows it
+    std::string_view extension;    // without the dot
+    Window window{kWindowInvalid};
+};
+
+// The chosen file, empty when the user cancels. Saving asks before replacing an existing file.
+[[nodiscard]] Result<std::filesystem::path> DialogFileOpen(const DialogFileInfo& info) noexcept;
+[[nodiscard]] Result<std::filesystem::path> DialogFileSave(const DialogFileInfo& info) noexcept;
 
 } // namespace Midori
