@@ -19,6 +19,7 @@ enum struct BlendMode : std::uint8_t {
     Multiply,
     Add,
     Screen,
+    NormalOkLab, // Normal with the colors mixed in OkLab
     Count_,
 };
 

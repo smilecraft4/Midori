@@ -70,6 +70,7 @@ set(MIDORI_SOURCES
     src/base.cpp
     src/canvas.cpp
     src/color.cpp
+    src/stroke.cpp
     src/tile.cpp
     src/ui.cpp
     src/viewport.cpp
@@ -82,12 +83,14 @@ set(MIDORI_SOURCES_WIN32
 )
 
 set(MIDORI_SHADERS_WIN32
+    data/win32/shaders/blend.hlsli
     data/win32/shaders/common.hlsli
     data/win32/shaders/tile_ops.hlsli
     data/win32/shaders/tile.vs.hlsl
     data/win32/shaders/tile.ps.hlsl
     data/win32/shaders/tile_blend.cs.hlsl
     data/win32/shaders/tile_mip.cs.hlsl
+    data/win32/shaders/stroke.cs.hlsl
 )
 
 set(MIDORI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/data/win32/icon.ico")

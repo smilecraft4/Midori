@@ -4,6 +4,8 @@
 #include "midori/canvas.hpp"
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
+#include "midori/stroke.hpp"
+#include "midori/tool.hpp"
 #include "midori/ui.hpp"
 #include <array>
 #include <filesystem>
@@ -40,16 +42,20 @@ struct AppState {
     std::array<CanvasViewState, kCanvasViewMax> canvasViews;
     std::vector<TileAtlasCell> freeAtlasCells; // of the tile pool every canvas shares
     NavigateState navigate;
+    StrokeState stroke;
+    ToolsState tools;
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible
     // tile grid positions, so a tile with an older `visibleFrame` is shown nowhere.
     std::uint32_t frame;
-    float pointerX;    // last pointer position, client-area physical pixels of the window it moved in
+    float pointerX; // last pointer position, client-area physical pixels of the window it moved in
     float pointerY;
-    KeyMod keyMods;    // as of the last key event
+    float pointerPressure;
+    float backgroundOpacity{0.5f}; // of the white behind the canvas, shared by every window
+    KeyMod keyMods;                // as of the last key event
     Window commandWindow;
-    UiCommand command; // picked during `commandWindow`'s frame, run by the next AppUpdate
+    UiCommand command;             // picked during `commandWindow`'s frame, run by the next AppUpdate
     bool spaceDown;
-    bool modal;        // a dialog is up: its message loop still delivers events, which are dropped
+    bool modal;                    // a dialog is up: its message loop still delivers events, which are dropped
 };
 
 extern AppState gAppState;

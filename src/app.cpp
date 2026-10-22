@@ -1,6 +1,7 @@
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
 #include "midori/log.hpp"
+#include "midori/stroke.hpp"
 #include "midori/tile.hpp"
 #include "midori/ui.hpp"
 
@@ -54,6 +55,9 @@ void CanvasViewDetach(CanvasView view) noexcept {
     viewState = {};
     if (gAppState.navigate.view == view) {
         gAppState.navigate = {};
+    }
+    if (gAppState.stroke.view == view) {
+        StrokeRelease();
     }
     if (!CanvasShownElsewhere(canvas, kCanvasViewInvalid)) {
         CanvasDestroy(canvas);
@@ -217,9 +221,22 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
     return {};
 }
 
-// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as.
-[[nodiscard]] Result<void> FileShortcut(const KeyEvent& key) noexcept {
-    if (key.inputState != InputState::Press || !HasAnyFlag(key.keyMods, KeyMod::Ctrl)) {
+// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. B paints, E erases.
+[[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
+    if (key.inputState != InputState::Press) {
+        return {};
+    }
+    if (key.keyMods == KeyMod::None) {
+        switch (key.key) {
+            case Key::B:
+                return AppPaintMode();
+            case Key::E:
+                return AppEraseMode();
+            default:
+                return {};
+        }
+    }
+    if (!HasAnyFlag(key.keyMods, KeyMod::Ctrl)) {
         return {};
     }
     switch (key.key) {
@@ -255,6 +272,19 @@ struct ViewPoint {
         return NavigateMode::Rotate;
     }
     return NavigateMode::Pan;
+}
+
+// The canvas point under the last pointer position.
+[[nodiscard]] Result<StrokePoint> CanvasPointUnderPointer(CanvasView view, float pressure) noexcept {
+    const CanvasViewState& viewState = gAppState.canvasViews[view];
+    const auto windowState = WindowGetState(viewState.window);
+    if (!windowState) {
+        return std::unexpected(windowState.error());
+    }
+    const ViewPoint point = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
+    // Moving the view by minus the point's offset brings the canvas point under it to the center.
+    const Viewport under = ViewportMove(viewState.viewport, -point.x, -point.y);
+    return StrokePoint{.x = under.posX, .y = under.posY, .pressure = pressure};
 }
 
 void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
@@ -346,6 +376,7 @@ void NavigateEnd() noexcept {
         case EventType::Pointer: {
             app.pointerX = event.pointer.posX;
             app.pointerY = event.pointer.posY;
+            app.pointerPressure = event.pointer.pressure;
             if (app.navigate.mode == NavigateMode::None
                 || app.canvasViews[app.navigate.view].window != event.pointer.window) {
                 return false;
@@ -364,36 +395,118 @@ void NavigateEnd() noexcept {
     }
 }
 
-// Left press creates the layer 0 tile under the pointer, right press deletes it.
+// The titles show the * once an edit modified the canvas.
+void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
+    if (!wasModified && gAppState.canvases[canvas].modified) {
+        CanvasTitlesUpdate(canvas);
+    }
+}
+
+[[nodiscard]] StrokeBeginInfo StrokeBeginInfoFromTool(CanvasView view, StrokePoint point) noexcept {
+    const ToolsState& tools = gAppState.tools;
+    if (tools.tool == Tool::Erase) {
+        return StrokeBeginInfo{
+            .brush = tools.erase.brush,
+            .color = tools.erase.color,
+            .point = point,
+            .layer = 0,
+            .view = view,
+            .mode = StrokeMode::Erase,
+            .blendMode = BlendMode::Normal,
+        };
+    }
+    return StrokeBeginInfo{
+        .brush = tools.paint.brush,
+        .color = tools.paint.color,
+        .point = point,
+        .layer = 0,
+        .view = view,
+        .mode = StrokeMode::Paint,
+        .blendMode = tools.paint.blendMode,
+    };
+}
+
+// Left drag paints or erases layer 0, by the current tool. Releases and focus loss end the stroke even when the UI
+// wants them. Returns true when the event belongs to the stroke.
+[[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
+    StrokeState& stroke = gAppState.stroke;
+    const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended;
+    switch (event.type) {
+        case EventType::Button: {
+            if (event.button.button != Button::Left) {
+                return false;
+            }
+            if (event.button.inputState == InputState::Release) {
+                if (painting) {
+                    StrokeEnd();
+                }
+                return painting;
+            }
+            const CanvasView view = WindowCanvasView(event.button.window);
+            // An ended stroke the GPU has not finished yet blocks the next one for a frame at most.
+            if (event.button.inputState != InputState::Press || uiWants || view == kCanvasViewInvalid
+                || stroke.canvas != kCanvasInvalid) {
+                return false;
+            }
+            // The mouse has no pressure: 1 while a button is held.
+            const float pressure = event.button.device == kDeviceSystem ? 1.0f : gAppState.pointerPressure;
+            const auto point = CanvasPointUnderPointer(view, pressure);
+            if (!point) {
+                return false;
+            }
+            const Canvas canvas = gAppState.canvasViews[view].canvas;
+            const bool wasModified = gAppState.canvases[canvas].modified;
+            StrokeBegin(StrokeBeginInfoFromTool(view, *point));
+            CanvasEdited(canvas, wasModified);
+            return true;
+        }
+        case EventType::Pointer: {
+            if (!painting || gAppState.canvasViews[stroke.view].window != event.pointer.window) {
+                return false;
+            }
+            if (const auto point = CanvasPointUnderPointer(stroke.view, event.pointer.pressure)) {
+                const bool wasModified = gAppState.canvases[stroke.canvas].modified;
+                StrokeTo(*point);
+                CanvasEdited(stroke.canvas, wasModified);
+            }
+            return true;
+        }
+        case EventType::WindowFocus:
+            if (painting && !event.windowFocus.focused) {
+                StrokeEnd();
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
+// Right press creates the layer 0 tile under the pointer, or deletes it.
 [[nodiscard]] Result<void> TileEdit(const ButtonEvent& button) noexcept {
-    const bool create = button.button == Button::Left;
-    if (button.inputState != InputState::Press || (!create && button.button != Button::Right)) {
+    if (button.inputState != InputState::Press || button.button != Button::Right
+        || gAppState.stroke.canvas != kCanvasInvalid) {
         return {};
     }
     const CanvasView view = WindowCanvasView(button.window);
     if (view == kCanvasViewInvalid) {
         return {};
     }
-    const CanvasViewState& viewState = gAppState.canvasViews[view];
-    const auto windowState = WindowGetState(viewState.window);
-    if (!windowState) {
-        return std::unexpected(windowState.error());
+    const auto point = CanvasPointUnderPointer(view, 0.0f);
+    if (!point) {
+        return std::unexpected(point.error());
     }
-    const ViewPoint point = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
-    // Moving the view by minus the point's offset brings the canvas point under it to the center.
-    const Viewport under = ViewportMove(viewState.viewport, -point.x, -point.y);
     const Tile tile{
-        .canvas = viewState.canvas,
+        .canvas = gAppState.canvasViews[view].canvas,
         .mip = 0,
         .layer = 0,
-        .gridPos = {.x = static_cast<TileAxis>(std::floor(under.posX / static_cast<float>(kTileSize))),
-                    .y = static_cast<TileAxis>(std::floor(under.posY / static_cast<float>(kTileSize)))},
+        .gridPos = {.x = static_cast<TileAxis>(std::floor(point->x / static_cast<float>(kTileSize))),
+                    .y = static_cast<TileAxis>(std::floor(point->y / static_cast<float>(kTileSize)))},
     };
-    const bool wasModified = gAppState.canvases[tile.canvas].modified;
-    const auto res = create ? TileNew(tile) : TileDelete(tile);
-    if (!wasModified && gAppState.canvases[tile.canvas].modified) {
-        CanvasTitlesUpdate(tile.canvas);
-    }
+    const CanvasState& canvas = gAppState.canvases[tile.canvas];
+    const bool wasModified = canvas.modified;
+    const bool exists = canvas.tileIndices.contains(TileKeyMake(tile.layer, tile.mip, tile.gridPos));
+    const auto res = exists ? TileDelete(tile) : TileNew(tile);
+    CanvasEdited(tile.canvas, wasModified);
     return res;
 }
 
@@ -440,7 +553,7 @@ Result<void> AppEvent(Event event) noexcept {
         return {};
     }
     const bool uiWants = UiEvent(event);
-    if (Navigate(event, uiWants) || uiWants) {
+    if (Navigate(event, uiWants) || Paint(event, uiWants) || uiWants) {
         return {};
     }
     switch (event.type) {
@@ -465,7 +578,7 @@ Result<void> AppEvent(Event event) noexcept {
             MIDORI_LOG_TRACE("window {}: key {} state {} mods {:#04x}", event.key.window,
                              std::to_underlying(event.key.key), std::to_underlying(event.key.inputState),
                              std::to_underlying(event.key.keyMods));
-            return FileShortcut(event.key);
+            return KeyShortcut(event.key);
         case EventType::Text:
             MIDORI_LOG_TRACE("window {}: text U+{:04X}", event.text.window,
                              static_cast<std::uint32_t>(event.text.codepoint));
@@ -496,7 +609,8 @@ void AppWindowFrame(Window window) noexcept {
     ZoneScopedN("AppWindowFrame");
     const CanvasView view = WindowCanvasView(window);
     Viewport* viewport = view != kCanvasViewInvalid ? &gAppState.canvasViews[view].viewport : nullptr;
-    if (const UiCommand command = UiWindowFrame(window, viewport); command != UiCommand::None) {
+    if (const UiCommand command = UiWindowFrame(window, viewport, gAppState.backgroundOpacity, gAppState.tools);
+        command != UiCommand::None) {
         gAppState.command = command;
         gAppState.commandWindow = window;
     }
@@ -506,6 +620,7 @@ void AppWindowFrame(Window window) noexcept {
 
 Result<void> AppUpdate() noexcept {
     ZoneScopedN("AppUpdate");
+    StrokeUpdate();
     const UiCommand command = std::exchange(gAppState.command, UiCommand::None);
     const Window window = gAppState.commandWindow;
     if (command == UiCommand::None || !WindowGetState(window)) {
@@ -590,6 +705,17 @@ Result<void> AppCanvasSave(Window window) noexcept {
 Result<void> AppCanvasSaveAs(Window window) noexcept {
     ZoneScopedN("AppCanvasSaveAs");
     return WindowCanvasSave(window, true);
+}
+
+// A stroke in progress keeps the tool it began with.
+Result<void> AppPaintMode() noexcept {
+    gAppState.tools.tool = Tool::Paint;
+    return {};
+}
+
+Result<void> AppEraseMode() noexcept {
+    gAppState.tools.tool = Tool::Erase;
+    return {};
 }
 
 Result<void> AppWindowClose(Window window) noexcept {

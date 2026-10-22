@@ -11,6 +11,8 @@ struct ImGuiContext;
 
 namespace Midori {
 
+struct ToolsState;
+
 // One Dear ImGui context per window: its own input state, style, font atlas and draw data. Owned by
 // the platform thread. Every Ui call makes the context it works on current; none relies on the one
 // left current by a previous call.
@@ -43,7 +45,9 @@ enum struct UiCommand : std::uint8_t {
 };
 
 // Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
-// panel edits `viewport`, and is hidden while the window shows no canvas view (null).
-[[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport) noexcept;
+// panel edits `viewport` and `backgroundOpacity`, and is hidden while the window shows no canvas view (null).
+// The tool panel edits `tools`.
+[[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpacity,
+                                      ToolsState& tools) noexcept;
 
 } // namespace Midori

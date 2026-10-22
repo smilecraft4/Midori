@@ -23,6 +23,8 @@
 
 namespace Midori {
 
+struct StrokeDab;
+
 struct GraphicsInitInfo {
     bool debugLayer; // D3D12 debug layer: validates every call, slows the CPU side
 };
@@ -53,7 +55,8 @@ struct Win32SwapChain {
 
 // The win32 graphics backend's state. Owned by the main thread, like PlatformState. A window id
 // indexes `windows`; window `w` owns RTVs [w * kSwapChainBufferCount, (w + 1) * kSwapChainBufferCount).
-// `views` holds the tile pool SRV at 0, then the UI texture SRVs; `uiTextures` marks the used ones.
+// `views` holds the tile pool SRV at 0, its UAV at 1, then the UI texture SRVs; `uiTextures` marks the used
+// ones.
 struct GraphicsState {
     std::array<Win32SwapChain, kWindowMax> windows;
     std::array<ID3D12CommandAllocator*, kGraphicsFramesInFlight> allocators;
@@ -66,7 +69,11 @@ struct GraphicsState {
     ID3D12DescriptorHeap* rtvs;
     ID3D12RootSignature* tileRootSignature; // embedded in tile.vs.hlsl
     ID3D12PipelineState* tilePipeline;
-    ID3D12DescriptorHeap* views;            // shader visible: the tile pool SRV, then UI textures
+    ID3D12RootSignature* strokeRootSignature; // embedded in stroke.cs.hlsl
+    ID3D12PipelineState* strokePipeline;
+    ID3D12Resource* strokeDabs;             // upload heap, kStrokeDabMax dabs per frame in flight
+    StrokeDab* strokeDabsMapped;
+    ID3D12DescriptorHeap* views;            // shader visible: the tile pool SRV and UAV, then UI textures
     ID3D12Resource* tilePool;               // Texture2DArray, one slice per tile
     IDCompositionDesktopDevice* composition;
     TracyD3D12Ctx gpuProfiler;              // timestamp queries on `queue`, collected after each submit

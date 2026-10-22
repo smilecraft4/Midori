@@ -1,6 +1,8 @@
 #include "midori/ui.hpp"
 #include "midori/log.hpp"
+#include "midori/tool.hpp"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <numbers>
@@ -16,6 +18,10 @@ UiState gUiState{};
 namespace {
 
 constexpr float kFirstFrameSeconds = 1.0f / 60.0f;
+
+constexpr std::array<const char*, std::to_underlying(BlendMode::Count_)> kBlendModeNames = {
+    "Normal", "Multiply", "Add", "Screen", "Normal (OkLab)",
+};
 
 [[nodiscard]] ImGuiKey ImGuiKeyOffset(ImGuiKey first, Key key, Key firstKey) noexcept {
     return static_cast<ImGuiKey>(first + (std::to_underlying(key) - std::to_underlying(firstKey)));
@@ -176,6 +182,16 @@ constexpr float kFirstFrameSeconds = 1.0f / 60.0f;
     return kWindowInvalid;
 }
 
+void BrushEdit(BrushState& brush) noexcept {
+    ImGui::SliderFloat("Radius", &brush.radius, 0.5f, 500.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Hardness", &brush.hardness, 0.0f, 1.0f);
+    ImGui::SliderFloat("Flow", &brush.flow, 0.0f, 1.0f);
+    ImGui::SliderFloat("Opacity", &brush.opacity, 0.0f, 1.0f);
+    ImGui::SliderFloat("Spacing", &brush.spacing, 0.01f, 1.0f);
+    ImGui::Checkbox("Pressure radius", &brush.pressureRadius);
+    ImGui::Checkbox("Pressure opacity", &brush.pressureOpacity);
+}
+
 // ScaleAllSizes is not reversible, so a DPI change rebuilds the style from the defaults.
 void ApplyDpiScale(float dpiScale) noexcept {
     ImGuiStyle style{};
@@ -282,7 +298,7 @@ bool UiEvent(const Event& event) noexcept {
     return false;
 }
 
-UiCommand UiWindowFrame(Window window, Viewport* viewport) noexcept {
+UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpacity, ToolsState& tools) noexcept {
     ZoneScopedN("UiWindowFrame");
     MIDORI_ASSERT(window < kWindowMax && gUiState.contexts[window], "UiWindowFrame: no context for window {}", window);
     const auto state = WindowGetState(window);
@@ -338,9 +354,30 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport) noexcept {
             if (ImGui::Button("Flip Y")) {
                 *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
             }
+            ImGui::SliderFloat("Background opacity", &backgroundOpacity, 0.0f, 1.0f);
         }
         ImGui::End();
     }
+    if (ImGui::Begin("Tool")) {
+        int tool = std::to_underlying(tools.tool);
+        ImGui::RadioButton("Paint (B)", &tool, std::to_underlying(Tool::Paint));
+        ImGui::SameLine();
+        ImGui::RadioButton("Erase (E)", &tool, std::to_underlying(Tool::Erase));
+        tools.tool = static_cast<Tool>(tool);
+        ImGui::Separator();
+        if (tools.tool == Tool::Paint) {
+            ImGui::ColorEdit4("Color", &tools.paint.color.r);
+            int blendMode = std::to_underlying(tools.paint.blendMode);
+            if (ImGui::Combo("Blend", &blendMode, kBlendModeNames.data(), static_cast<int>(kBlendModeNames.size()))) {
+                tools.paint.blendMode = static_cast<BlendMode>(blendMode);
+            }
+            BrushEdit(tools.paint.brush);
+        } else {
+            ImGui::ColorEdit4("Removes", &tools.erase.color.r);
+            BrushEdit(tools.erase.brush);
+        }
+    }
+    ImGui::End();
     ImGui::Render();
     return command;
 }

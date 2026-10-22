@@ -1,0 +1,88 @@
+#pragma once
+
+#include "midori/canvas.hpp"
+#include "midori/color.hpp"
+#include "midori/tool.hpp"
+#include <cstdint>
+#include <vector>
+
+namespace Midori {
+
+constexpr std::uint32_t kStrokeDabMax = 1 << 16;
+
+// Mirrors kStroke* in stroke.cs.hlsl.
+enum struct StrokeMode : std::uint8_t {
+    Paint,
+    Erase,
+};
+
+// Mirrors StrokeDab in stroke.cs.hlsl.
+struct StrokeDab {
+    float x; // canvas units
+    float y;
+    float radius;
+    float hardness;
+    float flow;
+    float opacity;
+};
+
+struct StrokePoint {
+    float x; // canvas units
+    float y;
+    float pressure;
+};
+
+struct StrokeBeginInfo {
+    BrushState brush;
+    Color::Srgb color; // Paint: the paint. Erase: how much of each channel goes, see EraseToolState
+    StrokePoint point;
+    Layer layer;
+    CanvasView view;
+    StrokeMode mode;
+    BlendMode blendMode; // Paint only
+};
+
+struct StrokeTile {
+    TileKey key;
+    std::uint32_t firstDab;   // the dabs before it miss the tile
+    TileAtlasCell cell;
+    TileAtlasCell backupCell; // the tile before the stroke; kTileAtlasCellInvalid when the atlas was full
+    std::uint16_t dirtyMinX;  // texels to recompute, max exclusive, empty when min >= max
+    std::uint16_t dirtyMinY;
+    std::uint16_t dirtyMaxX;
+    std::uint16_t dirtyMaxY;
+    bool backedUp;
+};
+
+// The GPU recomputes every dirty texel from its tile's backup and all the dabs, so no temporary layer is
+// needed, the opacity cap holds over existing paint and nothing accumulates in 8 bits.
+struct StrokeState {
+    std::vector<StrokeDab> dabs;
+    std::vector<StrokeTile> tiles;
+    BrushState brush;              // as the stroke began
+    Color::Srgb color;
+    StrokePoint last;              // the last input point
+    float toNextDab{};             // canvas units along the path
+    Layer layer{};
+    Canvas canvas{kCanvasInvalid}; // kCanvasInvalid: no stroke
+    CanvasView view{kCanvasViewInvalid};
+    StrokeMode mode{};
+    BlendMode blendMode{};
+    bool ended{}; // the GPU records what is left, then StrokeUpdate frees the backups
+};
+
+// The GPU has a backup or dirty texels to record.
+[[nodiscard]] constexpr bool StrokeTilePending(const StrokeTile& tile) noexcept {
+    return tile.backupCell != kTileAtlasCellInvalid && (!tile.backedUp || tile.dirtyMinX < tile.dirtyMaxX);
+}
+
+// Edits the existing tiles of `layer`; the tiles missing under the stroke are skipped.
+void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
+void StrokeTo(StrokePoint point) noexcept;
+void StrokeEnd() noexcept;
+// Frees an ended stroke once the GPU recorded all of it.
+void StrokeUpdate() noexcept;
+// Frees the stroke now, whatever the GPU has not recorded yet is lost.
+void StrokeRelease() noexcept;
+
+} // namespace Midori

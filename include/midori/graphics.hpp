@@ -33,7 +33,8 @@ struct GraphicsWindowInitInfo {
 // The window gets a frame at its next vblank, from GraphicsUpdate.
 void GraphicsWindowRequestFrame(Window window) noexcept;
 
-// Both wait for the GPU. Pixels are kTileBytes per cell, mip 0 only. A download first fills pending new tiles.
+// Both wait for the GPU. Pixels are kTileBytes per cell, mip 0 only. A download first fills pending new tiles and
+// records the stroke so far.
 [[nodiscard]] Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells,
                                                  std::span<std::byte> pixels) noexcept;
 [[nodiscard]] Result<void> GraphicsTilesUpload(std::span<const TileAtlasCell> cells,
