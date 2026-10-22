@@ -7,6 +7,7 @@ static const uint kTileAtlasMax = 16;
 static const uint kTileAtlasPages = 64;
 static const uint kTileAtlasBlockSize = 32;
 static const uint kTileTexels = 256;
+static const uint kTileAtlasCellInvalid = 0xFFFFFFFF;
 
 uint TileAtlasPageAtlas(uint page) {
     return page / kTileAtlasPages;

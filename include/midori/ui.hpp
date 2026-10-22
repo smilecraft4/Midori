@@ -46,6 +46,8 @@ enum struct UiCommand : std::uint8_t {
     CanvasSave,
     CanvasSaveAs,
     Exit,
+    Undo,
+    Redo,
 };
 
 // Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view

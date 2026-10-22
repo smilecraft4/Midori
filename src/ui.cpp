@@ -499,6 +499,15 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, viewport != nullptr)) {
+                command = UiCommand::Undo;
+            }
+            if (ImGui::MenuItem("Redo", "Ctrl+Shift+Z", false, viewport != nullptr)) {
+                command = UiCommand::Redo;
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Debug")) {
             ImGui::MenuItem("Tile atlas", nullptr, &gUiState.tileAtlasShown[window]);
             ImGui::MenuItem("Tile cells on canvas", nullptr, &gUiState.tileCellsShown[window]);

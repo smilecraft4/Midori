@@ -23,6 +23,14 @@
 
 namespace Midori {
 
+// One block copy. Mirrors HistoryOp in history.cs.hlsl.
+struct HistoryGpuOp {
+    std::uint32_t slot;
+    std::uint32_t page;
+    std::uint32_t origin; // texel origin of the block in its page, x | y << 16
+    std::uint32_t swap;
+};
+
 struct StrokeDab;
 
 struct GraphicsInitInfo {
@@ -73,6 +81,11 @@ struct GraphicsState {
     ID3D12PipelineState* strokePipeline;
     ID3D12RootSignature* mipRootSignature; // embedded in tile_mip.cs.hlsl
     ID3D12PipelineState* mipPipeline;
+    ID3D12RootSignature* historyRootSignature; // embedded in history.cs.hlsl
+    ID3D12PipelineState* historyPipeline;
+    ID3D12Resource* historyStore;             // default heap, kHistorySlotsMax blocks
+    ID3D12Resource* historyOps;               // upload heap, kHistorySlotsMax ops per frame in flight
+    HistoryGpuOp* historyOpsMapped;
     ID3D12Resource* strokeDabs;               // upload heap, kStrokeDabMax dabs per frame in flight
     StrokeDab* strokeDabsMapped;
     ID3D12DescriptorHeap* views;              // shader visible: the tile pool SRVs and UAVs, then UI textures

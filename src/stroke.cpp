@@ -1,6 +1,7 @@
 #include "midori/stroke.hpp"
 
 #include "midori/app.hpp"
+#include "midori/history.hpp"
 #include "midori/log.hpp"
 #include "midori/tile.hpp"
 
@@ -32,9 +33,31 @@ constexpr std::uint32_t kStrokeWaitUpdates = 300;
     return static_cast<std::uint16_t>(std::clamp(static_cast<TileAxis>(pos) - origin, 0, kTileSize));
 }
 
-// Paint from here on goes into the tile: it gets its cell and a backup of what it holds now.
-void StrokeTileAttach(StrokeTile& tile, TileState& tileState) noexcept {
+// The Morton bits of the 32^2 blocks the texel rect [minX, maxX) x [minY, maxY) overlaps.
+[[nodiscard]] std::uint64_t TileBlocksMask(std::uint32_t minX, std::uint32_t minY, std::uint32_t maxX,
+                                           std::uint32_t maxY) noexcept {
+    std::uint64_t mask = 0;
+    if (minX >= maxX || minY >= maxY) {
+        return mask;
+    }
+    for (std::uint32_t y = minY / kTileAtlasBlockSize; y <= (maxY - 1) / kTileAtlasBlockSize; ++y) {
+        for (std::uint32_t x = minX / kTileAtlasBlockSize; x <= (maxX - 1) / kTileAtlasBlockSize; ++x) {
+            mask |= std::uint64_t{1} << TileBlockIndex(x, y);
+        }
+    }
+    return mask;
+}
+
+// Paint from here on goes into the tile: it gets its cell and a backup of what it holds now. A tile the stroke created
+// is still clear, so the clear cell serves as its backup.
+void StrokeTileAttach(StrokeTile& tile, TileState& tileState, bool created) noexcept {
     tile.cell = tileState.cell;
+    if (created) {
+        tile.backupCell = kTileAtlasCellClear;
+        tile.backedUp = true;
+        ++tileState.edits;
+        return;
+    }
     tile.backupCell = TileAtlasCellTake(TileKeyMip(tile.key), kCanvasInvalid, tile.key);
     if (tile.backupCell == kTileAtlasCellInvalid) {
         MIDORI_LOG_WARN("stroke: no atlas cell to back up tile {:#018x}, it stays unpainted", tile.key);
@@ -70,7 +93,8 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             const TileGridPos gridPos{.x = stroke.origin.x + x, .y = stroke.origin.y + y};
             const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
             auto found = canvas.tileIndices.find(key);
-            if (found == canvas.tileIndices.end()) {
+            const bool created = found == canvas.tileIndices.end();
+            if (created) {
                 // Erasing nothing leaves nothing.
                 if (stroke.mode == StrokeMode::Erase) {
                     continue;
@@ -89,6 +113,7 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
                 found = canvas.tileIndices.find(key);
                 stroke.tiles.push_back(StrokeTile{
                     .key = key,
+                    .touched = 0,
                     .firstDab = index,
                     .cell = kTileAtlasCellInvalid,
                     .backupCell = kTileAtlasCellInvalid,
@@ -105,7 +130,7 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
                 if (tileState.cell != kTileAtlasCellInvalid) {
                     // A dab can reach past the view; taking the backup cell must not evict the tile itself.
                     tileState.visibleFrame = gAppState.frame;
-                    StrokeTileAttach(*tile, tileState);
+                    StrokeTileAttach(*tile, tileState, created);
                 }
             }
             TileState& tileState = canvas.tiles[found->second];
@@ -115,10 +140,15 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             }
             const TileAxis originX = x * kTileSize;
             const TileAxis originY = y * kTileSize;
-            tile->dirtyMinX = std::min(tile->dirtyMinX, TileTexel(std::floor(dab.x - reach), originX));
-            tile->dirtyMinY = std::min(tile->dirtyMinY, TileTexel(std::floor(dab.y - reach), originY));
-            tile->dirtyMaxX = std::max(tile->dirtyMaxX, TileTexel(std::ceil(dab.x + reach), originX));
-            tile->dirtyMaxY = std::max(tile->dirtyMaxY, TileTexel(std::ceil(dab.y + reach), originY));
+            const std::uint16_t minX = TileTexel(std::floor(dab.x - reach), originX);
+            const std::uint16_t minY = TileTexel(std::floor(dab.y - reach), originY);
+            const std::uint16_t maxX = TileTexel(std::ceil(dab.x + reach), originX);
+            const std::uint16_t maxY = TileTexel(std::ceil(dab.y + reach), originY);
+            tile->dirtyMinX = std::min(tile->dirtyMinX, minX);
+            tile->dirtyMinY = std::min(tile->dirtyMinY, minY);
+            tile->dirtyMaxX = std::max(tile->dirtyMaxX, maxX);
+            tile->dirtyMaxY = std::max(tile->dirtyMaxY, maxY);
+            tile->touched |= TileBlocksMask(minX, minY, maxX, maxY);
             if (tile->cell != kTileAtlasCellInvalid) {
                 ++tileState.edits;
             }
@@ -193,7 +223,7 @@ void StrokeUpdate() noexcept {
         // Wanted every update, so streaming loads it.
         tileState.visibleFrame = gAppState.frame;
         if (tileState.cell != kTileAtlasCellInvalid) {
-            StrokeTileAttach(tile, tileState);
+            StrokeTileAttach(tile, tileState, false);
         } else {
             waiting = true;
         }
@@ -204,9 +234,14 @@ void StrokeUpdate() noexcept {
     if (waiting && gAppState.frame - stroke.endFrame < kStrokeWaitUpdates) {
         return;
     }
+    // The push frees slots that ops not recorded yet may name, then takes them again.
+    if (!gAppState.historyPool.ops.empty()) {
+        return;
+    }
     if (waiting) {
         MIDORI_LOG_WARN("stroke: tiles not streamed in after {} updates stay unpainted", kStrokeWaitUpdates);
     }
+    HistoryPushStroke(stroke);
     StrokeRelease();
 }
 
@@ -214,7 +249,7 @@ void StrokeRelease() noexcept {
     StrokeState& stroke = gAppState.stroke;
     // The GPU may still read a backup in a frame in flight; its next fill is recorded after that frame.
     for (const StrokeTile& tile : stroke.tiles) {
-        if (tile.backupCell != kTileAtlasCellInvalid) {
+        if (tile.backupCell != kTileAtlasCellInvalid && tile.backupCell != kTileAtlasCellClear) {
             TileAtlasCellFree(tile.backupCell);
         }
     }

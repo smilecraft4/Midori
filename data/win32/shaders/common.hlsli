@@ -5,11 +5,9 @@
 // volatile, so the atlases not created yet may stay null and new ones may be written while a frame is in flight.
 #define TILE_ROOT_SIGNATURE                                                                            \
     "RootConstants(num32BitConstants = 32, b0, visibility = SHADER_VISIBILITY_VERTEX),"                \
-    "RootConstants(num32BitConstants = 3, b1),"                                                        \
+    "RootConstants(num32BitConstants = 11, b1),"                                                       \
     "DescriptorTable(SRV(t0, numDescriptors = 16, flags = DESCRIPTORS_VOLATILE),"                      \
-    " visibility = SHADER_VISIBILITY_PIXEL),"                                                          \
-    "StaticSampler(s0, filter = FILTER_MIN_MAG_MIP_LINEAR, addressU = TEXTURE_ADDRESS_CLAMP,"          \
-    " addressV = TEXTURE_ADDRESS_CLAMP, visibility = SHADER_VISIBILITY_PIXEL)"
+    " visibility = SHADER_VISIBILITY_PIXEL)"
 
 cbuffer Viewport : register(b0) {
     row_major float4x4 canvasToView;
@@ -17,7 +15,9 @@ cbuffer Viewport : register(b0) {
 };
 
 cbuffer TileDraw : register(b1) {
-    int2 tileGridPos; // relative to the view's tile, see canvasToView
+    uint4 tileNeighboursTop;    // the cells beside the tile: top left, top, top right, left
+    uint4 tileNeighboursBottom; // right, bottom left, bottom, bottom right
+    int2 tileGridPos;           // relative to the view's tile, see canvasToView
     uint tileCell;
 };
 

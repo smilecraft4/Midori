@@ -70,6 +70,7 @@ set(MIDORI_SOURCES
     src/base.cpp
     src/canvas.cpp
     src/color.cpp
+    src/history.cpp
     src/job.cpp
     src/stroke.cpp
     src/tile.cpp
@@ -93,6 +94,7 @@ set(MIDORI_SHADERS_WIN32
     data/win32/shaders/tile_blend.cs.hlsl
     data/win32/shaders/tile_mip.cs.hlsl
     data/win32/shaders/stroke.cs.hlsl
+    data/win32/shaders/history.cs.hlsl
 )
 
 set(MIDORI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/data/win32/icon.ico")

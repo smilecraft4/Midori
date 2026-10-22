@@ -841,6 +841,15 @@ void CanvasDestroy(Canvas canvas) noexcept {
             TileAtlasCellFree(tile.cell);
         }
     }
+    for (const HistoryTile& tile : state.history.tiles) {
+        if (tile.cell != kTileAtlasCellInvalid) {
+            TileAtlasCellFree(tile.cell);
+        }
+    }
+    // Ops still waiting on its cells write them before anything that takes them again, see HistoryPoolState.
+    for (const HistoryBlock& block : state.history.blocks) {
+        gAppState.historyPool.freeSlots.push_back(block.slot);
+    }
     CanvasFileClose(state.file);
     CacheClose(state.cache);
     // In place: a CanvasState is too large for a temporary on the stack.

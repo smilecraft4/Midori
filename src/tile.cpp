@@ -147,13 +147,14 @@ namespace {
 
 } // namespace
 
-// A level-0 tile queued to build its level 1-3 tiles stays until the submit reads it.
+// A level-0 tile queued to build its level 1-3 tiles, or to swap blocks with history, stays until the submit records it.
 bool TileEvictable(Canvas canvas, const TileState& tile) noexcept {
     return HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
         && TilePersisted(tile.flags) && tile.transfer == TileTransfer::None
         && !StrokeHasTile(gAppState.stroke, canvas, tile.key)
         && std::ranges::find(gAppState.canvases[canvas].mipBuilds, tile.key)
-               == gAppState.canvases[canvas].mipBuilds.end();
+               == gAppState.canvases[canvas].mipBuilds.end()
+        && !std::ranges::contains(gAppState.historyPool.ops, tile.cell, &HistoryOp::cell);
 }
 
 void TileEvict(TileState& tile) noexcept {
@@ -187,6 +188,15 @@ void TileAtlasCellFree(TileAtlasCell cell) noexcept {
     atlas.used[page] &= ~BlockMask(block, level);
     for (std::uint8_t b = block; b < block + TileAtlasLevelBlocks(level); ++b) {
         atlas.owners[page][b] = {};
+    }
+}
+
+void TileAtlasCellOwn(TileAtlasCell cell, Canvas canvas, TileKey key) noexcept {
+    const TileAtlasPage page = TileAtlasCellPage(cell);
+    const std::uint8_t block = TileAtlasCellBlock(cell);
+    const std::uint8_t level = TileAtlasCellLevel(cell);
+    for (std::uint8_t b = block; b < block + TileAtlasLevelBlocks(level); ++b) {
+        gAppState.atlas.owners[page][b] = TileAtlasOwner{.key = key, .canvas = canvas, .level = level};
     }
 }
 

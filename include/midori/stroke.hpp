@@ -46,9 +46,11 @@ struct StrokeBeginInfo {
 
 struct StrokeTile {
     TileKey key;
+    std::uint64_t touched;    // Morton bits of the 32^2 blocks any dab reached, archived as history
     std::uint32_t firstDab;   // the dabs before it miss the tile
     TileAtlasCell cell;       // kTileAtlasCellInvalid while waiting for the tile to stream in
-    TileAtlasCell backupCell; // the tile before the stroke; kTileAtlasCellInvalid when waiting or the atlas was full
+    TileAtlasCell backupCell; // the tile before the stroke, kTileAtlasCellClear when the stroke created it;
+                              // kTileAtlasCellInvalid when waiting or the atlas was full
     std::uint16_t dirtyMinX;  // texels to recompute, max exclusive, empty when min >= max
     std::uint16_t dirtyMinY;
     std::uint16_t dirtyMaxX;
@@ -90,10 +92,10 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
 void StrokeTo(StrokePoint point) noexcept;
 void StrokeEnd() noexcept;
 // Once per update, after the frame's visible tiles are marked: attaches the waiting tiles that streamed in and
-// keeps the others wanted. Frees an ended stroke once the GPU recorded all of it; what waiting tiles missed is
-// dropped if they take too long.
+// keeps the others wanted. Once the GPU recorded all of an ended stroke, its backups become a history record and it
+// is freed; what waiting tiles missed is dropped if they take too long.
 void StrokeUpdate() noexcept;
-// Frees the stroke now, whatever the GPU has not recorded yet is lost.
+// Frees the stroke now, whatever the GPU has not recorded yet is lost, and records no history.
 void StrokeRelease() noexcept;
 
 } // namespace Midori

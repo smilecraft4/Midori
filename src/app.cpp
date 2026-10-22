@@ -1,5 +1,6 @@
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
+#include "midori/history.hpp"
 #include "midori/job.hpp"
 #include "midori/log.hpp"
 #include "midori/stroke.hpp"
@@ -227,12 +228,14 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
     return {};
 }
 
-// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. B paints, E erases.
+// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating
+// while held. B paints, E erases.
 [[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
-    if (key.inputState != InputState::Press) {
+    const bool repeats = key.key == Key::Z || key.key == Key::Y;
+    if (key.inputState != InputState::Press && !(repeats && key.inputState == InputState::Hold)) {
         return {};
     }
-    if (key.keyMods == KeyMod::None) {
+    if (key.keyMods == KeyMod::None && key.inputState == InputState::Press) {
         switch (key.key) {
             case Key::B:
                 return AppPaintMode();
@@ -252,6 +255,10 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
             return AppCanvasOpen(key.window);
         case Key::S:
             return HasAnyFlag(key.keyMods, KeyMod::Shift) ? AppCanvasSaveAs(key.window) : AppCanvasSave(key.window);
+        case Key::Z:
+            return HasAnyFlag(key.keyMods, KeyMod::Shift) ? AppRedo(key.window) : AppUndo(key.window);
+        case Key::Y:
+            return AppRedo(key.window);
         default:
             return {};
     }
@@ -320,7 +327,9 @@ void TilesMarkVisible() noexcept {
             maxX = std::max(maxX, corner.posX);
             maxY = std::max(maxY, corner.posY);
         }
-        const auto tileOf = [](double pos) { return static_cast<TileAxis>(std::floor(pos / kTileSize)); };
+        const auto tileOf = [](double pos) {
+            return static_cast<TileAxis>(std::floor(pos / kTileSize));
+        };
         const TileGridPos min{.x = tileOf(minX), .y = tileOf(minY)};
         const TileGridPos max{.x = tileOf(maxX), .y = tileOf(maxY)};
         // The view's level, else level 0: where that level is missing, loading level 0 builds it; where it is
@@ -628,9 +637,11 @@ void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
                 return painting;
             }
             const CanvasView view = WindowCanvasView(event.button.window);
-            // An ended stroke the GPU has not finished yet blocks the next one for a frame at most.
+            // An ended stroke the GPU has not finished yet blocks the next one for a frame at most, and so do undo
+            // and redo steps waiting for their tiles.
             if (event.button.inputState != InputState::Press || uiWants || view == kCanvasViewInvalid
-                || stroke.canvas != kCanvasInvalid) {
+                || stroke.canvas != kCanvasInvalid
+                || gAppState.canvases[gAppState.canvasViews[view].canvas].history.pending != 0) {
                 return false;
             }
             // The mouse has no pressure: 1 while a button is held.
@@ -666,35 +677,6 @@ void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
     }
 }
 
-// Right press creates the layer 0 tile under the pointer, or deletes it.
-[[nodiscard]] Result<void> TileEdit(const ButtonEvent& button) noexcept {
-    if (button.inputState != InputState::Press || button.button != Button::Right
-        || gAppState.stroke.canvas != kCanvasInvalid) {
-        return {};
-    }
-    const CanvasView view = WindowCanvasView(button.window);
-    if (view == kCanvasViewInvalid) {
-        return {};
-    }
-    const auto point = CanvasPointUnderPointer(view, 0.0f);
-    if (!point) {
-        return std::unexpected(point.error());
-    }
-    const Tile tile{
-        .canvas = gAppState.canvasViews[view].canvas,
-        .mip = 0,
-        .layer = 0,
-        .gridPos = {.x = static_cast<TileAxis>(std::floor(point->x / kTileSize)),
-                    .y = static_cast<TileAxis>(std::floor(point->y / kTileSize))},
-    };
-    const CanvasState& canvas = gAppState.canvases[tile.canvas];
-    const bool wasModified = canvas.modified;
-    const bool exists = canvas.tileIndices.contains(TileKeyMake(tile.layer, tile.mip, tile.gridPos));
-    const auto res = exists ? TileDelete(tile) : TileNew(tile);
-    CanvasEdited(tile.canvas, wasModified);
-    return res;
-}
-
 } // namespace
 
 Result<void> AppInit(AppInitInfo initInfo) noexcept {
@@ -705,6 +687,11 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     // GraphicsInit created atlas 0. The clear page is held by no tile.
     gAppState.atlas.count = 1;
     gAppState.atlas.used[kTileAtlasPageClear] = ~std::uint64_t{0};
+    // Largest first, so pop_back gives the smallest.
+    gAppState.historyPool.freeSlots.reserve(kHistorySlotsMax);
+    for (std::uint32_t slot = kHistorySlotsMax; slot > 0; --slot) {
+        gAppState.historyPool.freeSlots.push_back(slot - 1);
+    }
     JobsInit(JobsInitInfo{.execute = CanvasJobExecute, .readerCount = 0});
 
     // One window per file, or one new canvas. A file that fails to open leaves a new canvas in its window.
@@ -776,9 +763,6 @@ Result<void> AppEvent(Event event) noexcept {
         case EventType::Button:
             MIDORI_LOG_TRACE("window {}: device {} button {} state {}", event.button.window, event.button.device,
                              std::to_underlying(event.button.button), std::to_underlying(event.button.inputState));
-            if (const auto res = TileEdit(event.button); !res) {
-                MIDORI_LOG_ERROR("TileEdit failed: {}", ErrorMessage(res.error()));
-            }
             break;
         case EventType::Pointer:
             MIDORI_LOG_TRACE("window {}: device {} pointer {:.2f},{:.2f} pressure {:.3f} tilt {:.2f},{:.2f}",
@@ -818,6 +802,13 @@ Result<void> AppUpdate() noexcept {
     ZoneScopedN("AppUpdate");
     TilesMarkVisible();
     StrokeUpdate();
+    for (const CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id != kCanvasInvalid) {
+            const bool wasModified = canvas.modified;
+            HistoryUpdate(canvas.id);
+            CanvasEdited(canvas.id, wasModified);
+        }
+    }
     CanvasTilesStream();
     const UiCommand command = std::exchange(gAppState.command, UiCommand::None);
     const Window window = gAppState.commandWindow;
@@ -833,6 +824,10 @@ Result<void> AppUpdate() noexcept {
             return AppCanvasSave(window);
         case UiCommand::CanvasSaveAs:
             return AppCanvasSaveAs(window);
+        case UiCommand::Undo:
+            return AppUndo(window);
+        case UiCommand::Redo:
+            return AppRedo(window);
         case UiCommand::Exit:
             // Closes every window, stopping at the first the user keeps open.
             for (Window other = 0; other < kWindowMax; ++other) {
@@ -904,6 +899,37 @@ Result<void> AppCanvasSave(Window window) noexcept {
 Result<void> AppCanvasSaveAs(Window window) noexcept {
     ZoneScopedN("AppCanvasSaveAs");
     return WindowCanvasSave(window, true);
+}
+
+Result<void> AppUndo(Window window) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return {};
+    }
+    HistoryState& history = gAppState.canvases[gAppState.canvasViews[view].canvas].history;
+    if (static_cast<std::int32_t>(history.current) + history.pending > 0) {
+        if (history.pending == 0) {
+            history.pendingFrame = gAppState.frame;
+        }
+        --history.pending;
+    }
+    return {};
+}
+
+Result<void> AppRedo(Window window) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return {};
+    }
+    HistoryState& history = gAppState.canvases[gAppState.canvasViews[view].canvas].history;
+    if (static_cast<std::int32_t>(history.current) + history.pending
+        < static_cast<std::int32_t>(history.records.size())) {
+        if (history.pending == 0) {
+            history.pendingFrame = gAppState.frame;
+        }
+        ++history.pending;
+    }
+    return {};
 }
 
 // A stroke in progress keeps the tool it began with.

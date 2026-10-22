@@ -104,6 +104,8 @@ constexpr TileKey TileKeyWithMip(TileKey key, TileMip mip) noexcept {
 // kTileAtlasCellInvalid when no cell can be taken.
 [[nodiscard]] TileAtlasCell TileAtlasCellTake(std::uint8_t level, Canvas canvas, TileKey key) noexcept;
 void TileAtlasCellFree(TileAtlasCell cell) noexcept;
+// Hands a taken cell to the tile `key` of `canvas`, or to no tile with kCanvasInvalid.
+void TileAtlasCellOwn(TileAtlasCell cell, Canvas canvas, TileKey key) noexcept;
 
 struct TileDuplicateInfo {
     Tile srcTile;

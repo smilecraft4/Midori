@@ -190,14 +190,26 @@ constexpr TileAtlasCell kTileAtlasCellInvalid = std::numeric_limits<TileAtlasCel
 constexpr std::uint32_t kTileAtlasBlockSize = 32; // texels
 
 // Texel origin of a cell in its page, from the Morton index of its first block. Mirrored in atlas.hlsli.
+// Morton index of a 32^2 block to its column and row in a page or a level-0 tile, and back. x takes the even bits.
+[[nodiscard]] constexpr std::uint32_t TileBlockX(std::uint32_t i) noexcept {
+    return (i & 1) | ((i >> 1) & 2) | ((i >> 2) & 4);
+}
+
+[[nodiscard]] constexpr std::uint32_t TileBlockY(std::uint32_t i) noexcept {
+    return ((i >> 1) & 1) | ((i >> 2) & 2) | ((i >> 3) & 4);
+}
+
+[[nodiscard]] constexpr std::uint8_t TileBlockIndex(std::uint32_t x, std::uint32_t y) noexcept {
+    return static_cast<std::uint8_t>((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2)
+                                     | ((y & 4) << 3));
+}
+
 [[nodiscard]] constexpr std::uint32_t TileAtlasCellX(TileAtlasCell cell) noexcept {
-    const std::uint32_t i = TileAtlasCellBlock(cell);
-    return ((i & 1) | ((i >> 1) & 2) | ((i >> 2) & 4)) * kTileAtlasBlockSize;
+    return TileBlockX(TileAtlasCellBlock(cell)) * kTileAtlasBlockSize;
 }
 
 [[nodiscard]] constexpr std::uint32_t TileAtlasCellY(TileAtlasCell cell) noexcept {
-    const std::uint32_t i = TileAtlasCellBlock(cell);
-    return (((i >> 1) & 1) | ((i >> 2) & 2) | ((i >> 3) & 4)) * kTileAtlasBlockSize;
+    return TileBlockY(TileAtlasCellBlock(cell)) * kTileAtlasBlockSize;
 }
 
 constexpr TileAtlasCell kTileAtlasCellClear = TileAtlasCellMake(kTileAtlasPageClear, 0, 0);
@@ -246,6 +258,41 @@ struct TileDownload {
     TileTransfer purpose; // Cache or Save
 };
 
+// The other version of one 32^2 block of a level-0 tile, in a slot of the history store (HistoryPoolState): from
+// before the edit while it can be undone, from after it once undone.
+struct HistoryBlock {
+    TileKey key;
+    std::uint32_t slot;
+    std::uint8_t block; // Morton index in the tile
+};
+
+// A level-0 tile the edit created. While the edit is undone the tile is gone and `cell` keeps it, held by no tile so
+// it is never evicted; kTileAtlasCellInvalid otherwise.
+struct HistoryTile {
+    TileKey key;
+    TileAtlasCell cell;
+};
+
+// One edit: HistoryState::blocks[firstBlock, firstBlock + blockCount) and tiles[firstTile, firstTile + tileCount).
+struct HistoryRecord {
+    std::uint64_t sequence; // orders records across canvases, the oldest goes first when the store is full
+    std::uint32_t firstBlock;
+    std::uint32_t blockCount;
+    std::uint32_t firstTile;
+    std::uint32_t tileCount;
+};
+
+// records[0, current) can be undone, the rest redone. Undo and redo swap each block with its tile's on the GPU, and
+// delete or insert the created tiles.
+struct HistoryState {
+    std::vector<HistoryBlock> blocks;
+    std::vector<HistoryTile> tiles;
+    std::vector<HistoryRecord> records;
+    std::uint32_t current{};
+    std::uint32_t pendingFrame{}; // gAppState.frame when `pending` last left 0 or a step was applied
+    std::int32_t pending{};       // steps asked for and not applied yet: negative undoes, positive redoes
+};
+
 // Owned and touched by the main thread only: jobs and the graphics backend drain the tile request queues
 // and report back through the Tile*Done calls on the main thread. Lives in AppState::canvases, indexed by
 // its id.
@@ -271,6 +318,7 @@ struct CanvasState {
     Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}; // under every layer, not saved yet
     CanvasFile file;
     CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
+    HistoryState history;
     Layer largestLayer{};
     Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};

@@ -2,6 +2,7 @@
 
 #include "midori/base.hpp"
 #include "midori/canvas.hpp"
+#include "midori/history.hpp"
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
 #include "midori/stroke.hpp"
@@ -65,6 +66,7 @@ struct AppState {
     std::array<CanvasViewState, kCanvasViewMax> canvasViews;
     TileAtlasState atlas;
     TileTransfersState transfers;
+    HistoryPoolState historyPool;
     NavigateState navigate;
     BrushAdjustState brushAdjust;
     StrokeState stroke;
@@ -102,6 +104,10 @@ void AppTerminate() noexcept;
 [[nodiscard]] Result<void> AppCanvasSaveAs(Window window) noexcept;
 // The user asked to close the window: destroys it once unsaved changes are saved or discarded.
 [[nodiscard]] Result<void> AppWindowClose(Window window) noexcept;
+
+// The window's canvas undoes or redoes one more stroke, once no stroke is on it and the tiles are loaded.
+[[nodiscard]] Result<void> AppUndo(Window window) noexcept;
+[[nodiscard]] Result<void> AppRedo(Window window) noexcept;
 
 [[nodiscard]] Result<void> AppPaintMode() noexcept;
 [[nodiscard]] Result<void> AppEraseMode() noexcept;
