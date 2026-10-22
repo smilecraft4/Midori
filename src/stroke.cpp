@@ -56,8 +56,8 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
             auto found = canvas.tileIndices.find(key);
             if (found == canvas.tileIndices.end()) {
-                // Erasing nothing leaves nothing. A new tile needs a second cell for its backup.
-                if (stroke.mode == StrokeMode::Erase || gAppState.freeAtlasCells.size() < 2) {
+                // Erasing nothing leaves nothing.
+                if (stroke.mode == StrokeMode::Erase) {
                     continue;
                 }
                 const Tile tile{.canvas = stroke.canvas, .mip = 0, .layer = stroke.layer, .gridPos = gridPos};
@@ -67,14 +67,17 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
                 found = canvas.tileIndices.find(key);
             }
             TileState& tileState = canvas.tiles[found->second];
+            // Not streamed in: the atlas is full of visible tiles.
+            if (!HasAnyFlag(tileState.flags, TileFlags::Loaded) && tileState.cell == kTileAtlasCellInvalid) {
+                continue;
+            }
+            // A dab can reach past the view; taking the backup cell must not evict the tile itself.
+            tileState.visibleFrame = gAppState.frame;
             auto tile = std::ranges::find(stroke.tiles, key, &StrokeTile::key);
             if (tile == stroke.tiles.end()) {
-                TileAtlasCell backup = kTileAtlasCellInvalid;
-                if (gAppState.freeAtlasCells.empty()) {
+                const TileAtlasCell backup = TileAtlasCellTake();
+                if (backup == kTileAtlasCellInvalid) {
                     MIDORI_LOG_WARN("stroke: no atlas cell to back up tile {:#018x}, it stays unpainted", key);
-                } else {
-                    backup = gAppState.freeAtlasCells.back();
-                    gAppState.freeAtlasCells.pop_back();
                 }
                 stroke.tiles.push_back(StrokeTile{
                     .key = key,
@@ -98,7 +101,7 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             tile->dirtyMinY = std::min(tile->dirtyMinY, TileTexel(std::floor(dab.y - reach), originY));
             tile->dirtyMaxX = std::max(tile->dirtyMaxX, TileTexel(std::ceil(dab.x + reach), originX));
             tile->dirtyMaxY = std::max(tile->dirtyMaxY, TileTexel(std::ceil(dab.y + reach), originY));
-            tileState.flags |= TileFlags::Modified;
+            tileState.flags = (tileState.flags | TileFlags::Modified) & ~TileFlags::CachedDisk;
             ++tileState.edits;
             canvas.modified = true;
         }

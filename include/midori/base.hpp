@@ -23,6 +23,8 @@ enum struct Error : std::uint8_t {
     CanvasOpenFailed,
     CanvasSaveFailed,
     GraphicsTransferFailed,
+    TileReadFailed,
+    TileCacheFailed,
     DialogFailed,
 };
 
@@ -56,6 +58,10 @@ enum struct Error : std::uint8_t {
             return "canvas save failed";
         case Error::GraphicsTransferFailed:
             return "graphics transfer failed";
+        case Error::TileReadFailed:
+            return "tile read failed";
+        case Error::TileCacheFailed:
+            return "tile cache failed";
         case Error::DialogFailed:
             return "dialog failed";
     }

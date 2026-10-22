@@ -6,9 +6,12 @@
 #include "midori/tile.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <format>
 #include <functional>
 #include <memory>
+#include <span>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -58,7 +61,8 @@ void CanvasFileClose(CanvasFile& file) noexcept {
 }
 
 // Exclusive: another process cannot open the file while it is ours.
-[[nodiscard]] Result<CanvasFile> CanvasFileOpen(const std::filesystem::path& path, bool create, Error error) noexcept {
+[[nodiscard]] Result<CanvasFile> CanvasFileOpen(const std::filesystem::path& path, bool create, Error error,
+                                                MDBX_env_flags_t envFlags) noexcept {
     ZoneScopedN("CanvasFileOpen");
     CanvasFile file{};
     const auto fail = [&file, error](const char* what, int rc) {
@@ -77,7 +81,7 @@ void CanvasFileClose(CanvasFile& file) noexcept {
         return fail("mdbx_env_set_geometry", rc);
     }
     // Mode 0 opens an existing file only.
-    if (const int rc = mdbx_env_openW(file.env, path.c_str(), MDBX_NOSUBDIR | MDBX_EXCLUSIVE,
+    if (const int rc = mdbx_env_openW(file.env, path.c_str(), MDBX_NOSUBDIR | MDBX_EXCLUSIVE | envFlags,
                                       static_cast<mdbx_mode_t>(create ? 0644 : 0));
         rc != MDBX_SUCCESS) {
         return fail("mdbx_env_open", rc);
@@ -101,22 +105,121 @@ void CanvasFileClose(CanvasFile& file) noexcept {
     return file;
 }
 
+// A new file in the temp directory. Losing it in a crash loses nothing saved, so it is never synced.
+[[nodiscard]] CanvasFile CacheOpen(Canvas canvas) noexcept {
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (!ec) {
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto cache = CanvasFileOpen(dir / std::format("midori-{}-{}.cache", stamp, canvas), true,
+                                          Error::TileCacheFailed, MDBX_UTTERLY_NOSYNC);
+        if (cache) {
+            return *cache;
+        }
+    }
+    MIDORI_LOG_WARN("canvas {}: no tile cache, unsaved tiles keep their atlas cells", canvas);
+    return {};
+}
+
+void CacheClose(CanvasFile& cache) noexcept {
+    std::filesystem::path path;
+    const wchar_t* raw = nullptr;
+    if (cache.env && mdbx_env_get_pathW(cache.env, &raw) == MDBX_SUCCESS) {
+        path = raw;
+    }
+    CanvasFileClose(cache);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// kTileBytes per key into `pixels`.
+[[nodiscard]] Result<void> TilesRead(const CanvasFile& file, std::span<const TileKey> keys,
+                                     std::span<std::byte> pixels) noexcept {
+    MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
+    if (keys.empty()) {
+        return {};
+    }
+    MDBX_txn* txn = nullptr;
+    if (const int rc = mdbx_txn_begin(file.env, nullptr, MDBX_TXN_RDONLY, &txn); rc != MDBX_SUCCESS) {
+        LogMdbx("mdbx_txn_begin", rc);
+        return std::unexpected(Error::TileReadFailed);
+    }
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        MDBX_val key = Val(keys[i]);
+        MDBX_val value{};
+        const int rc = mdbx_get(txn, file.tilesDbi, &key, &value);
+        if (rc != MDBX_SUCCESS || value.iov_len != kTileBytes) {
+            MIDORI_LOG_ERROR("reading tile {:#018x}: {}", keys[i],
+                             rc == MDBX_SUCCESS ? "invalid size" : mdbx_strerror(rc));
+            mdbx_txn_abort(txn);
+            return std::unexpected(Error::TileReadFailed);
+        }
+        std::memcpy(pixels.data() + (i * kTileBytes), value.iov_base, kTileBytes);
+    }
+    mdbx_txn_abort(txn);
+    return {};
+}
+
+[[nodiscard]] Result<void> TilesWrite(const CanvasFile& file, std::span<const TileKey> keys,
+                                      std::span<const std::byte> pixels) noexcept {
+    MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
+    MDBX_txn* txn = nullptr;
+    if (const int rc = mdbx_txn_begin(file.env, nullptr, MDBX_TXN_READWRITE, &txn); rc != MDBX_SUCCESS) {
+        LogMdbx("mdbx_txn_begin", rc);
+        return std::unexpected(Error::TileCacheFailed);
+    }
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        MDBX_val key = Val(keys[i]);
+        MDBX_val value{.iov_base = const_cast<std::byte*>(pixels.data() + (i * kTileBytes)), .iov_len = kTileBytes};
+        if (const int rc = mdbx_put(txn, file.tilesDbi, &key, &value, MDBX_UPSERT); rc != MDBX_SUCCESS) {
+            LogMdbx("mdbx_put tile", rc);
+            mdbx_txn_abort(txn);
+            return std::unexpected(Error::TileCacheFailed);
+        }
+    }
+    if (const int rc = mdbx_txn_commit(txn); rc != MDBX_SUCCESS) {
+        LogMdbx("mdbx_txn_commit", rc);
+        return std::unexpected(Error::TileCacheFailed);
+    }
+    return {};
+}
+
 // Writes what changed since the last save, or the whole canvas into a new file when `all`. Deletes go
 // first, so a tile deleted then created again is written.
 [[nodiscard]] Result<void> CanvasFileWrite(CanvasState& canvas, const CanvasFile& file, bool all) noexcept {
     ZoneScopedN("CanvasFileWrite");
+    // Tiles in the atlas are downloaded. Evicted ones are read from the cache, or from the canvas's own file when
+    // unchanged since its last save.
     std::vector<TileAtlasCell> cells;
-    std::vector<TileKey> keys;
+    std::vector<TileKey> keys; // the atlas ones, then the cached ones, then the saved ones
+    std::vector<TileKey> cachedKeys;
+    std::vector<TileKey> savedKeys;
     for (const TileState& tile : canvas.tiles) {
-        if (all || HasAnyFlag(tile.flags, TileFlags::Modified)) {
+        if (!all && !HasAnyFlag(tile.flags, TileFlags::Modified)) {
+            continue;
+        }
+        if (tile.cell != kTileAtlasCellInvalid) {
             cells.push_back(tile.cell);
             keys.push_back(tile.key);
+        } else if (HasAnyFlag(tile.flags, TileFlags::CachedDisk)) {
+            cachedKeys.push_back(tile.key);
+        } else {
+            savedKeys.push_back(tile.key);
         }
     }
-    std::vector<std::byte> pixels(cells.size() * kTileBytes);
-    if (const auto res = GraphicsTilesDownload(cells, pixels); !res) {
+    MIDORI_ASSERT(all || savedKeys.empty(), "modified tiles evicted without a cache");
+    std::vector<std::byte> pixels((keys.size() + cachedKeys.size() + savedKeys.size()) * kTileBytes);
+    const std::span<std::byte> downloaded = std::span(pixels).first(cells.size() * kTileBytes);
+    const std::span<std::byte> cached = std::span(pixels).subspan(downloaded.size(), cachedKeys.size() * kTileBytes);
+    const std::span<std::byte> saved = std::span(pixels).subspan(downloaded.size() + cached.size());
+    if (const auto res = GraphicsTilesDownload(cells, downloaded); !res) {
         return std::unexpected(res.error());
     }
+    if (!TilesRead(canvas.cache, cachedKeys, cached) || !TilesRead(canvas.file, savedKeys, saved)) {
+        return std::unexpected(Error::CanvasSaveFailed);
+    }
+    keys.insert(keys.end(), cachedKeys.begin(), cachedKeys.end());
+    keys.insert(keys.end(), savedKeys.begin(), savedKeys.end());
 
     MDBX_txn* txn = nullptr;
     if (const int rc = mdbx_txn_begin(file.env, nullptr, MDBX_TXN_READWRITE, &txn); rc != MDBX_SUCCESS) {
@@ -257,7 +360,96 @@ void CanvasMarkSaved(CanvasState& canvas) noexcept {
         return std::unexpected(Error::CanvasLimitReached);
     }
     it->id = static_cast<Canvas>(it - gAppState.canvases.begin());
+    it->cache = CacheOpen(it->id);
     return it->id;
+}
+
+[[nodiscard]] Result<void> TilesCacheOffscreen(CanvasState& canvas) noexcept {
+    if (!canvas.cache.env) {
+        return {};
+    }
+    std::vector<std::uint32_t> indices;
+    std::vector<TileAtlasCell> cells;
+    std::vector<TileKey> keys;
+    for (std::uint32_t i = 0; i < canvas.tiles.size(); ++i) {
+        const TileState& tile = canvas.tiles[i];
+        if (HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
+            && !TilePersisted(tile.flags) && !StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
+            indices.push_back(i);
+            cells.push_back(tile.cell);
+            keys.push_back(tile.key);
+        }
+    }
+    if (indices.empty()) {
+        return {};
+    }
+    std::vector<std::byte> pixels(cells.size() * kTileBytes);
+    if (const auto res = GraphicsTilesDownload(cells, pixels); !res) {
+        return res;
+    }
+    if (const auto res = TilesWrite(canvas.cache, keys, pixels); !res) {
+        return res;
+    }
+    for (const std::uint32_t i : indices) {
+        canvas.tiles[i].flags |= TileFlags::CachedDisk;
+    }
+    return {};
+}
+
+struct TileLoads {
+    std::vector<std::uint32_t> indices;
+    std::vector<TileAtlasCell> cells;
+    std::vector<TileKey> keys;
+};
+
+// The cache holds the latest content of a tile edited since the save, so it goes first.
+[[nodiscard]] Result<void> TilesLoadVisible(CanvasState& canvas) noexcept {
+    TileLoads fromCache;
+    TileLoads fromFile;
+    for (std::uint32_t i = 0; i < canvas.tiles.size(); ++i) {
+        TileState& tile = canvas.tiles[i];
+        if (tile.visibleFrame != gAppState.frame || tile.cell != kTileAtlasCellInvalid) {
+            continue;
+        }
+        MIDORI_ASSERT(TilePersisted(tile.flags), "tile {:#018x} evicted unsaved", tile.key);
+        tile.cell = TileAtlasCellTake();
+        if (tile.cell == kTileAtlasCellInvalid) {
+            break;
+        }
+        TileLoads& loads = HasAnyFlag(tile.flags, TileFlags::CachedDisk) ? fromCache : fromFile;
+        loads.indices.push_back(i);
+        loads.cells.push_back(tile.cell);
+        loads.keys.push_back(tile.key);
+    }
+
+    Result<void> result{};
+    for (const auto& [loads, file] : {std::pair{&fromCache, &canvas.cache}, std::pair{&fromFile, &canvas.file}}) {
+        if (loads->indices.empty()) {
+            continue;
+        }
+        std::vector<std::byte> pixels(loads->keys.size() * kTileBytes);
+        auto res = TilesRead(*file, loads->keys, pixels);
+        if (res) {
+            std::vector<const std::byte*> tilePixels(loads->keys.size());
+            for (std::size_t i = 0; i < tilePixels.size(); ++i) {
+                tilePixels[i] = pixels.data() + (i * kTileBytes);
+            }
+            res = GraphicsTilesUpload(loads->cells, tilePixels);
+        }
+        for (const std::uint32_t i : loads->indices) {
+            TileState& tile = canvas.tiles[i];
+            if (res) {
+                tile.flags |= TileFlags::Loaded | TileFlags::Editable;
+            } else {
+                gAppState.freeAtlasCells.push_back(tile.cell);
+                tile.cell = kTileAtlasCellInvalid;
+            }
+        }
+        if (!res) {
+            result = res;
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -274,7 +466,7 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
         return std::unexpected(opened.error());
     }
     CanvasState& canvas = gAppState.canvases[*opened];
-    const auto file = CanvasFileOpen(path, false, Error::CanvasOpenFailed);
+    const auto file = CanvasFileOpen(path, false, Error::CanvasOpenFailed, MDBX_ENV_DEFAULTS);
     if (!file) {
         CanvasDestroy(*opened);
         return std::unexpected(file.error());
@@ -354,7 +546,7 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
         }
         LayerFileEntry entry{};
         std::memcpy(&entry, value.iov_base, sizeof(entry));
-        // tileCount is recounted from the tiles below, which all become resident.
+        // tileCount is recounted from the tiles below.
         canvas.layers[id] = LayerState{
             .opacity = entry.opacity,
             .contentGeneration = entry.contentGeneration,
@@ -373,22 +565,13 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
     if (rc = mdbx_cursor_open(txn, canvas.file.tilesDbi, &cursor); rc != MDBX_SUCCESS) {
         return fail("tiles", rc);
     }
-    std::vector<TileAtlasCell> cells;
-    std::vector<const std::byte*> pixels;
-    bool atlasFull = false;
     rc = mdbx_cursor_get(cursor, &key, &value, MDBX_FIRST);
     for (; rc == MDBX_SUCCESS; rc = mdbx_cursor_get(cursor, &key, &value, MDBX_NEXT)) {
         if (key.iov_len != sizeof(TileKey) || value.iov_len != kTileBytes) {
             break;
         }
-        if (gAppState.freeAtlasCells.empty()) {
-            atlasFull = true;
-            break;
-        }
         TileKey tileKey{};
         std::memcpy(&tileKey, key.iov_base, sizeof(tileKey));
-        const TileAtlasCell cell = gAppState.freeAtlasCells.back();
-        gAppState.freeAtlasCells.pop_back();
         canvas.tileIndices.emplace(tileKey, static_cast<std::uint32_t>(canvas.tiles.size()));
         canvas.tiles.push_back(TileState{
             .key = tileKey,
@@ -396,29 +579,17 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
             .cacheEdits = 0,
             .saveEdits = 0,
             .visibleFrame = gAppState.frame,
-            .cell = cell,
-            .flags = TileFlags::Saved | TileFlags::Loaded | TileFlags::Editable,
+            .cell = kTileAtlasCellInvalid,
+            .flags = TileFlags::Saved,
             .transfer = TileTransfer::None,
         });
         ++canvas.layers[tileKey >> kTileLayerBitOffset].tileCount;
-        cells.push_back(cell);
-        pixels.push_back(static_cast<const std::byte*>(value.iov_base));
     }
     mdbx_cursor_close(cursor);
-    if (atlasFull) {
-        return fail("tiles", MDBX_SUCCESS, Error::TileAtlasFull);
-    }
     if (rc != MDBX_NOTFOUND) {
         return fail("tiles", rc);
     }
-
-    // The pixels point into the file's map, valid until the read transaction ends.
-    const auto uploaded = GraphicsTilesUpload(cells, pixels);
     mdbx_txn_abort(txn);
-    if (!uploaded) {
-        CanvasDestroy(*opened);
-        return std::unexpected(uploaded.error());
-    }
     canvas.path = path;
     return *opened;
 }
@@ -451,7 +622,7 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
     temp += L".tmp";
     std::filesystem::remove(temp, ec);
     std::filesystem::remove(LockPath(temp), ec);
-    auto file = CanvasFileOpen(temp, true, Error::CanvasSaveFailed);
+    auto file = CanvasFileOpen(temp, true, Error::CanvasSaveFailed, MDBX_ENV_DEFAULTS);
     if (!file) {
         return std::unexpected(file.error());
     }
@@ -471,7 +642,7 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
     CanvasFileClose(state.file);
     state.path = path;
     CanvasMarkSaved(state);
-    const auto reopened = CanvasFileOpen(path, false, Error::CanvasSaveFailed);
+    const auto reopened = CanvasFileOpen(path, false, Error::CanvasSaveFailed, MDBX_ENV_DEFAULTS);
     if (!reopened) {
         // Saved all the same; the next save goes through Save As again.
         MIDORI_LOG_WARN("CanvasSaveAs: {} saved but not reopened", PathUtf8(path));
@@ -486,12 +657,38 @@ void CanvasDestroy(Canvas canvas) noexcept {
     MIDORI_ASSERT(canvas < kCanvasMax && gAppState.canvases[canvas].id == canvas, "invalid canvas {}", canvas);
     CanvasState& state = gAppState.canvases[canvas];
     for (const TileState& tile : state.tiles) {
-        gAppState.freeAtlasCells.push_back(tile.cell);
+        if (tile.cell != kTileAtlasCellInvalid) {
+            gAppState.freeAtlasCells.push_back(tile.cell);
+        }
     }
     CanvasFileClose(state.file);
+    CacheClose(state.cache);
     // In place: a CanvasState is too large for a temporary on the stack.
     std::destroy_at(&state);
     std::construct_at(&state);
+}
+
+Result<void> CanvasTilesStream() noexcept {
+    ZoneScopedN("CanvasTilesStream");
+    // Every canvas caches first: the atlas is shared, so any of them can take the cells it frees.
+    Result<void> result{};
+    for (CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id == kCanvasInvalid) {
+            continue;
+        }
+        if (const auto res = TilesCacheOffscreen(canvas); !res) {
+            result = res;
+        }
+    }
+    for (CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id == kCanvasInvalid) {
+            continue;
+        }
+        if (const auto res = TilesLoadVisible(canvas); !res) {
+            result = res;
+        }
+    }
+    return result;
 }
 
 } // namespace Midori

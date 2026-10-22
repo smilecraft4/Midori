@@ -9,7 +9,9 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <system_error>
 
@@ -285,6 +287,47 @@ struct ViewPoint {
     // Moving the view by minus the point's offset brings the canvas point under it to the center.
     const Viewport under = ViewportMove(viewState.viewport, -point.x, -point.y);
     return StrokePoint{.x = under.posX, .y = under.posY, .pressure = pressure};
+}
+
+// Starts a frame: the tiles any view's client area overlaps get the new frame as `visibleFrame`. A rotated view
+// marks the tiles of its bounding box.
+void TilesMarkVisible() noexcept {
+    const std::uint32_t frame = ++gAppState.frame;
+    for (const CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id == kCanvasViewInvalid) {
+            continue;
+        }
+        const auto windowState = WindowGetState(view.window);
+        if (!windowState) {
+            continue;
+        }
+        const auto width = static_cast<float>(windowState->width);
+        const auto height = static_cast<float>(windowState->height);
+        float minX = std::numeric_limits<float>::max();
+        float minY = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float maxY = std::numeric_limits<float>::lowest();
+        for (const auto [cornerX, cornerY] :
+             {std::pair{0.0f, 0.0f}, std::pair{width, 0.0f}, std::pair{0.0f, height}, std::pair{width, height}}) {
+            const ViewPoint point = ViewPointFromPointer(*windowState, cornerX, cornerY);
+            const Viewport corner = ViewportMove(view.viewport, -point.x, -point.y);
+            minX = std::min(minX, corner.posX);
+            minY = std::min(minY, corner.posY);
+            maxX = std::max(maxX, corner.posX);
+            maxY = std::max(maxY, corner.posY);
+        }
+        const auto tileOf = [](float pos) {
+            return static_cast<TileAxis>(std::floor(pos / static_cast<float>(kTileSize)));
+        };
+        const TileGridPos min{.x = tileOf(minX), .y = tileOf(minY)};
+        const TileGridPos max{.x = tileOf(maxX), .y = tileOf(maxY)};
+        for (TileState& tile : gAppState.canvases[view.canvas].tiles) {
+            const TileGridPos gridPos = TileKeyGridPos(tile.key);
+            if (gridPos.x >= min.x && gridPos.x <= max.x && gridPos.y >= min.y && gridPos.y <= max.y) {
+                tile.visibleFrame = frame;
+            }
+        }
+    }
 }
 
 void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
@@ -638,6 +681,10 @@ void AppWindowFrame(Window window) noexcept {
 Result<void> AppUpdate() noexcept {
     ZoneScopedN("AppUpdate");
     StrokeUpdate();
+    TilesMarkVisible();
+    if (const auto res = CanvasTilesStream(); !res) {
+        MIDORI_LOG_ERROR("CanvasTilesStream failed: {}", ErrorMessage(res.error()));
+    }
     const UiCommand command = std::exchange(gAppState.command, UiCommand::None);
     const Window window = gAppState.commandWindow;
     if (command == UiCommand::None || !WindowGetState(window)) {

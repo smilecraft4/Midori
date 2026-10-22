@@ -9,23 +9,50 @@
 
 namespace Midori {
 
+TileAtlasCell TileAtlasCellTake() noexcept {
+    std::vector<TileAtlasCell>& freeCells = gAppState.freeAtlasCells;
+    if (!freeCells.empty()) {
+        const TileAtlasCell cell = freeCells.back();
+        freeCells.pop_back();
+        return cell;
+    }
+    TileState* oldest = nullptr;
+    for (CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id == kCanvasInvalid) {
+            continue;
+        }
+        for (TileState& tile : canvas.tiles) {
+            if (HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
+                && TilePersisted(tile.flags) && (!oldest || tile.visibleFrame < oldest->visibleFrame)
+                && !StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
+                oldest = &tile;
+            }
+        }
+    }
+    if (!oldest) {
+        return kTileAtlasCellInvalid;
+    }
+    // The GPU may still read the cell in a frame in flight; its next fill is recorded after that frame.
+    const TileAtlasCell cell = oldest->cell;
+    oldest->cell = kTileAtlasCellInvalid;
+    oldest->flags &= ~(TileFlags::Loaded | TileFlags::Editable);
+    return cell;
+}
+
 Result<void> TileNew(Tile tile) noexcept {
     ZoneScopedN("TileNew");
     MIDORI_ASSERT(tile.canvas < kCanvasMax && gAppState.canvases[tile.canvas].id == tile.canvas, "invalid canvas {}",
                   tile.canvas);
     CanvasState& canvas = gAppState.canvases[tile.canvas];
-    std::vector<TileAtlasCell>& freeCells = gAppState.freeAtlasCells;
     const TileKey key = TileKeyMake(tile.layer, tile.mip, tile.gridPos);
     if (canvas.tileIndices.contains(key)) {
         return {};
     }
-    if (freeCells.empty()) {
-        MIDORI_LOG_WARN("TileNew: all {} atlas cells are in use", kTileAtlasCellMax - 1);
+    const TileAtlasCell cell = TileAtlasCellTake();
+    if (cell == kTileAtlasCellInvalid) {
+        MIDORI_LOG_WARN("TileNew: all {} atlas cells hold visible or unsaved tiles", kTileAtlasCellMax - 1);
         return std::unexpected(Error::TileAtlasFull);
     }
-
-    const TileAtlasCell cell = freeCells.back();
-    freeCells.pop_back();
     canvas.tileIndices.emplace(key, static_cast<std::uint32_t>(canvas.tiles.size()));
     canvas.tiles.push_back(TileState{
         .key = key,
@@ -57,7 +84,9 @@ Result<void> TileDelete(Tile tile) noexcept {
     const std::uint32_t index = it->second;
     canvas.tileIndices.erase(it);
     // The GPU may still read the cell in a frame in flight; its next fill is recorded after that frame.
-    gAppState.freeAtlasCells.push_back(canvas.tiles[index].cell);
+    if (canvas.tiles[index].cell != kTileAtlasCellInvalid) {
+        gAppState.freeAtlasCells.push_back(canvas.tiles[index].cell);
+    }
     std::erase(canvas.creates, key);
     if (HasAnyFlag(canvas.tiles[index].flags, TileFlags::Saved)) {
         canvas.tileDeletes.push_back(key);

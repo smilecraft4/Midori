@@ -3,6 +3,7 @@
 #include "midori/canvas.hpp"
 #include "midori/color.hpp"
 #include "midori/tool.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -76,8 +77,12 @@ struct StrokeState {
     return tile.backupCell != kTileAtlasCellInvalid && (!tile.backedUp || tile.dirtyMinX < tile.dirtyMaxX);
 }
 
-// Edits the tiles of `layer`. Paint creates the tiles missing under the stroke while two atlas cells are free
-// (the tile and its backup); erase skips them.
+[[nodiscard]] inline bool StrokeHasTile(const StrokeState& stroke, Canvas canvas, TileKey key) noexcept {
+    return stroke.canvas == canvas && std::ranges::find(stroke.tiles, key, &StrokeTile::key) != stroke.tiles.end();
+}
+
+// Edits the loaded tiles of `layer`. Paint creates the tiles missing under the stroke while atlas cells can be
+// taken; erase skips them.
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
 void StrokeTo(StrokePoint point) noexcept;
 void StrokeEnd() noexcept;

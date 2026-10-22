@@ -151,7 +151,7 @@ struct TileState {
     std::uint32_t cacheEdits;   // `edits` when the cache in flight was requested
     std::uint32_t saveEdits;    // `edits` when the save in flight was requested
     std::uint32_t visibleFrame; // last frame any window showed its grid position
-    TileAtlasCell cell;         // valid while Loaded or loading
+    TileAtlasCell cell;         // valid while Loaded or waiting in `creates`; evicted tiles have none
     TileFlags flags;
     TileTransfer transfer;
 };
@@ -196,6 +196,7 @@ struct CanvasState {
     std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
     Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 0.5f}; // under every layer, not saved yet
     CanvasFile file;
+    CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
     Layer largestLayer{};
     Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
@@ -204,7 +205,7 @@ struct CanvasState {
 
 // These never ask the user anything; the App* calls wrap them with dialogs.
 [[nodiscard]] Result<Canvas> CanvasNew() noexcept;
-// Every tile in the file is made resident.
+// Tiles stay in the file until visible.
 [[nodiscard]] Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept;
 // Writes what changed since the last save into the canvas's file, in one transaction. The canvas must have one.
 [[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
@@ -212,6 +213,11 @@ struct CanvasState {
 [[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
 // Unsaved changes are lost.
 void CanvasDestroy(Canvas canvas) noexcept;
+// Call once the tiles shown this frame have `visibleFrame` set. Writes the loaded tiles no longer visible whose
+// content is stored nowhere into their canvas's cache, which makes them evictable, then loads the visible tiles
+// that are not, from the cache or else the file. Waits for the GPU when it transfers anything. Visible tiles past
+// what the atlas holds stay unloaded.
+[[nodiscard]] Result<void> CanvasTilesStream() noexcept;
 
 struct CanvasViewCreateInfo {
     Viewport viewport{};

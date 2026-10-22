@@ -60,6 +60,16 @@ constexpr TileMip TileKeyMip(TileKey key) noexcept {
     return static_cast<TileMip>((key >> kTileMipBitOffset) & ((TileKey{1} << kTileMipBitSize) - 1));
 }
 
+// Its current content is in the cache or the file, so its atlas cell can be taken.
+[[nodiscard]] constexpr bool TilePersisted(TileFlags flags) noexcept {
+    return HasAnyFlag(flags, TileFlags::CachedDisk)
+        || (HasAnyFlag(flags, TileFlags::Saved) && !HasAnyFlag(flags, TileFlags::Modified));
+}
+
+// A free cell, or else the cell of the persisted tile not visible for the longest, which is evicted. A stroke's
+// tiles are never evicted. kTileAtlasCellInvalid when no cell can be taken.
+[[nodiscard]] TileAtlasCell TileAtlasCellTake() noexcept;
+
 struct TileDuplicateInfo {
     Tile srcTile;
     Tile dstTile;
@@ -87,7 +97,7 @@ struct TileMoveInfo {
 
 [[nodiscard]] Result<void> TileUnload(Tile tile) noexcept;
 
-// Resident only for now: a new tile takes an atlas cell and starts transparent. Creating a tile
+// A new tile takes an atlas cell, evicting one if needed, and starts transparent. Creating a tile
 // that exists or deleting one that does not does nothing.
 [[nodiscard]] Result<void> TileNew(Tile tile) noexcept;
 [[nodiscard]] Result<void> TileDelete(Tile tile) noexcept;
