@@ -59,6 +59,9 @@ void CanvasViewDetach(CanvasView view) noexcept {
     if (gAppState.navigate.view == view) {
         gAppState.navigate = {};
     }
+    if (gAppState.brushAdjust.view == view) {
+        gAppState.brushAdjust = {};
+    }
     if (gAppState.stroke.view == view) {
         StrokeRelease();
     }
@@ -304,10 +307,10 @@ void TilesMarkVisible() noexcept {
         }
         const auto width = static_cast<float>(windowState->width);
         const auto height = static_cast<float>(windowState->height);
-        float minX = std::numeric_limits<float>::max();
-        float minY = std::numeric_limits<float>::max();
-        float maxX = std::numeric_limits<float>::lowest();
-        float maxY = std::numeric_limits<float>::lowest();
+        double minX = std::numeric_limits<double>::max();
+        double minY = std::numeric_limits<double>::max();
+        double maxX = std::numeric_limits<double>::lowest();
+        double maxY = std::numeric_limits<double>::lowest();
         for (const auto [cornerX, cornerY] :
              {std::pair{0.0f, 0.0f}, std::pair{width, 0.0f}, std::pair{0.0f, height}, std::pair{width, height}}) {
             const ViewPoint point = ViewPointFromPointer(*windowState, cornerX, cornerY);
@@ -317,9 +320,7 @@ void TilesMarkVisible() noexcept {
             maxX = std::max(maxX, corner.posX);
             maxY = std::max(maxY, corner.posY);
         }
-        const auto tileOf = [](float pos) {
-            return static_cast<TileAxis>(std::floor(pos / static_cast<float>(kTileSize)));
-        };
+        const auto tileOf = [](double pos) { return static_cast<TileAxis>(std::floor(pos / kTileSize)); };
         const TileGridPos min{.x = tileOf(minX), .y = tileOf(minY)};
         const TileGridPos max{.x = tileOf(maxX), .y = tileOf(maxY)};
         // The view's level, else level 0: where that level is missing, loading level 0 builds it; where it is
@@ -402,7 +403,6 @@ void NavigateEnd() noexcept {
     AppState& app = gAppState;
     switch (event.type) {
         case EventType::Key: {
-            app.keyMods = event.key.keyMods;
             const bool space = event.key.key == Key::Space;
             const bool wasDown = app.spaceDown;
             if (space && event.key.inputState == InputState::Press && !uiWants) {
@@ -444,9 +444,6 @@ void NavigateEnd() noexcept {
             return false;
         }
         case EventType::Pointer: {
-            app.pointerX = event.pointer.posX;
-            app.pointerY = event.pointer.posY;
-            app.pointerPressure = event.pointer.pressure;
             if (app.navigate.mode == NavigateMode::None
                 || app.canvasViews[app.navigate.view].window != event.pointer.window) {
                 return false;
@@ -458,6 +455,124 @@ void NavigateEnd() noexcept {
             if (!event.windowFocus.focused) {
                 app.spaceDown = false;
                 NavigateEnd();
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
+[[nodiscard]] float& BrushAdjustTarget(BrushState& brush, BrushAdjustMode mode) noexcept {
+    switch (mode) {
+        case BrushAdjustMode::Radius:
+            return brush.radius;
+        case BrushAdjustMode::Opacity:
+            return brush.opacity;
+        case BrushAdjustMode::Hardness:
+        case BrushAdjustMode::None:
+            break;
+    }
+    return brush.hardness;
+}
+
+[[nodiscard]] float BrushAdjustPixelsPerUnit(const BrushAdjustState& adjust, float dpiScale) noexcept {
+    if (adjust.mode == BrushAdjustMode::Radius) {
+        return std::abs(gAppState.canvasViews[adjust.view].viewport.zoomX) * dpiScale;
+    }
+    return kBrushAdjustRangeDips * dpiScale;
+}
+
+// Alt snaps to a power of two.
+void BrushAdjustApply() noexcept {
+    const BrushAdjustState& adjust = gAppState.brushAdjust;
+    float value = adjust.value;
+    if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && value > 0.0f) {
+        value = std::exp2(std::round(std::log2(value)));
+    }
+    value = adjust.mode == BrushAdjustMode::Radius ? std::clamp(value, kBrushRadiusMin, kBrushRadiusMax)
+                                                   : std::clamp(value, 0.0f, 1.0f);
+    BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = value;
+}
+
+void BrushAdjustCancel() noexcept {
+    BrushAdjustState& adjust = gAppState.brushAdjust;
+    BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = adjust.startValue;
+    adjust = {};
+}
+
+// F sets the current tool's brush radius, Shift+F its opacity and Ctrl+F its hardness, from the pointer's distance
+// to a center placed so the current value starts under the pointer. Holding Shift moves it 10 times slower, Alt
+// snaps it to powers of two. Left click or Enter keeps the value, right click or Escape restores it. While
+// adjusting, every input event belongs to it.
+[[nodiscard]] bool BrushAdjust(const Event& event, bool uiWants) noexcept {
+    AppState& app = gAppState;
+    BrushAdjustState& adjust = app.brushAdjust;
+    if (adjust.mode == BrushAdjustMode::None) {
+        if (event.type != EventType::Key || event.key.key != Key::F || event.key.inputState != InputState::Press
+            || uiWants || app.spaceDown || app.navigate.mode != NavigateMode::None
+            || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
+            return false;
+        }
+        BrushAdjustMode mode = BrushAdjustMode::None;
+        if (event.key.keyMods == KeyMod::None) {
+            mode = BrushAdjustMode::Radius;
+        } else if (HasAnyFlag(event.key.keyMods, KeyMod::Shift) && !HasAnyFlag(event.key.keyMods, ~KeyMod::Shift)) {
+            mode = BrushAdjustMode::Opacity;
+        } else if (HasAnyFlag(event.key.keyMods, KeyMod::Ctrl) && !HasAnyFlag(event.key.keyMods, ~KeyMod::Ctrl)) {
+            mode = BrushAdjustMode::Hardness;
+        }
+        const CanvasView view = WindowCanvasView(event.key.window);
+        const auto windowState = WindowGetState(event.key.window);
+        if (mode == BrushAdjustMode::None || view == kCanvasViewInvalid || !windowState) {
+            return false;
+        }
+        adjust = BrushAdjustState{.view = view, .tool = app.tools.tool, .mode = mode};
+        adjust.startValue = BrushAdjustTarget(ToolBrush(app.tools, adjust.tool), mode);
+        adjust.value = adjust.startValue;
+        adjust.distance = adjust.value * BrushAdjustPixelsPerUnit(adjust, windowState->dpiScale);
+        adjust.centerX = app.pointerX - adjust.distance;
+        adjust.centerY = app.pointerY;
+        return true;
+    }
+
+    switch (event.type) {
+        case EventType::Key:
+            if (event.key.inputState == InputState::Press
+                && (event.key.key == Key::Enter || event.key.key == Key::NumPadEnter)) {
+                adjust = {};
+            } else if (event.key.inputState == InputState::Press && event.key.key == Key::Escape) {
+                BrushAdjustCancel();
+            } else {
+                BrushAdjustApply();
+            }
+            return true;
+        case EventType::Button:
+            if (event.button.inputState == InputState::Press && event.button.button == Button::Left) {
+                adjust = {};
+            } else if (event.button.inputState == InputState::Press && event.button.button == Button::Right) {
+                BrushAdjustCancel();
+            }
+            return true;
+        case EventType::Pointer: {
+            const Window window = app.canvasViews[adjust.view].window;
+            const auto windowState = WindowGetState(window);
+            if (event.pointer.window != window || !windowState) {
+                return true;
+            }
+            const float distance = std::hypot(event.pointer.posX - adjust.centerX, event.pointer.posY - adjust.centerY);
+            const float speed = HasAnyFlag(app.keyMods, KeyMod::Shift) ? 0.1f : 1.0f;
+            adjust.value +=
+                (distance - adjust.distance) * speed / BrushAdjustPixelsPerUnit(adjust, windowState->dpiScale);
+            adjust.distance = distance;
+            BrushAdjustApply();
+            return true;
+        }
+        case EventType::Text:
+        case EventType::Wheel:
+            return true;
+        case EventType::WindowFocus:
+            if (!event.windowFocus.focused) {
+                adjust = {};
             }
             return false;
         default:
@@ -569,8 +684,8 @@ void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
         .canvas = gAppState.canvasViews[view].canvas,
         .mip = 0,
         .layer = 0,
-        .gridPos = {.x = static_cast<TileAxis>(std::floor(point->x / static_cast<float>(kTileSize))),
-                    .y = static_cast<TileAxis>(std::floor(point->y / static_cast<float>(kTileSize)))},
+        .gridPos = {.x = static_cast<TileAxis>(std::floor(point->x / kTileSize)),
+                    .y = static_cast<TileAxis>(std::floor(point->y / kTileSize))},
     };
     const CanvasState& canvas = gAppState.canvases[tile.canvas];
     const bool wasModified = canvas.modified;
@@ -620,8 +735,15 @@ Result<void> AppEvent(Event event) noexcept {
         && event.type != EventType::WindowDestroy) {
         return {};
     }
+    if (event.type == EventType::Key) {
+        gAppState.keyMods = event.key.keyMods;
+    } else if (event.type == EventType::Pointer) {
+        gAppState.pointerX = event.pointer.posX;
+        gAppState.pointerY = event.pointer.posY;
+        gAppState.pointerPressure = event.pointer.pressure;
+    }
     const bool uiWants = UiEvent(event);
-    if (Navigate(event, uiWants) || Paint(event, uiWants) || uiWants) {
+    if (BrushAdjust(event, uiWants) || Navigate(event, uiWants) || Paint(event, uiWants) || uiWants) {
         return {};
     }
     switch (event.type) {

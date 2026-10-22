@@ -69,8 +69,16 @@ struct Matrix4 {
                    }};
 }
 
-// The rows of view = ((canvas - pos) * R(rot)) * S(zoomX, zoomY), see Viewport.
-[[nodiscard]] Matrix4 Matrix4CanvasToView(Viewport viewport) noexcept {
+// The tile under the view's center. Tiles are drawn relative to it.
+[[nodiscard]] TileGridPos ViewportOriginTile(const Viewport& viewport) noexcept {
+    return TileGridPos{.x = static_cast<TileAxis>(std::floor(viewport.posX / kTileSize)),
+                       .y = static_cast<TileAxis>(std::floor(viewport.posY / kTileSize))};
+}
+
+// The rows of view = ((canvas - pos) * R(rot)) * S(zoomX, zoomY), see Viewport, for canvas units relative to `origin`.
+[[nodiscard]] Matrix4 Matrix4CanvasToView(const Viewport& viewport, TileGridPos origin) noexcept {
+    const auto posX = static_cast<float>(viewport.posX - (static_cast<double>(origin.x) * kTileSize));
+    const auto posY = static_cast<float>(viewport.posY - (static_cast<double>(origin.y) * kTileSize));
     const float c = std::cos(viewport.rot);
     const float s = std::sin(viewport.rot);
     const float m00 = c * viewport.zoomX;
@@ -81,18 +89,14 @@ struct Matrix4 {
                        m00, m01, 0.0f, 0.0f,                                        //
                        m10, m11, 0.0f, 0.0f,                                        //
                        0.0f, 0.0f, 1.0f, 0.0f,                                      //
-                       -((viewport.posX * m00) + (viewport.posY * m10)),
-                       -((viewport.posX * m01) + (viewport.posY * m11)), 0.0f, 1.0f //
+                       -((posX * m00) + (posY * m10)),
+                       -((posX * m01) + (posY * m11)), 0.0f, 1.0f //
                    }};
 }
 
 // One canvas view's transforms. Mirrors the Viewport cbuffer in common.hlsli, bound as root constants
-// (TILE_ROOT_SIGNATURE) and set on every draw.
-//
-// World recentering: the canvas is unbounded, and float32 cannot place a pixel exactly once
-// coordinates pass ~2^24. The view's origin must be subtracted on the CPU (integer tile coordinates,
-// or doubles) before building `canvasToView` and the tile positions, so the GPU only sees small,
-// view-relative numbers and this matrix only carries the sub-tile remainder, zoom and rotation.
+// (TILE_ROOT_SIGNATURE) and set on every draw. Float cannot place a texel far from the canvas origin, so the
+// view's tile is subtracted on the CPU: the matrix and the tile positions only carry view-relative numbers.
 struct ViewportConstants {
     Matrix4 canvasToView; // view: pan, zoom, rotation; canvas units to DIPs
     Matrix4 viewToClip;   // orthographic projection of the view's rectangle, origin at its center; DIPs to clip
@@ -400,7 +404,9 @@ void RecordStroke() noexcept {
         if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
             continue;
         }
-        constants.gridPos = TileKeyGridPos(tile.key);
+        // Relative like the dabs.
+        const TileGridPos gridPos = TileKeyGridPos(tile.key);
+        constants.gridPos = {.x = gridPos.x - stroke.origin.x, .y = gridPos.y - stroke.origin.y};
         constants.rectOriginX = tile.dirtyMinX;
         constants.rectOriginY = tile.dirtyMinY;
         constants.dstPage = TileAtlasCellPage(tile.cell);
@@ -670,8 +676,9 @@ void RecordTileDownloads() noexcept {
                     const float dpiScale = gPlatformState.windows[windows[i]].state.dpiScale;
                     const float centerX = std::floor(width * 0.5f);
                     const float centerY = std::floor(height * 0.5f);
+                    const TileGridPos origin = ViewportOriginTile(view.viewport);
                     const ViewportConstants viewport{
-                        .canvasToView = Matrix4CanvasToView(view.viewport),
+                        .canvasToView = Matrix4CanvasToView(view.viewport, origin),
                         .viewToClip =
                             Matrix4Orthographic(-centerX / dpiScale, (width - centerX) / dpiScale, -centerY / dpiScale,
                                                 (height - centerY) / dpiScale, 0.0f, 1.0f),
@@ -689,7 +696,11 @@ void RecordTileDownloads() noexcept {
                         if (!TileDrawn(canvas, tile, level)) {
                             continue;
                         }
-                        const TileDrawConstants draw{.gridPos = TileKeyGridPos(tile.key), .cell = tile.cell};
+                        const TileGridPos gridPos = TileKeyGridPos(tile.key);
+                        const TileDrawConstants draw{
+                            .gridPos = {.x = gridPos.x - origin.x, .y = gridPos.y - origin.y},
+                            .cell = tile.cell,
+                        };
                         state.list->SetGraphicsRoot32BitConstants(kTileDrawRootParameter, kTileDrawConstantCount, &draw,
                                                                   0);
                         state.list->DrawInstanced(kTileVertexCount, 1, 0, 0);

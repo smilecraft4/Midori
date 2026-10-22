@@ -34,6 +34,29 @@ struct NavigateState {
     NavigateMode mode{}; // None while not navigating
 };
 
+// Pointer distance from the center, in DIPs, for an opacity or hardness of 1.
+constexpr float kBrushAdjustRangeDips = 150.0f;
+
+enum struct BrushAdjustMode : std::uint8_t {
+    None,
+    Radius,
+    Opacity,
+    Hardness,
+};
+
+// The one brush value being set by the pointer's distance from a fixed center, on `view`. The brush holds the
+// value live; canceling puts `startValue` back.
+struct BrushAdjustState {
+    float centerX;  // client-area physical pixels
+    float centerY;
+    float distance; // from the center at the last pointer move
+    float value;    // before clamping and snapping
+    float startValue;
+    CanvasView view{kCanvasViewInvalid};
+    Tool tool{};
+    BrushAdjustMode mode{}; // None while not adjusting
+};
+
 // Owned by the main thread. A canvas id indexes `canvases`, a canvas view id indexes `canvasViews`.
 // Pointer and keyboard state is the devices', not any one view's.
 struct AppState {
@@ -43,6 +66,7 @@ struct AppState {
     TileAtlasState atlas;
     TileTransfersState transfers;
     NavigateState navigate;
+    BrushAdjustState brushAdjust;
     StrokeState stroke;
     ToolsState tools;
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible

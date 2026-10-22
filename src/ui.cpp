@@ -189,10 +189,11 @@ constexpr std::array<const char*, std::to_underlying(BlendMode::Count_)> kBlendM
 }
 
 void BrushEdit(BrushState& brush) noexcept {
-    ImGui::SliderFloat("Radius", &brush.radius, 0.5f, 500.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Hardness", &brush.hardness, 0.0f, 1.0f);
+    ImGui::SliderFloat("Radius (F)", &brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.1f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Hardness (Ctrl+F)", &brush.hardness, 0.0f, 1.0f);
     ImGui::SliderFloat("Flow", &brush.flow, 0.0f, 1.0f);
-    ImGui::SliderFloat("Opacity", &brush.opacity, 0.0f, 1.0f);
+    ImGui::SliderFloat("Opacity (Shift+F)", &brush.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat("Spacing", &brush.spacing, 0.01f, 1.0f);
     ImGui::Checkbox("Pressure radius", &brush.pressureRadius);
     ImGui::Checkbox("Pressure opacity", &brush.pressureOpacity);
@@ -212,15 +213,15 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
     const float centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
     const float centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
     const float scale = windowState.dpiScale;
-    const auto toScreen = [&](float x, float y) {
-        const float dx = x - viewport.posX;
-        const float dy = y - viewport.posY;
+    const auto toScreen = [&](double x, double y) {
+        const auto dx = static_cast<float>(x - viewport.posX);
+        const auto dy = static_cast<float>(y - viewport.posY);
         return ImVec2(centerX + (((dx * c) - (dy * s)) * viewport.zoomX * scale),
                       centerY + (((dx * s) + (dy * c)) * viewport.zoomY * scale));
     };
 
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    constexpr auto kSize = static_cast<float>(kTileSize);
+    constexpr auto kSize = static_cast<double>(kTileSize);
     const CanvasState& canvas = gAppState.canvases[view->canvas];
     const TileMip level = TileLevelForZoom(viewport.zoomX);
     for (const TileState& tile : canvas.tiles) {
@@ -228,8 +229,8 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
             continue;
         }
         const TileGridPos gridPos = TileKeyGridPos(tile.key);
-        const float x = static_cast<float>(gridPos.x) * kSize;
-        const float y = static_cast<float>(gridPos.y) * kSize;
+        const double x = static_cast<double>(gridPos.x) * kSize;
+        const double y = static_cast<double>(gridPos.y) * kSize;
         drawList->AddQuad(toScreen(x, y), toScreen(x + kSize, y), toScreen(x + kSize, y + kSize),
                           toScreen(x, y + kSize), IM_COL32(255, 0, 255, 255));
 
@@ -237,13 +238,62 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
         const auto layer = static_cast<Layer>((tile.key & kTileLayerMask) >> kTileLayerBitOffset);
         std::format_to_n(text.data(), text.size() - 1, "p{} b{}\n{}, {}\nL{} m{}", TileAtlasCellPage(tile.cell),
                          TileAtlasCellBlock(tile.cell), gridPos.x, gridPos.y, layer, TileKeyMip(tile.key));
-        const ImVec2 center = toScreen(x + (kSize * 0.5f), y + (kSize * 0.5f));
+        const ImVec2 center = toScreen(x + (kSize * 0.5), y + (kSize * 0.5));
         const ImVec2 textSize = ImGui::CalcTextSize(text.data());
         const ImVec2 pos(center.x - (textSize.x * 0.5f), center.y - (textSize.y * 0.5f));
         // Shadowed so it reads over any paint.
         drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text.data());
         drawList->AddText(pos, IM_COL32_WHITE, text.data());
     }
+}
+
+// The brush value being adjusted, around its center. Radius shows the brush outline with its hard core. Opacity and
+// hardness show the value's ring inside the faint ring of 1; hardness also draws the dab's falloff across it.
+void BrushAdjustOverlay(Window window, const WindowState& windowState, const ToolsState& tools) noexcept {
+    const BrushAdjustState& adjust = gAppState.brushAdjust;
+    if (adjust.mode == BrushAdjustMode::None || gAppState.canvasViews[adjust.view].window != window) {
+        return;
+    }
+    const BrushState& brush = ToolBrush(tools, adjust.tool);
+    const float scale = windowState.dpiScale;
+    const ImVec2 center(adjust.centerX, adjust.centerY);
+    constexpr ImU32 kStrong = IM_COL32(40, 130, 230, 255);
+    constexpr ImU32 kFaint = IM_COL32(40, 130, 230, 120);
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+
+    float value = 0.0f;
+    if (adjust.mode == BrushAdjustMode::Radius) {
+        const float radius = brush.radius * std::abs(gAppState.canvasViews[adjust.view].viewport.zoomX) * scale;
+        drawList->AddCircle(center, radius, kStrong, 0, 2.0f * scale);
+        drawList->AddCircle(center, radius * brush.hardness, kFaint, 0, scale);
+        value = brush.radius;
+    } else {
+        const float range = kBrushAdjustRangeDips * scale;
+        value = adjust.mode == BrushAdjustMode::Opacity ? brush.opacity : brush.hardness;
+        drawList->AddCircle(center, range, kFaint, 0, scale);
+        drawList->AddCircle(center, value * range, kStrong, 0, 2.0f * scale);
+        // if (adjust.mode == BrushAdjustMode::Hardness) {
+        //     // DabMask in stroke.cs.hlsl, for a dab as wide as the range.
+        //     constexpr std::size_t kSegments = 64;
+        //     std::array<ImVec2, kSegments + 1> curve{};
+        //     const float edge = std::max((1.0f - brush.hardness) * range, 1.0f);
+        //     for (std::size_t i = 0; i <= kSegments; ++i) {
+        //         const float x = ((2.0f * static_cast<float>(i) / static_cast<float>(kSegments)) - 1.0f) * range;
+        //         const float t = std::clamp((range - std::abs(x)) / edge, 0.0f, 1.0f);
+        //         curve[i] = ImVec2(center.x + x, center.y - (t * t * (3.0f - (2.0f * t)) * range));
+        //     }
+        //     drawList->AddPolyline(curve.data(), static_cast<int>(curve.size()), IM_COL32(220, 220, 220, 255), 0,
+        //                           scale);
+        // }
+    }
+
+    std::array<char, 16> text{};
+    std::format_to_n(text.data(), text.size() - 1, "{:.{}f}", value, adjust.mode == BrushAdjustMode::Radius ? 1 : 3);
+    const ImVec2 textSize = ImGui::CalcTextSize(text.data());
+    const ImVec2 pos(center.x - (textSize.x * 0.5f), center.y - (textSize.y * 0.5f));
+    drawList->AddCircle(center, (textSize.x * 0.5f) + (6.0f * scale), kFaint, 0, scale);
+    drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text.data());
+    drawList->AddText(pos, IM_COL32_WHITE, text.data());
 }
 
 // The chosen atlas's cells at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
@@ -501,6 +551,7 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
     if (gUiState.tileCellsShown[window]) {
         TileCellsOverlay(window, *state);
     }
+    BrushAdjustOverlay(window, *state, tools);
     ImGui::Render();
     return command;
 }

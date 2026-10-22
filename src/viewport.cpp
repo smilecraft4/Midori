@@ -20,8 +20,8 @@ Viewport ViewportMove(Viewport viewport, float viewX, float viewY) noexcept {
     const float s = std::sin(viewport.rot);
     const float x = viewX / viewport.zoomX;
     const float y = viewY / viewport.zoomY;
-    viewport.posX -= (x * c) + (y * s);
-    viewport.posY -= (y * c) - (x * s);
+    viewport.posX = std::clamp(viewport.posX - ((x * c) + (y * s)), -kViewportPosMax, kViewportPosMax);
+    viewport.posY = std::clamp(viewport.posY - ((y * c) - (x * s)), -kViewportPosMax, kViewportPosMax);
     return viewport;
 }
 

@@ -50,8 +50,8 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
     }
     const BrushState& brush = stroke.brush;
     const StrokeDab dab{
-        .x = point.x,
-        .y = point.y,
+        .x = static_cast<float>(point.x - (static_cast<double>(stroke.origin.x) * kTileSize)),
+        .y = static_cast<float>(point.y - (static_cast<double>(stroke.origin.y) * kTileSize)),
         .radius = DabRadius(brush, point.pressure),
         .hardness = brush.hardness,
         .flow = brush.flow,
@@ -67,7 +67,7 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
     };
     for (TileAxis y = tileOf(dab.y - reach); y <= tileOf(dab.y + reach); ++y) {
         for (TileAxis x = tileOf(dab.x - reach); x <= tileOf(dab.x + reach); ++x) {
-            const TileGridPos gridPos{.x = x, .y = y};
+            const TileGridPos gridPos{.x = stroke.origin.x + x, .y = stroke.origin.y + y};
             const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
             auto found = canvas.tileIndices.find(key);
             if (found == canvas.tileIndices.end()) {
@@ -137,6 +137,8 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     stroke.color = beginInfo.color;
     stroke.last = beginInfo.point;
     stroke.toNextDab = DabSpacing(beginInfo.brush, beginInfo.point.pressure);
+    stroke.origin = TileGridPos{.x = static_cast<TileAxis>(std::floor(beginInfo.point.x / kTileSize)),
+                                .y = static_cast<TileAxis>(std::floor(beginInfo.point.y / kTileSize))};
     stroke.layer = beginInfo.layer;
     stroke.canvas = gAppState.canvasViews[beginInfo.view].canvas;
     stroke.view = beginInfo.view;
@@ -151,19 +153,19 @@ void StrokeTo(StrokePoint point) noexcept {
     StrokeState& stroke = gAppState.stroke;
     MIDORI_ASSERT(stroke.canvas != kCanvasInvalid && !stroke.ended, "no stroke to extend");
     const StrokePoint from = stroke.last;
-    const float length = std::hypot(point.x - from.x, point.y - from.y);
-    float along = stroke.toNextDab;
+    const double length = std::hypot(point.x - from.x, point.y - from.y);
+    double along = stroke.toNextDab;
     while (along <= length) {
-        const float t = along / length;
+        const double t = along / length;
         const StrokePoint dab{
             .x = std::lerp(from.x, point.x, t),
             .y = std::lerp(from.y, point.y, t),
-            .pressure = std::lerp(from.pressure, point.pressure, t),
+            .pressure = std::lerp(from.pressure, point.pressure, static_cast<float>(t)),
         };
         DabAdd(stroke, dab);
         along += DabSpacing(stroke.brush, dab.pressure);
     }
-    stroke.toNextDab = along - length;
+    stroke.toNextDab = static_cast<float>(along - length);
     stroke.last = point;
 }
 

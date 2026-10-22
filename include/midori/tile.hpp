@@ -14,6 +14,9 @@ namespace Midori {
 using TileAxis = std::int32_t;
 constexpr TileAxis kTileSize = 256;                                        // canvas units, and texels at mip 0
 constexpr std::size_t kTileBytes = std::size_t{kTileSize} * kTileSize * 4; // mip 0, 8-bit RGBA
+static_assert(kViewportPosMax * 2.0 <= static_cast<double>(std::int64_t{1} << (kTileXBitSize - 1)) * kTileSize
+                  && kTileXBitSize == kTileYBitSize,
+              "a canvas point in reach of the view has a tile key");
 
 // A level-k tile covers the same kTileSize canvas units at kTileSize >> k texels, box filtered from level 0. It
 // exists only while it matches its level-0 tile: an edit deletes it, and it is rebuilt from level 0 later.

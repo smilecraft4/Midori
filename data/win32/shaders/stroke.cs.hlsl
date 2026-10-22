@@ -23,7 +23,7 @@ struct StrokeDab {
 
 cbuffer Stroke : register(b0) {
     float4 color; // premultiplied; Erase: how much of each channel goes
-    int2 tileGridPos;
+    int2 tileGridPos; // relative to the stroke's origin tile, like the dabs
     uint2 rectOrigin;
     uint dstPage;
     uint srcPage; // the tile before the stroke

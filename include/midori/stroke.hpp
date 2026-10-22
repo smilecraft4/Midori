@@ -2,6 +2,7 @@
 
 #include "midori/canvas.hpp"
 #include "midori/color.hpp"
+#include "midori/tile.hpp"
 #include "midori/tool.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -19,7 +20,7 @@ enum struct StrokeMode : std::uint8_t {
 
 // Mirrors StrokeDab in stroke.cs.hlsl.
 struct StrokeDab {
-    float x; // canvas units
+    float x; // canvas units from the stroke's origin tile, small enough for float wherever the stroke is
     float y;
     float radius;
     float hardness;
@@ -28,8 +29,8 @@ struct StrokeDab {
 };
 
 struct StrokePoint {
-    float x; // canvas units
-    float y;
+    double x; // canvas units
+    double y;
     float pressure;
 };
 
@@ -64,6 +65,7 @@ struct StrokeState {
     Color::Srgb color;
     StrokePoint last;              // the last input point
     float toNextDab{};             // canvas units along the path
+    TileGridPos origin;            // the tile of the first point, the dabs and the GPU work relative to it
     Layer layer{};
     Canvas canvas{kCanvasInvalid}; // kCanvasInvalid: no stroke
     CanvasView view{kCanvasViewInvalid};

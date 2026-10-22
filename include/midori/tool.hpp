@@ -5,6 +5,9 @@
 
 namespace Midori {
 
+constexpr float kBrushRadiusMin = 0.5f; // canvas units
+constexpr float kBrushRadiusMax = 512.0f;
+
 // Shape and dynamics of the dabs a tool draws with, whatever the tool does with them.
 struct BrushState {
     float radius{16.0f};  // canvas units
@@ -40,5 +43,13 @@ struct ToolsState {
     EraseToolState erase;
     Tool tool{};
 };
+
+[[nodiscard]] inline BrushState& ToolBrush(ToolsState& tools, Tool tool) noexcept {
+    return tool == Tool::Erase ? tools.erase.brush : tools.paint.brush;
+}
+
+[[nodiscard]] inline const BrushState& ToolBrush(const ToolsState& tools, Tool tool) noexcept {
+    return tool == Tool::Erase ? tools.erase.brush : tools.paint.brush;
+}
 
 } // namespace Midori

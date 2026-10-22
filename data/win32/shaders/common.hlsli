@@ -17,7 +17,7 @@ cbuffer Viewport : register(b0) {
 };
 
 cbuffer TileDraw : register(b1) {
-    int2 tileGridPos;
+    int2 tileGridPos; // relative to the view's tile, see canvasToView
     uint tileCell;
 };
 
