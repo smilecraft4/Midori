@@ -55,7 +55,7 @@ struct Win32SwapChain {
 
 // The win32 graphics backend's state. Owned by the main thread, like PlatformState. A window id
 // indexes `windows`; window `w` owns RTVs [w * kSwapChainBufferCount, (w + 1) * kSwapChainBufferCount).
-// `views` holds the tile pool SRV at 0, its UAV at 1, the debug atlas SRV at 2, then the UI texture SRVs;
+// `views` holds one SRV per atlas, then one UAV per atlas, the debug atlas SRV, then the UI texture SRVs;
 // `uiTextures` marks the used ones.
 struct GraphicsState {
     std::array<Win32SwapChain, kWindowMax> windows;
@@ -71,19 +71,27 @@ struct GraphicsState {
     ID3D12PipelineState* tilePipeline;
     ID3D12RootSignature* strokeRootSignature; // embedded in stroke.cs.hlsl
     ID3D12PipelineState* strokePipeline;
+    ID3D12RootSignature* mipRootSignature; // embedded in tile_mip.cs.hlsl
+    ID3D12PipelineState* mipPipeline;
     ID3D12Resource* strokeDabs;               // upload heap, kStrokeDabMax dabs per frame in flight
     StrokeDab* strokeDabsMapped;
-    ID3D12DescriptorHeap* views;              // shader visible: the tile pool SRV and UAV, then UI textures
-    ID3D12Resource* tilePool;                 // Texture2DArray, one slice per tile
-    ID3D12Resource* tileAtlasDebug;           // Texture2D of every cell, created on first use
+    ID3D12DescriptorHeap* views;              // shader visible: the tile pool SRVs and UAVs, then UI textures
+    // Texture2DArray per atlas, one slice per cell; null until created, in order.
+    std::array<ID3D12Resource*, kTileAtlasMax> tilePools;
+    ID3D12Resource* tileAtlasDebug; // Texture2D of one atlas's cells, created on first use
+    ID3D12Resource* tileUploads;    // upload heap, kTileTransferSlots tiles
+    ID3D12Resource* tileDownloads;  // readback heap, kTileTransferSlots tiles
+    std::byte* tileUploadsMapped;
+    std::byte* tileDownloadsMapped;
     IDCompositionDesktopDevice* composition;
-    TracyD3D12Ctx gpuProfiler;                // timestamp queries on `queue`, collected after each submit
-    std::uint64_t fenceValue;                 // last value signaled on `queue`
+    TracyD3D12Ctx gpuProfiler; // timestamp queries on `queue`, collected after each submit
+    std::uint64_t fenceValue;  // last value signaled on `queue`
     UINT rtvIncrement;
     UINT viewIncrement;
     UINT allocatorIndex;
     std::array<bool, kUiTextureMax> uiTextures;
-    bool tileAtlasDebugRequested; // a UI frame shows `tileAtlasDebug`; the next record refreshes it
+    TileAtlas tileAtlasDebugAtlas; // the atlas `tileAtlasDebug` shows
+    bool tileAtlasDebugRequested;  // a UI frame shows `tileAtlasDebug`; the next record refreshes it
 };
 
 // Fills `handles` with the frame waitables of the windows that need a frame and are not ready for one

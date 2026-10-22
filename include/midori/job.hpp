@@ -1,52 +1,68 @@
 #pragma once
 
 #include "midori/base.hpp"
+#include "midori/canvas.hpp"
 #include "midori/tile.hpp"
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
-#include <limits>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace Midori {
 
-using Worker = std::uint8_t;
-constexpr Worker kWorkerInvalid = std::numeric_limits<Worker>::max();
-
 enum struct JobType : std::uint8_t {
-    TileLoad,
-    TileCache,
-    TileCommit,
-    TileSave,
-    LayerSave,
-    MetadataSave,
+    TileRead,  // reader threads: `pixels` from `file`
+    TileWrite, // the writer thread, the only one writing to the libmdbx envs from jobs: `pixels` into `file`
 };
 
-enum struct JobStatus : std::uint8_t {
-    Pending,
-    Busy,
-    Finished,
-    Error,
-};
-
+// Plain data handed to a thread and back. The canvas outlives its jobs: CanvasDestroy waits for them.
 struct Job {
-    Tile tile;
+    CanvasFile file;
+    TileKey key;
+    std::byte* pixels; // kTileBytes of a transfer slot's mapped memory
+    TileTransferSlot slot;
+    Canvas canvas;
     JobType type;
-    JobStatus status;
-    TileTextureTransferSlot slot;
-    Error error;
+    bool failed;
 };
 
-using JobExecuteFn = Result<void>(Worker, Job);
+using JobExecuteFn = Result<void>(const Job& job) noexcept;
+
+struct JobQueue {
+    std::mutex mutex;
+    std::condition_variable_any ready;
+    std::deque<Job> jobs;
+};
+
+// Queues and results are guarded by their mutex; `execute` and the threads are set by JobsInit and fixed until
+// JobsTerminate, both on the main thread. `pending` counts the jobs submitted and not yet in `finished`.
+struct JobsState {
+    JobQueue reads;
+    JobQueue writes;
+    std::mutex finishedMutex;
+    std::condition_variable idle;
+    std::vector<Job> finished;
+    std::uint32_t pending{};
+    std::vector<std::jthread> threads;
+    JobExecuteFn* execute{};
+};
+
+extern JobsState gJobsState;
 
 struct JobsInitInfo {
-    Worker workerCount{kWorkerInvalid}; // by default uses `std::ceil(2, std::thread::hardware_concurrency() - 2)`
-    JobExecuteFn executeFn;
+    JobExecuteFn* execute;
+    std::uint32_t readerCount; // 0: the hardware threads left after the main and writer threads, at least 1
 };
 
-Result<void> JobsInit(JobsInitInfo initInfo) noexcept;
-Result<void> JobsUpdate() noexcept;
+void JobsInit(JobsInitInfo initInfo) noexcept;
+// Drops the jobs not started and joins the threads.
 void JobsTerminate() noexcept;
-void JobsWait() noexcept;
-bool JobsBusy() noexcept;
-
-Result<void> JobSubmit(Job job) noexcept;
+void JobSubmit(const Job& job) noexcept;
+// Moves the finished jobs to the end of `jobs`.
+void JobsTakeFinished(std::vector<Job>& jobs) noexcept;
+void JobsWaitIdle() noexcept;
 
 } // namespace Midori

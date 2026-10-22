@@ -1,42 +1,193 @@
 #include "midori/tile.hpp"
 
 #include "midori/app.hpp"
+#include "midori/graphics.hpp"
 #include "midori/log.hpp"
 
+#include <bit>
+#include <limits>
+#include <optional>
 #include <vector>
 
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
 
-TileAtlasCell TileAtlasCellTake() noexcept {
-    std::vector<TileAtlasCell>& freeCells = gAppState.freeAtlasCells;
-    if (!freeCells.empty()) {
-        const TileAtlasCell cell = freeCells.back();
-        freeCells.pop_back();
-        return cell;
+namespace {
+
+// Bit i set: the aligned run of `level` starting at Morton block i is free.
+[[nodiscard]] std::uint64_t FreeRuns(std::uint64_t used, std::uint8_t level) noexcept {
+    const std::uint64_t free1 = ~used;
+    if (level == 3) {
+        return free1;
     }
-    TileState* oldest = nullptr;
-    for (CanvasState& canvas : gAppState.canvases) {
-        if (canvas.id == kCanvasInvalid) {
+    const std::uint64_t pairs = free1 & (free1 >> 1);
+    const std::uint64_t free4 = pairs & (pairs >> 2) & 0x1111111111111111;
+    if (level == 2) {
+        return free4;
+    }
+    const std::uint64_t run8 = free4 & (free4 >> 4);
+    const std::uint64_t free16 = run8 & (run8 >> 8) & 0x0001000100010001;
+    if (level == 1) {
+        return free16;
+    }
+    return used == 0 ? 1 : 0;
+}
+
+[[nodiscard]] std::uint64_t BlockMask(std::uint8_t block, std::uint8_t level) noexcept {
+    const std::uint8_t blocks = TileAtlasLevelBlocks(level);
+    return blocks == kTileAtlasBlocks ? ~std::uint64_t{0} : ((std::uint64_t{1} << blocks) - 1) << block;
+}
+
+[[nodiscard]] std::uint32_t TileAtlasPageEnd() noexcept {
+    return std::uint32_t{gAppState.atlas.count} * kTileAtlasPages;
+}
+
+[[nodiscard]] TileAtlasCell TileAtlasCellPlace(TileAtlasPage page, std::uint8_t block, std::uint8_t level,
+                                               TileAtlasOwner owner) noexcept {
+    TileAtlasState& atlas = gAppState.atlas;
+    atlas.used[page] |= BlockMask(block, level);
+    owner.level = level;
+    for (std::uint8_t b = block; b < block + TileAtlasLevelBlocks(level); ++b) {
+        atlas.owners[page][b] = owner;
+    }
+    return TileAtlasCellMake(page, block, level);
+}
+
+// Best fit: the fullest page with a free run of the size.
+[[nodiscard]] TileAtlasCell TileAtlasCellPlaceFree(std::uint8_t level, TileAtlasOwner owner) noexcept {
+    const TileAtlasState& atlas = gAppState.atlas;
+    std::uint32_t best = kTileAtlasPageMax;
+    int bestUsed = -1;
+    for (std::uint32_t page = 0; page < TileAtlasPageEnd(); ++page) {
+        if (FreeRuns(atlas.used[page], level) != 0 && std::popcount(atlas.used[page]) > bestUsed) {
+            best = page;
+            bestUsed = std::popcount(atlas.used[page]);
+        }
+    }
+    if (best == kTileAtlasPageMax) {
+        return kTileAtlasCellInvalid;
+    }
+    const auto block = static_cast<std::uint8_t>(std::countr_zero(FreeRuns(atlas.used[best], level)));
+    return TileAtlasCellPlace(static_cast<TileAtlasPage>(best), block, level, owner);
+}
+
+// The owner's tile when it is evictable, null otherwise.
+[[nodiscard]] TileState* TileOwnerEvictable(const TileAtlasOwner& owner) noexcept {
+    if (owner.canvas == kCanvasInvalid) {
+        return nullptr;
+    }
+    CanvasState& canvas = gAppState.canvases[owner.canvas];
+    const auto found = canvas.tileIndices.find(owner.key);
+    if (found == canvas.tileIndices.end()) {
+        return nullptr;
+    }
+    TileState& tile = canvas.tiles[found->second];
+    return TileEvictable(owner.canvas, tile) ? &tile : nullptr;
+}
+
+// The newest `visibleFrame` among the owners of an aligned run, or nothing when one of them cannot be evicted.
+// Steps over each owner's cell; one larger than the run covers all of it.
+[[nodiscard]] std::optional<std::uint32_t> TileAtlasRunAge(TileAtlasPage page, std::uint8_t origin,
+                                                           std::uint8_t level) noexcept {
+    const TileAtlasState& atlas = gAppState.atlas;
+    std::uint32_t newest = 0;
+    const unsigned end = unsigned{origin} + TileAtlasLevelBlocks(level);
+    for (unsigned b = origin; b < end;) {
+        if (((atlas.used[page] >> b) & 1) == 0) {
+            ++b;
             continue;
         }
-        for (TileState& tile : canvas.tiles) {
-            if (HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
-                && TilePersisted(tile.flags) && (!oldest || tile.visibleFrame < oldest->visibleFrame)
-                && !StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
-                oldest = &tile;
+        const TileAtlasOwner& owner = atlas.owners[page][b];
+        const TileState* tile = TileOwnerEvictable(owner);
+        if (!tile) {
+            return std::nullopt;
+        }
+        newest = std::max(newest, tile->visibleFrame);
+        b += TileAtlasLevelBlocks(owner.level);
+    }
+    return newest;
+}
+
+// Evicts every owner of the aligned run whose owners were shown the longest ago, then places the cell there.
+// The GPU may still read an evicted cell in a frame in flight; its next fill is recorded after that frame.
+[[nodiscard]] TileAtlasCell TileAtlasCellPlaceEvicting(std::uint8_t level, TileAtlasOwner owner) noexcept {
+    TileAtlasState& atlas = gAppState.atlas;
+    const std::uint8_t blocks = TileAtlasLevelBlocks(level);
+    std::uint32_t bestPage = kTileAtlasPageMax;
+    std::uint8_t bestOrigin = 0;
+    std::uint32_t bestAge = std::numeric_limits<std::uint32_t>::max();
+    for (std::uint32_t page = 0; page < TileAtlasPageEnd(); ++page) {
+        for (unsigned origin = 0; origin < kTileAtlasBlocks; origin += blocks) {
+            const auto age =
+                TileAtlasRunAge(static_cast<TileAtlasPage>(page), static_cast<std::uint8_t>(origin), level);
+            if (age && *age < bestAge) {
+                bestPage = page;
+                bestOrigin = static_cast<std::uint8_t>(origin);
+                bestAge = *age;
             }
         }
     }
-    if (!oldest) {
+    if (bestPage == kTileAtlasPageMax) {
         return kTileAtlasCellInvalid;
     }
-    // The GPU may still read the cell in a frame in flight; its next fill is recorded after that frame.
-    const TileAtlasCell cell = oldest->cell;
-    oldest->cell = kTileAtlasCellInvalid;
-    oldest->flags &= ~(TileFlags::Loaded | TileFlags::Editable);
-    return cell;
+    const auto page = static_cast<TileAtlasPage>(bestPage);
+    for (unsigned b = bestOrigin; b < unsigned{bestOrigin} + blocks;) {
+        if (((atlas.used[page] >> b) & 1) == 0) {
+            ++b;
+            continue;
+        }
+        TileState* tile = TileOwnerEvictable(atlas.owners[page][b]);
+        MIDORI_ASSERT(tile, "atlas page {} block {} became unevictable", page, b);
+        b += TileAtlasLevelBlocks(atlas.owners[page][b].level);
+        TileEvict(*tile);
+    }
+    return TileAtlasCellPlace(page, bestOrigin, level, owner);
+}
+
+} // namespace
+
+// A level-0 tile queued to build its level 1-3 tiles stays until the submit reads it.
+bool TileEvictable(Canvas canvas, const TileState& tile) noexcept {
+    return HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
+        && TilePersisted(tile.flags) && tile.transfer == TileTransfer::None
+        && !StrokeHasTile(gAppState.stroke, canvas, tile.key)
+        && std::ranges::find(gAppState.canvases[canvas].mipBuilds, tile.key)
+               == gAppState.canvases[canvas].mipBuilds.end();
+}
+
+void TileEvict(TileState& tile) noexcept {
+    TileAtlasCellFree(tile.cell);
+    tile.cell = kTileAtlasCellInvalid;
+    tile.flags &= ~(TileFlags::Loaded | TileFlags::Editable);
+}
+
+TileAtlasCell TileAtlasCellTake(std::uint8_t level, Canvas canvas, TileKey key) noexcept {
+    MIDORI_ASSERT(level < kTileMipMax, "atlas level {}", level);
+    const TileAtlasOwner owner{.key = key, .canvas = canvas, .level = level};
+    if (const TileAtlasCell cell = TileAtlasCellPlaceFree(level, owner); cell != kTileAtlasCellInvalid) {
+        return cell;
+    }
+    // A new atlas before any eviction: evicted tiles cost a transfer to show again.
+    TileAtlasState& atlas = gAppState.atlas;
+    if (atlas.count < kTileAtlasMax && GraphicsTileAtlasCreate(atlas.count)) {
+        ++atlas.count;
+        return TileAtlasCellPlaceFree(level, owner);
+    }
+    return TileAtlasCellPlaceEvicting(level, owner);
+}
+
+void TileAtlasCellFree(TileAtlasCell cell) noexcept {
+    TileAtlasState& atlas = gAppState.atlas;
+    const TileAtlasPage page = TileAtlasCellPage(cell);
+    const std::uint8_t block = TileAtlasCellBlock(cell);
+    const std::uint8_t level = TileAtlasCellLevel(cell);
+    MIDORI_ASSERT((atlas.used[page] & BlockMask(block, level)) == BlockMask(block, level), "atlas cell {:#x} not taken",
+                  cell);
+    atlas.used[page] &= ~BlockMask(block, level);
+    for (std::uint8_t b = block; b < block + TileAtlasLevelBlocks(level); ++b) {
+        atlas.owners[page][b] = {};
+    }
 }
 
 Result<void> TileNew(Tile tile) noexcept {
@@ -48,11 +199,18 @@ Result<void> TileNew(Tile tile) noexcept {
     if (canvas.tileIndices.contains(key)) {
         return {};
     }
-    const TileAtlasCell cell = TileAtlasCellTake();
+    const TileAtlasCell cell = TileAtlasCellTake(tile.mip, tile.canvas, key);
     if (cell == kTileAtlasCellInvalid) {
-        MIDORI_LOG_WARN("TileNew: all {} atlas cells hold visible or unsaved tiles", kTileAtlasCellMax - 1);
+        MIDORI_LOG_WARN("TileNew: all {} atlas pages hold visible or unsaved tiles", kTileAtlasPageMax);
         return std::unexpected(Error::TileAtlasFull);
     }
+    TileInsert(canvas, key, cell);
+    canvas.creates.push_back(key);
+    canvas.modified = true;
+    return {};
+}
+
+TileState& TileInsert(CanvasState& canvas, TileKey key, TileAtlasCell cell) noexcept {
     canvas.tileIndices.emplace(key, static_cast<std::uint32_t>(canvas.tiles.size()));
     canvas.tiles.push_back(TileState{
         .key = key,
@@ -64,10 +222,32 @@ Result<void> TileNew(Tile tile) noexcept {
         .flags = TileFlags::Modified,
         .transfer = TileTransfer::None,
     });
-    canvas.creates.push_back(key);
-    ++canvas.layers[tile.layer].tileCount;
-    canvas.modified = true;
-    return {};
+    ++canvas.layers[key >> kTileLayerBitOffset].tileCount;
+    return canvas.tiles.back();
+}
+
+void TileMipsDelete(Canvas canvas, TileKey key) noexcept {
+    const auto layer = static_cast<Layer>(key >> kTileLayerBitOffset);
+    for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
+        if (!TileDelete(Tile{.canvas = canvas, .mip = mip, .layer = layer, .gridPos = TileKeyGridPos(key)})) {
+            MIDORI_LOG_WARN("TileMipsDelete: tile {:#018x} level {} not deleted", key, mip);
+        }
+    }
+}
+
+bool TileDrawn(const CanvasState& canvas, const TileState& tile, TileMip viewLevel) noexcept {
+    if (!HasAnyFlag(tile.flags, TileFlags::Loaded)) {
+        return false;
+    }
+    const TileMip mip = TileKeyMip(tile.key);
+    if (mip == viewLevel) {
+        return true;
+    }
+    if (mip != 0) {
+        return false;
+    }
+    const auto found = canvas.tileIndices.find(TileKeyWithMip(tile.key, viewLevel));
+    return found == canvas.tileIndices.end() || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded);
 }
 
 Result<void> TileDelete(Tile tile) noexcept {
@@ -76,16 +256,32 @@ Result<void> TileDelete(Tile tile) noexcept {
                   tile.canvas);
     CanvasState& canvas = gAppState.canvases[tile.canvas];
     const TileKey key = TileKeyMake(tile.layer, tile.mip, tile.gridPos);
-    const auto it = canvas.tileIndices.find(key);
-    if (it == canvas.tileIndices.end()) {
+    if (!canvas.tileIndices.contains(key)) {
         return {};
     }
-
+    if (tile.mip == 0) {
+        TileMipsDelete(tile.canvas, key);
+        std::erase(canvas.mipBuilds, key);
+    }
+    const auto it = canvas.tileIndices.find(key);
     const std::uint32_t index = it->second;
     canvas.tileIndices.erase(it);
     // The GPU may still read the cell in a frame in flight; its next fill is recorded after that frame.
     if (canvas.tiles[index].cell != kTileAtlasCellInvalid) {
-        gAppState.freeAtlasCells.push_back(canvas.tiles[index].cell);
+        TileAtlasCellFree(canvas.tiles[index].cell);
+    }
+    // Copies not recorded yet would touch the freed cell. Slots a job or the GPU holds are orphaned: they finish
+    // and are dropped, even if a tile with the same key comes back meanwhile.
+    for (auto* slots : {&gAppState.transfers.uploads, &gAppState.transfers.downloads}) {
+        for (TileSlot& slot : *slots) {
+            if (slot.state == TileSlotState::Free || slot.canvas != tile.canvas || slot.key != key) {
+                continue;
+            }
+            if (slot.state == TileSlotState::Ready || slot.state == TileSlotState::Record) {
+                slot.state = TileSlotState::Free;
+            }
+            slot.canvas = kCanvasInvalid;
+        }
     }
     std::erase(canvas.creates, key);
     if (HasAnyFlag(canvas.tiles[index].flags, TileFlags::Saved)) {

@@ -3,6 +3,7 @@
 #include "midori/base.hpp"
 #include "midori/canvas.hpp"
 #include "midori/platform.hpp"
+#include "midori/tile.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -34,17 +35,26 @@ struct GraphicsWindowInitInfo {
 // The window gets a frame at its next vblank, from GraphicsUpdate.
 void GraphicsWindowRequestFrame(Window window) noexcept;
 
-constexpr TileAtlasCell kTileAtlasDebugColumns = 8;
-constexpr TileAtlasCell kTileAtlasDebugRows = (kTileAtlasCellMax + kTileAtlasDebugColumns - 1) / kTileAtlasDebugColumns;
-// A UI texture (ImTextureID) of every atlas cell at mip 0, kTileAtlasDebugColumns cells per row, refreshed in
-// each frame whose UI called this. Created on the first call; 0 when that failed.
-[[nodiscard]] std::uint64_t GraphicsTileAtlasDebugTexture() noexcept;
+// GraphicsInit creates atlas 0; the others are created in order, outside any submit. Its pages start undefined.
+[[nodiscard]] Result<void> GraphicsTileAtlasCreate(TileAtlas atlas) noexcept;
 
-// Both wait for the GPU. Pixels are kTileBytes per cell, mip 0 only. A download first fills pending new tiles and
-// records the stroke so far.
+constexpr TileAtlasPage kTileAtlasDebugColumns = 8;
+constexpr TileAtlasPage kTileAtlasDebugRows = (kTileAtlasPages + kTileAtlasDebugColumns - 1) / kTileAtlasDebugColumns;
+// A UI texture (ImTextureID) of one created atlas's pages at mip 0, kTileAtlasDebugColumns pages per row,
+// refreshed in each frame whose UI called this. Created on the first call; 0 when that failed.
+[[nodiscard]] std::uint64_t GraphicsTileAtlasDebugTexture(TileAtlas atlas) noexcept;
+
+// A transfer slot's mapped memory, kTileBytes, valid from GraphicsInit to GraphicsTerminate. Each submit records
+// the copies of the slots in TileSlotState::Record (gAppState.transfers) and moves them to Gpu with the fence it
+// signals; a job may use the memory from another thread while its slot is in TileSlotState::Job.
+[[nodiscard]] std::byte* GraphicsTileUploadMemory(TileTransferSlot slot) noexcept;
+[[nodiscard]] std::byte* GraphicsTileDownloadMemory(TileTransferSlot slot) noexcept;
+// The GPU is done with everything recorded before a fence value up to this one.
+[[nodiscard]] std::uint64_t GraphicsCompletedFence() noexcept;
+
+// Waits for the GPU. A kTileBytes stride per cell, each tile TileLevelBytes of its level. First records pending new
+// tiles, uploads, the stroke and level builds so far.
 [[nodiscard]] Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells,
                                                  std::span<std::byte> pixels) noexcept;
-[[nodiscard]] Result<void> GraphicsTilesUpload(std::span<const TileAtlasCell> cells,
-                                               std::span<const std::byte* const> pixels) noexcept;
 
 } // namespace Midori

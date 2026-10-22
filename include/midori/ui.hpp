@@ -21,6 +21,7 @@ struct UiState {
     std::array<ImGuiContext*, kWindowMax> contexts;  // null marks the slot free
     std::array<std::int64_t, kWindowMax> frameTimes; // steady_clock ticks of the last frame, 0 before the first
     std::array<bool, kWindowMax> tileAtlasShown;     // the tile atlas debug window is open
+    std::array<int, kWindowMax> tileAtlasIndex;      // the atlas it shows
     std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
 };
 

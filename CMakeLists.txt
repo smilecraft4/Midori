@@ -34,7 +34,7 @@ set(SPDLOG_SYSTEM_INCLUDES ON)
 set(SPDLOG_NO_EXCEPTIONS ON)
 add_subdirectory(vendors/spdlog)
 
-set(TRACY_ENABLE OFF)
+set(TRACY_ENABLE ON)
 set(TRACY_ON_DEMAND ON)
 set(TRACY_ONLY_LOCALHOST ON)
 set(TRACY_STATIC ON)
@@ -70,6 +70,7 @@ set(MIDORI_SOURCES
     src/base.cpp
     src/canvas.cpp
     src/color.cpp
+    src/job.cpp
     src/stroke.cpp
     src/tile.cpp
     src/ui.cpp
@@ -83,6 +84,7 @@ set(MIDORI_SOURCES_WIN32
 )
 
 set(MIDORI_SHADERS_WIN32
+    data/win32/shaders/atlas.hlsli
     data/win32/shaders/blend.hlsli
     data/win32/shaders/common.hlsli
     data/win32/shaders/tile_ops.hlsli

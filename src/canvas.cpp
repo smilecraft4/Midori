@@ -2,10 +2,13 @@
 
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
+#include "midori/job.hpp"
 #include "midori/log.hpp"
 #include "midori/tile.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <format>
@@ -132,7 +135,7 @@ void CacheClose(CanvasFile& cache) noexcept {
     std::filesystem::remove(path, ec);
 }
 
-// kTileBytes per key into `pixels`.
+// A kTileBytes stride per key in `pixels`, each tile TileLevelBytes of its level.
 [[nodiscard]] Result<void> TilesRead(const CanvasFile& file, std::span<const TileKey> keys,
                                      std::span<std::byte> pixels) noexcept {
     MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
@@ -148,13 +151,13 @@ void CacheClose(CanvasFile& cache) noexcept {
         MDBX_val key = Val(keys[i]);
         MDBX_val value{};
         const int rc = mdbx_get(txn, file.tilesDbi, &key, &value);
-        if (rc != MDBX_SUCCESS || value.iov_len != kTileBytes) {
+        if (rc != MDBX_SUCCESS || value.iov_len != TileLevelBytes(TileKeyMip(keys[i]))) {
             MIDORI_LOG_ERROR("reading tile {:#018x}: {}", keys[i],
                              rc == MDBX_SUCCESS ? "invalid size" : mdbx_strerror(rc));
             mdbx_txn_abort(txn);
             return std::unexpected(Error::TileReadFailed);
         }
-        std::memcpy(pixels.data() + (i * kTileBytes), value.iov_base, kTileBytes);
+        std::memcpy(pixels.data() + (i * kTileBytes), value.iov_base, value.iov_len);
     }
     mdbx_txn_abort(txn);
     return {};
@@ -170,7 +173,8 @@ void CacheClose(CanvasFile& cache) noexcept {
     }
     for (std::size_t i = 0; i < keys.size(); ++i) {
         MDBX_val key = Val(keys[i]);
-        MDBX_val value{.iov_base = const_cast<std::byte*>(pixels.data() + (i * kTileBytes)), .iov_len = kTileBytes};
+        MDBX_val value{.iov_base = const_cast<std::byte*>(pixels.data() + (i * kTileBytes)),
+                       .iov_len = TileLevelBytes(TileKeyMip(keys[i]))};
         if (const int rc = mdbx_put(txn, file.tilesDbi, &key, &value, MDBX_UPSERT); rc != MDBX_SUCCESS) {
             LogMdbx("mdbx_put tile", rc);
             mdbx_txn_abort(txn);
@@ -321,7 +325,8 @@ void CacheClose(CanvasFile& cache) noexcept {
     }
 
     for (std::size_t i = 0; i < keys.size(); ++i) {
-        const MDBX_val value{.iov_base = pixels.data() + (i * kTileBytes), .iov_len = kTileBytes};
+        const MDBX_val value{.iov_base = pixels.data() + (i * kTileBytes),
+                             .iov_len = TileLevelBytes(TileKeyMip(keys[i]))};
         if (const int rc = put(file.tilesDbi, Val(keys[i]), value); rc != MDBX_SUCCESS) {
             return fail("mdbx_put tile", rc);
         }
@@ -364,92 +369,251 @@ void CanvasMarkSaved(CanvasState& canvas) noexcept {
     return it->id;
 }
 
-[[nodiscard]] Result<void> TilesCacheOffscreen(CanvasState& canvas) noexcept {
-    if (!canvas.cache.env) {
-        return {};
+// Above kAtlasEvictHigh of every block the atlases can hold, the tiles shown the longest ago are evicted down to
+// kAtlasEvictLow, so a load rarely waits for a cell.
+constexpr std::uint32_t kAtlasBlockMax = std::uint32_t{kTileAtlasPageMax} * kTileAtlasBlocks;
+constexpr std::uint32_t kAtlasEvictHigh = kAtlasBlockMax / 8 * 7;
+constexpr std::uint32_t kAtlasEvictLow = kAtlasBlockMax / 4 * 3;
+// Level-0 tiles whose level 1-3 tiles one update queues, to keep each submit's dispatches small.
+constexpr std::uint32_t kMipBuildsPerUpdate = 16;
+
+// Null once the tile was deleted, its slot orphaned or its canvas destroyed.
+[[nodiscard]] TileState* TileFind(Canvas canvas, TileKey key) noexcept {
+    if (canvas == kCanvasInvalid || gAppState.canvases[canvas].id != canvas) {
+        return nullptr;
     }
-    std::vector<std::uint32_t> indices;
-    std::vector<TileAtlasCell> cells;
-    std::vector<TileKey> keys;
-    for (std::uint32_t i = 0; i < canvas.tiles.size(); ++i) {
-        const TileState& tile = canvas.tiles[i];
-        if (HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
-            && !TilePersisted(tile.flags) && !StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
-            indices.push_back(i);
-            cells.push_back(tile.cell);
-            keys.push_back(tile.key);
-        }
-    }
-    if (indices.empty()) {
-        return {};
-    }
-    std::vector<std::byte> pixels(cells.size() * kTileBytes);
-    if (const auto res = GraphicsTilesDownload(cells, pixels); !res) {
-        return res;
-    }
-    if (const auto res = TilesWrite(canvas.cache, keys, pixels); !res) {
-        return res;
-    }
-    for (const std::uint32_t i : indices) {
-        canvas.tiles[i].flags |= TileFlags::CachedDisk;
-    }
-    return {};
+    CanvasState& state = gAppState.canvases[canvas];
+    const auto found = state.tileIndices.find(key);
+    return found == state.tileIndices.end() ? nullptr : &state.tiles[found->second];
 }
 
-struct TileLoads {
-    std::vector<std::uint32_t> indices;
-    std::vector<TileAtlasCell> cells;
-    std::vector<TileKey> keys;
-};
+[[nodiscard]] TileTransferSlot TileSlotFind(const std::array<TileSlot, kTileTransferSlots>& slots,
+                                            TileSlotState state) noexcept {
+    const auto found = std::ranges::find(slots, state, &TileSlot::state);
+    return static_cast<TileTransferSlot>(found - slots.begin());
+}
+
+void TileJobsFinish() noexcept {
+    TileTransfersState& transfers = gAppState.transfers;
+    std::vector<Job> jobs;
+    JobsTakeFinished(jobs);
+    for (const Job& job : jobs) {
+        if (job.type == JobType::TileRead) {
+            TileSlot& slot = transfers.uploads[job.slot];
+            TileState* tile = TileFind(slot.canvas, slot.key);
+            if (tile && !job.failed) {
+                slot.state = TileSlotState::Ready;
+                continue;
+            }
+            if (tile) {
+                tile->transfer &= ~TileTransfer::Load;
+            }
+            slot.state = TileSlotState::Free;
+        } else {
+            TileSlot& slot = transfers.downloads[job.slot];
+            if (TileState* tile = TileFind(slot.canvas, slot.key)) {
+                if (!job.failed && tile->edits == tile->cacheEdits) {
+                    tile->flags |= TileFlags::CachedDisk;
+                }
+                tile->transfer &= ~TileTransfer::Cache;
+            }
+            slot.state = TileSlotState::Free;
+        }
+    }
+}
+
+// Uploads are done once the GPU passes their fence; downloads then go to the writer.
+void TileSlotsAdvance() noexcept {
+    TileTransfersState& transfers = gAppState.transfers;
+    const std::uint64_t completed = GraphicsCompletedFence();
+    for (TileSlot& slot : transfers.uploads) {
+        if (slot.state == TileSlotState::Gpu && slot.fence <= completed) {
+            if (TileState* tile = TileFind(slot.canvas, slot.key)) {
+                tile->transfer &= ~TileTransfer::Load;
+            }
+            slot.state = TileSlotState::Free;
+        }
+    }
+    for (TileTransferSlot i = 0; i < kTileTransferSlots; ++i) {
+        TileSlot& slot = transfers.downloads[i];
+        if (slot.state != TileSlotState::Gpu || slot.fence > completed) {
+            continue;
+        }
+        if (!TileFind(slot.canvas, slot.key)) {
+            slot.state = TileSlotState::Free;
+            continue;
+        }
+        JobSubmit(Job{
+            .file = gAppState.canvases[slot.canvas].cache,
+            .key = slot.key,
+            .pixels = GraphicsTileDownloadMemory(i),
+            .slot = i,
+            .canvas = slot.canvas,
+            .type = JobType::TileWrite,
+            .failed = false,
+        });
+        slot.state = TileSlotState::Job;
+    }
+}
+
+// Read uploads take their cell now, not before the read, so a slow read holds no atlas space. The tile counts
+// as Loaded from here: the next submit records its copy before any draw or stroke.
+void TileUploadsPlace() noexcept {
+    for (TileSlot& slot : gAppState.transfers.uploads) {
+        if (slot.state != TileSlotState::Ready) {
+            continue;
+        }
+        TileState* tile = TileFind(slot.canvas, slot.key);
+        if (!tile) {
+            slot.state = TileSlotState::Free;
+            continue;
+        }
+        const TileAtlasCell cell = TileAtlasCellTake(TileKeyMip(slot.key), slot.canvas, slot.key);
+        if (cell == kTileAtlasCellInvalid) {
+            return;
+        }
+        tile->cell = cell;
+        tile->flags |= TileFlags::Loaded | TileFlags::Editable;
+        slot.cell = cell;
+        slot.state = TileSlotState::Record;
+    }
+}
+
+// Loaded tiles no longer shown whose content is stored nowhere go to the cache, which makes them evictable.
+void TileCachesSchedule(CanvasState& canvas) noexcept {
+    if (!canvas.cache.env) {
+        return;
+    }
+    auto& slots = gAppState.transfers.downloads;
+    for (TileState& tile : canvas.tiles) {
+        if (!HasAnyFlag(tile.flags, TileFlags::Loaded) || tile.visibleFrame == gAppState.frame
+            || TilePersisted(tile.flags) || tile.transfer != TileTransfer::None
+            || StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
+            continue;
+        }
+        const TileTransferSlot i = TileSlotFind(slots, TileSlotState::Free);
+        if (i == kTileTransferSlots) {
+            return;
+        }
+        slots[i] = TileSlot{
+            .fence = 0,
+            .key = tile.key,
+            .cell = tile.cell,
+            .canvas = canvas.id,
+            .state = TileSlotState::Record,
+        };
+        tile.transfer |= TileTransfer::Cache;
+        tile.cacheEdits = tile.edits;
+    }
+}
 
 // The cache holds the latest content of a tile edited since the save, so it goes first.
-[[nodiscard]] Result<void> TilesLoadVisible(CanvasState& canvas) noexcept {
-    TileLoads fromCache;
-    TileLoads fromFile;
-    for (std::uint32_t i = 0; i < canvas.tiles.size(); ++i) {
-        TileState& tile = canvas.tiles[i];
-        if (tile.visibleFrame != gAppState.frame || tile.cell != kTileAtlasCellInvalid) {
+void TileLoadsSchedule(CanvasState& canvas) noexcept {
+    auto& slots = gAppState.transfers.uploads;
+    for (TileState& tile : canvas.tiles) {
+        if (tile.visibleFrame != gAppState.frame || tile.cell != kTileAtlasCellInvalid
+            || tile.transfer != TileTransfer::None) {
             continue;
         }
         MIDORI_ASSERT(TilePersisted(tile.flags), "tile {:#018x} evicted unsaved", tile.key);
-        tile.cell = TileAtlasCellTake();
-        if (tile.cell == kTileAtlasCellInvalid) {
-            break;
+        const TileTransferSlot i = TileSlotFind(slots, TileSlotState::Free);
+        if (i == kTileTransferSlots) {
+            return;
         }
-        TileLoads& loads = HasAnyFlag(tile.flags, TileFlags::CachedDisk) ? fromCache : fromFile;
-        loads.indices.push_back(i);
-        loads.cells.push_back(tile.cell);
-        loads.keys.push_back(tile.key);
+        JobSubmit(Job{
+            .file = HasAnyFlag(tile.flags, TileFlags::CachedDisk) ? canvas.cache : canvas.file,
+            .key = tile.key,
+            .pixels = GraphicsTileUploadMemory(i),
+            .slot = i,
+            .canvas = canvas.id,
+            .type = JobType::TileRead,
+            .failed = false,
+        });
+        slots[i] = TileSlot{
+            .fence = 0,
+            .key = tile.key,
+            .cell = kTileAtlasCellInvalid,
+            .canvas = canvas.id,
+            .state = TileSlotState::Job,
+        };
+        tile.transfer |= TileTransfer::Load;
     }
+}
 
-    Result<void> result{};
-    for (const auto& [loads, file] : {std::pair{&fromCache, &canvas.cache}, std::pair{&fromFile, &canvas.file}}) {
-        if (loads->indices.empty()) {
+// Loaded level-0 tiles outside the stroke get their missing level 1-3 tiles, built by the next submit. They start
+// Modified, so streaming caches them once off screen and a save writes them, while views zoomed out draw them
+// instead of level 0. Up to `budget` level-0 tiles per update, shared by every canvas.
+void TileMipsSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept {
+    for (std::uint32_t i = 0; i < canvas.tiles.size() && budget > 0; ++i) {
+        // Copied: TileInsert grows `tiles`.
+        const TileKey key = canvas.tiles[i].key;
+        if (TileKeyMip(key) != 0 || !HasAnyFlag(canvas.tiles[i].flags, TileFlags::Loaded)
+            || StrokeHasTile(gAppState.stroke, canvas.id, key) || std::ranges::contains(canvas.mipBuilds, key)) {
             continue;
         }
-        std::vector<std::byte> pixels(loads->keys.size() * kTileBytes);
-        auto res = TilesRead(*file, loads->keys, pixels);
-        if (res) {
-            std::vector<const std::byte*> tilePixels(loads->keys.size());
-            for (std::size_t i = 0; i < tilePixels.size(); ++i) {
-                tilePixels[i] = pixels.data() + (i * kTileBytes);
-            }
-            res = GraphicsTilesUpload(loads->cells, tilePixels);
+        // Missing, or inserted by a queue the submit dropped.
+        bool missing = false;
+        for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
+            const auto found = canvas.tileIndices.find(TileKeyWithMip(key, mip));
+            missing = missing || found == canvas.tileIndices.end()
+                   || (!HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)
+                       && canvas.tiles[found->second].cell != kTileAtlasCellInvalid);
         }
-        for (const std::uint32_t i : loads->indices) {
-            TileState& tile = canvas.tiles[i];
-            if (res) {
-                tile.flags |= TileFlags::Loaded | TileFlags::Editable;
-            } else {
-                gAppState.freeAtlasCells.push_back(tile.cell);
-                tile.cell = kTileAtlasCellInvalid;
-            }
+        if (!missing) {
+            continue;
         }
-        if (!res) {
-            result = res;
+        // Queued first, so taking the cells cannot evict the source.
+        canvas.mipBuilds.push_back(key);
+        --budget;
+        for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
+            const TileKey mipKey = TileKeyWithMip(key, mip);
+            if (canvas.tileIndices.contains(mipKey)) {
+                continue;
+            }
+            const TileAtlasCell cell = TileAtlasCellTake(mip, canvas.id, mipKey);
+            if (cell == kTileAtlasCellInvalid) {
+                return;
+            }
+            TileInsert(canvas, mipKey, cell);
         }
     }
-    return result;
+}
+
+void TileAtlasRelieve() noexcept {
+    const TileAtlasState& atlas = gAppState.atlas;
+    std::uint32_t used = 0;
+    for (std::uint32_t page = 0; page < std::uint32_t{atlas.count} * kTileAtlasPages; ++page) {
+        used += static_cast<std::uint32_t>(std::popcount(atlas.used[page]));
+    }
+    if (used <= kAtlasEvictHigh) {
+        return;
+    }
+    ZoneScopedN("TileAtlasRelieve");
+    struct Candidate {
+        std::uint32_t visibleFrame;
+        std::uint32_t index;
+        Canvas canvas;
+    };
+    std::vector<Candidate> candidates;
+    for (const CanvasState& canvas : gAppState.canvases) {
+        if (canvas.id == kCanvasInvalid) {
+            continue;
+        }
+        for (std::uint32_t i = 0; i < canvas.tiles.size(); ++i) {
+            if (TileEvictable(canvas.id, canvas.tiles[i])) {
+                candidates.push_back({.visibleFrame = canvas.tiles[i].visibleFrame, .index = i, .canvas = canvas.id});
+            }
+        }
+    }
+    std::ranges::sort(candidates, {}, &Candidate::visibleFrame);
+    for (const Candidate& candidate : candidates) {
+        if (used <= kAtlasEvictLow) {
+            break;
+        }
+        TileState& tile = gAppState.canvases[candidate.canvas].tiles[candidate.index];
+        used -= TileAtlasLevelBlocks(TileAtlasCellLevel(tile.cell));
+        TileEvict(tile);
+    }
 }
 
 } // namespace
@@ -567,11 +731,14 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
     }
     rc = mdbx_cursor_get(cursor, &key, &value, MDBX_FIRST);
     for (; rc == MDBX_SUCCESS; rc = mdbx_cursor_get(cursor, &key, &value, MDBX_NEXT)) {
-        if (key.iov_len != sizeof(TileKey) || value.iov_len != kTileBytes) {
+        if (key.iov_len != sizeof(TileKey)) {
             break;
         }
         TileKey tileKey{};
         std::memcpy(&tileKey, key.iov_base, sizeof(tileKey));
+        if (value.iov_len != TileLevelBytes(TileKeyMip(tileKey))) {
+            break;
+        }
         canvas.tileIndices.emplace(tileKey, static_cast<std::uint32_t>(canvas.tiles.size()));
         canvas.tiles.push_back(TileState{
             .key = tileKey,
@@ -639,6 +806,8 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
         return std::unexpected(Error::CanvasSaveFailed);
     }
 
+    // Readers may still be loading tiles from the old file.
+    JobsWaitIdle();
     CanvasFileClose(state.file);
     state.path = path;
     CanvasMarkSaved(state);
@@ -656,9 +825,20 @@ void CanvasDestroy(Canvas canvas) noexcept {
     ZoneScopedN("CanvasDestroy");
     MIDORI_ASSERT(canvas < kCanvasMax && gAppState.canvases[canvas].id == canvas, "invalid canvas {}", canvas);
     CanvasState& state = gAppState.canvases[canvas];
+    // Its jobs use its envs; after them, its slots either have no copy recorded yet, or finish on the GPU orphaned.
+    JobsWaitIdle();
+    TileJobsFinish();
+    for (auto* slots : {&gAppState.transfers.uploads, &gAppState.transfers.downloads}) {
+        for (TileSlot& slot : *slots) {
+            if (slot.canvas == canvas) {
+                slot.state = slot.state == TileSlotState::Gpu ? TileSlotState::Gpu : TileSlotState::Free;
+                slot.canvas = kCanvasInvalid;
+            }
+        }
+    }
     for (const TileState& tile : state.tiles) {
         if (tile.cell != kTileAtlasCellInvalid) {
-            gAppState.freeAtlasCells.push_back(tile.cell);
+            TileAtlasCellFree(tile.cell);
         }
     }
     CanvasFileClose(state.file);
@@ -668,27 +848,26 @@ void CanvasDestroy(Canvas canvas) noexcept {
     std::construct_at(&state);
 }
 
-Result<void> CanvasTilesStream() noexcept {
+void CanvasTilesStream() noexcept {
     ZoneScopedN("CanvasTilesStream");
-    // Every canvas caches first: the atlas is shared, so any of them can take the cells it frees.
-    Result<void> result{};
+    TileJobsFinish();
+    TileSlotsAdvance();
+    TileUploadsPlace();
+    std::uint32_t mipBudget = kMipBuildsPerUpdate;
     for (CanvasState& canvas : gAppState.canvases) {
-        if (canvas.id == kCanvasInvalid) {
-            continue;
-        }
-        if (const auto res = TilesCacheOffscreen(canvas); !res) {
-            result = res;
+        if (canvas.id != kCanvasInvalid) {
+            TileCachesSchedule(canvas);
+            TileLoadsSchedule(canvas);
+            TileMipsSchedule(canvas, mipBudget);
         }
     }
-    for (CanvasState& canvas : gAppState.canvases) {
-        if (canvas.id == kCanvasInvalid) {
-            continue;
-        }
-        if (const auto res = TilesLoadVisible(canvas); !res) {
-            result = res;
-        }
-    }
-    return result;
+    TileAtlasRelieve();
+}
+
+Result<void> CanvasJobExecute(const Job& job) noexcept {
+    const std::span<const TileKey> key(&job.key, 1);
+    const std::span<std::byte> pixels(job.pixels, kTileBytes);
+    return job.type == JobType::TileRead ? TilesRead(job.file, key, pixels) : TilesWrite(job.file, key, pixels);
 }
 
 } // namespace Midori

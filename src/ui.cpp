@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -220,8 +221,10 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
 
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     constexpr auto kSize = static_cast<float>(kTileSize);
-    for (const TileState& tile : gAppState.canvases[view->canvas].tiles) {
-        if (!HasAnyFlag(tile.flags, TileFlags::Loaded)) {
+    const CanvasState& canvas = gAppState.canvases[view->canvas];
+    const TileMip level = TileLevelForZoom(viewport.zoomX);
+    for (const TileState& tile : canvas.tiles) {
+        if (!TileDrawn(canvas, tile, level)) {
             continue;
         }
         const TileGridPos gridPos = TileKeyGridPos(tile.key);
@@ -232,7 +235,8 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
 
         std::array<char, 64> text{};
         const auto layer = static_cast<Layer>((tile.key & kTileLayerMask) >> kTileLayerBitOffset);
-        std::format_to_n(text.data(), text.size() - 1, "#{}\n{}, {}\nL{}", tile.cell, gridPos.x, gridPos.y, layer);
+        std::format_to_n(text.data(), text.size() - 1, "p{} b{}\n{}, {}\nL{} m{}", TileAtlasCellPage(tile.cell),
+                         TileAtlasCellBlock(tile.cell), gridPos.x, gridPos.y, layer, TileKeyMip(tile.key));
         const ImVec2 center = toScreen(x + (kSize * 0.5f), y + (kSize * 0.5f));
         const ImVec2 textSize = ImGui::CalcTextSize(text.data());
         const ImVec2 pos(center.x - (textSize.x * 0.5f), center.y - (textSize.y * 0.5f));
@@ -242,7 +246,7 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
     }
 }
 
-// Every atlas cell at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
+// The chosen atlas's cells at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
 // drawn as straight alpha, so translucent paint looks darker than on the canvas.
 void TileAtlasWindow(Window window) noexcept {
     ImGui::SetNextWindowSize(ImVec2(400.0f, 450.0f), ImGuiCond_FirstUseEver);
@@ -250,10 +254,25 @@ void TileAtlasWindow(Window window) noexcept {
         ImGui::End();
         return;
     }
-    const std::size_t used = kTileAtlasCellMax - gAppState.freeAtlasCells.size();
-    ImGui::Text("%d / %d cells used", static_cast<int>(used), static_cast<int>(kTileAtlasCellMax));
+    const TileAtlasState& atlasState = gAppState.atlas;
+    const int atlasCount = atlasState.count;
+    int usedBlocks = 0;
+    for (std::size_t page = 0; page < std::size_t{atlasState.count} * kTileAtlasPages; ++page) {
+        usedBlocks += std::popcount(atlasState.used[page]);
+    }
+    ImGui::Text("%d of %d blocks used, %d atlases of %d", usedBlocks, atlasCount * kTileAtlasPages * kTileAtlasBlocks,
+                atlasCount, static_cast<int>(kTileAtlasMax));
+    const auto busy = [](const auto& slots) {
+        return static_cast<int>(
+            std::ranges::count_if(slots, [](const TileSlot& slot) { return slot.state != TileSlotState::Free; }));
+    };
+    ImGui::Text("%d uploads, %d downloads in flight of %d", busy(gAppState.transfers.uploads),
+                busy(gAppState.transfers.downloads), static_cast<int>(kTileTransferSlots));
+    int& atlas = gUiState.tileAtlasIndex[window];
+    ImGui::SliderInt("Atlas", &atlas, 0, atlasCount - 1, "%d", ImGuiSliderFlags_AlwaysClamp);
+    atlas = std::clamp(atlas, 0, atlasCount - 1);
 
-    const std::uint64_t texture = GraphicsTileAtlasDebugTexture();
+    const std::uint64_t texture = GraphicsTileAtlasDebugTexture(static_cast<TileAtlas>(atlas));
     if (texture == 0) {
         ImGui::TextUnformatted("The atlas texture could not be created.");
         ImGui::End();
@@ -264,9 +283,9 @@ void TileAtlasWindow(Window window) noexcept {
     const float cellSize = std::max(ImGui::GetContentRegionAvail().x / kColumns, 16.0f);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    for (TileAtlasCell cell = 0; cell < kTileAtlasCellMax; ++cell) {
-        const int cellRow = cell / kTileAtlasDebugColumns;
-        const auto column = static_cast<float>(cell % kTileAtlasDebugColumns);
+    for (TileAtlasPage slice = 0; slice < kTileAtlasPages; ++slice) {
+        const int cellRow = slice / kTileAtlasDebugColumns;
+        const auto column = static_cast<float>(slice % kTileAtlasDebugColumns);
         const auto row = static_cast<float>(cellRow);
         const ImVec2 min(origin.x + (column * cellSize), origin.y + (row * cellSize));
         const ImVec2 max(min.x + cellSize, min.y + cellSize);
@@ -316,6 +335,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.contexts[window] = context;
     gUiState.frameTimes[window] = 0;
     gUiState.tileAtlasShown[window] = false;
+    gUiState.tileAtlasIndex[window] = 0;
     gUiState.tileCellsShown[window] = false;
     return context;
 }

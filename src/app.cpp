@@ -1,5 +1,6 @@
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
+#include "midori/job.hpp"
 #include "midori/log.hpp"
 #include "midori/stroke.hpp"
 #include "midori/tile.hpp"
@@ -321,10 +322,25 @@ void TilesMarkVisible() noexcept {
         };
         const TileGridPos min{.x = tileOf(minX), .y = tileOf(minY)};
         const TileGridPos max{.x = tileOf(maxX), .y = tileOf(maxY)};
-        for (TileState& tile : gAppState.canvases[view.canvas].tiles) {
+        // The view's level, else level 0: where that level is missing, loading level 0 builds it; where it is
+        // still loading, a loaded level 0 keeps showing meanwhile.
+        CanvasState& canvas = gAppState.canvases[view.canvas];
+        const TileMip level = TileLevelForZoom(view.viewport.zoomX);
+        for (TileState& tile : canvas.tiles) {
             const TileGridPos gridPos = TileKeyGridPos(tile.key);
-            if (gridPos.x >= min.x && gridPos.x <= max.x && gridPos.y >= min.y && gridPos.y <= max.y) {
+            if (gridPos.x < min.x || gridPos.x > max.x || gridPos.y < min.y || gridPos.y > max.y) {
+                continue;
+            }
+            const TileMip mip = TileKeyMip(tile.key);
+            if (mip == level) {
                 tile.visibleFrame = frame;
+            } else if (mip == 0) {
+                const auto found = canvas.tileIndices.find(TileKeyWithMip(tile.key, level));
+                if (found == canvas.tileIndices.end()
+                    || (!HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)
+                        && HasAnyFlag(tile.flags, TileFlags::Loaded))) {
+                    tile.visibleFrame = frame;
+                }
             }
         }
     }
@@ -571,12 +587,10 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     MIDORI_LOG_INFO("{} v{} {}-{} {}", MIDORI_NAME, MIDORI_VERSION_STRING, MIDORI_COMPILER, MIDORI_ARCHITECTURE,
                     MIDORI_PROFILE);
 
-    gAppState.freeAtlasCells.reserve(kTileAtlasCellMax);
-    for (TileAtlasCell cell = kTileAtlasCellMax; cell-- > 0;) {
-        if (cell != kTileAtlasCellClear) {
-            gAppState.freeAtlasCells.push_back(cell);
-        }
-    }
+    // GraphicsInit created atlas 0. The clear page is held by no tile.
+    gAppState.atlas.count = 1;
+    gAppState.atlas.used[kTileAtlasPageClear] = ~std::uint64_t{0};
+    JobsInit(JobsInitInfo{.execute = CanvasJobExecute, .readerCount = 0});
 
     // One window per file, or one new canvas. A file that fails to open leaves a new canvas in its window.
     // The platform owns the windows and destroys them in PlatformTerminate.
@@ -680,11 +694,9 @@ void AppWindowFrame(Window window) noexcept {
 
 Result<void> AppUpdate() noexcept {
     ZoneScopedN("AppUpdate");
-    StrokeUpdate();
     TilesMarkVisible();
-    if (const auto res = CanvasTilesStream(); !res) {
-        MIDORI_LOG_ERROR("CanvasTilesStream failed: {}", ErrorMessage(res.error()));
-    }
+    StrokeUpdate();
+    CanvasTilesStream();
     const UiCommand command = std::exchange(gAppState.command, UiCommand::None);
     const Window window = gAppState.commandWindow;
     if (command == UiCommand::None || !WindowGetState(window)) {
@@ -728,6 +740,7 @@ void AppTerminate() noexcept {
             CanvasDestroy(canvas.id);
         }
     }
+    JobsTerminate();
 }
 
 Result<void> AppCanvasNew(Window window) noexcept {

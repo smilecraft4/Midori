@@ -25,8 +25,23 @@ constexpr float kDabSpacingMin = 0.25f;
     return std::max(2.0f * DabRadius(brush, pressure) * brush.spacing, kDabSpacingMin);
 }
 
+// How many updates an ended stroke waits for its tiles to stream in before what they missed is dropped.
+constexpr std::uint32_t kStrokeWaitUpdates = 300;
+
 [[nodiscard]] std::uint16_t TileTexel(float pos, TileAxis origin) noexcept {
     return static_cast<std::uint16_t>(std::clamp(static_cast<TileAxis>(pos) - origin, 0, kTileSize));
+}
+
+// Paint from here on goes into the tile: it gets its cell and a backup of what it holds now.
+void StrokeTileAttach(StrokeTile& tile, TileState& tileState) noexcept {
+    tile.cell = tileState.cell;
+    tile.backupCell = TileAtlasCellTake(TileKeyMip(tile.key), kCanvasInvalid, tile.key);
+    if (tile.backupCell == kTileAtlasCellInvalid) {
+        MIDORI_LOG_WARN("stroke: no atlas cell to back up tile {:#018x}, it stays unpainted", tile.key);
+        return;
+    }
+    tileState.flags = (tileState.flags | TileFlags::Modified) & ~TileFlags::CachedDisk;
+    ++tileState.edits;
 }
 
 void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
@@ -66,24 +81,17 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
                 }
                 found = canvas.tileIndices.find(key);
             }
-            TileState& tileState = canvas.tiles[found->second];
-            // Not streamed in: the atlas is full of visible tiles.
-            if (!HasAnyFlag(tileState.flags, TileFlags::Loaded) && tileState.cell == kTileAtlasCellInvalid) {
-                continue;
-            }
-            // A dab can reach past the view; taking the backup cell must not evict the tile itself.
-            tileState.visibleFrame = gAppState.frame;
             auto tile = std::ranges::find(stroke.tiles, key, &StrokeTile::key);
             if (tile == stroke.tiles.end()) {
-                const TileAtlasCell backup = TileAtlasCellTake();
-                if (backup == kTileAtlasCellInvalid) {
-                    MIDORI_LOG_WARN("stroke: no atlas cell to back up tile {:#018x}, it stays unpainted", key);
-                }
+                // Its level 1-3 tiles are stale from the first dab; they are rebuilt once the stroke is released.
+                // Deleting them moves tiles around, so the tile is looked up again.
+                TileMipsDelete(stroke.canvas, key);
+                found = canvas.tileIndices.find(key);
                 stroke.tiles.push_back(StrokeTile{
                     .key = key,
                     .firstDab = index,
-                    .cell = tileState.cell,
-                    .backupCell = backup,
+                    .cell = kTileAtlasCellInvalid,
+                    .backupCell = kTileAtlasCellInvalid,
                     .dirtyMinX = kTileSize,
                     .dirtyMinY = kTileSize,
                     .dirtyMaxX = 0,
@@ -91,8 +99,18 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
                     .backedUp = false,
                 });
                 tile = std::prev(stroke.tiles.end());
+                // A tile not streamed in yet waits, see StrokeUpdate: the GPU recomputes every dab since firstDab
+                // from its backup, so it joins late without losing any.
+                TileState& tileState = canvas.tiles[found->second];
+                if (tileState.cell != kTileAtlasCellInvalid) {
+                    // A dab can reach past the view; taking the backup cell must not evict the tile itself.
+                    tileState.visibleFrame = gAppState.frame;
+                    StrokeTileAttach(*tile, tileState);
+                }
             }
-            if (tile->backupCell == kTileAtlasCellInvalid) {
+            TileState& tileState = canvas.tiles[found->second];
+            tileState.visibleFrame = gAppState.frame;
+            if (tile->cell != kTileAtlasCellInvalid && tile->backupCell == kTileAtlasCellInvalid) {
                 continue;
             }
             const TileAxis originX = x * kTileSize;
@@ -101,8 +119,9 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             tile->dirtyMinY = std::min(tile->dirtyMinY, TileTexel(std::floor(dab.y - reach), originY));
             tile->dirtyMaxX = std::max(tile->dirtyMaxX, TileTexel(std::ceil(dab.x + reach), originX));
             tile->dirtyMaxY = std::max(tile->dirtyMaxY, TileTexel(std::ceil(dab.y + reach), originY));
-            tileState.flags = (tileState.flags | TileFlags::Modified) & ~TileFlags::CachedDisk;
-            ++tileState.edits;
+            if (tile->cell != kTileAtlasCellInvalid) {
+                ++tileState.edits;
+            }
             canvas.modified = true;
         }
     }
@@ -150,13 +169,43 @@ void StrokeTo(StrokePoint point) noexcept {
 
 void StrokeEnd() noexcept {
     gAppState.stroke.ended = true;
+    gAppState.stroke.endFrame = gAppState.frame;
 }
 
 void StrokeUpdate() noexcept {
-    const StrokeState& stroke = gAppState.stroke;
-    if (stroke.ended && std::ranges::none_of(stroke.tiles, StrokeTilePending)) {
-        StrokeRelease();
+    StrokeState& stroke = gAppState.stroke;
+    if (stroke.canvas == kCanvasInvalid) {
+        return;
     }
+    CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    bool waiting = false;
+    for (StrokeTile& tile : stroke.tiles) {
+        if (tile.cell != kTileAtlasCellInvalid) {
+            continue;
+        }
+        const auto found = canvas.tileIndices.find(tile.key);
+        if (found == canvas.tileIndices.end()) {
+            continue;
+        }
+        TileState& tileState = canvas.tiles[found->second];
+        // Wanted every update, so streaming loads it.
+        tileState.visibleFrame = gAppState.frame;
+        if (tileState.cell != kTileAtlasCellInvalid) {
+            StrokeTileAttach(tile, tileState);
+        } else {
+            waiting = true;
+        }
+    }
+    if (!stroke.ended || std::ranges::any_of(stroke.tiles, StrokeTilePending)) {
+        return;
+    }
+    if (waiting && gAppState.frame - stroke.endFrame < kStrokeWaitUpdates) {
+        return;
+    }
+    if (waiting) {
+        MIDORI_LOG_WARN("stroke: tiles not streamed in after {} updates stay unpainted", kStrokeWaitUpdates);
+    }
+    StrokeRelease();
 }
 
 void StrokeRelease() noexcept {
@@ -164,7 +213,7 @@ void StrokeRelease() noexcept {
     // The GPU may still read a backup in a frame in flight; its next fill is recorded after that frame.
     for (const StrokeTile& tile : stroke.tiles) {
         if (tile.backupCell != kTileAtlasCellInvalid) {
-            gAppState.freeAtlasCells.push_back(tile.backupCell);
+            TileAtlasCellFree(tile.backupCell);
         }
     }
     stroke.dabs.clear();

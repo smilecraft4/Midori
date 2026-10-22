@@ -46,8 +46,8 @@ struct StrokeBeginInfo {
 struct StrokeTile {
     TileKey key;
     std::uint32_t firstDab;   // the dabs before it miss the tile
-    TileAtlasCell cell;
-    TileAtlasCell backupCell; // the tile before the stroke; kTileAtlasCellInvalid when the atlas was full
+    TileAtlasCell cell;       // kTileAtlasCellInvalid while waiting for the tile to stream in
+    TileAtlasCell backupCell; // the tile before the stroke; kTileAtlasCellInvalid when waiting or the atlas was full
     std::uint16_t dirtyMinX;  // texels to recompute, max exclusive, empty when min >= max
     std::uint16_t dirtyMinY;
     std::uint16_t dirtyMaxX;
@@ -69,7 +69,8 @@ struct StrokeState {
     CanvasView view{kCanvasViewInvalid};
     StrokeMode mode{};
     BlendMode blendMode{};
-    bool ended{}; // the GPU records what is left, then StrokeUpdate frees the backups
+    std::uint32_t endFrame{}; // gAppState.frame when it ended
+    bool ended{};             // the GPU records what is left, then StrokeUpdate frees the backups
 };
 
 // The GPU has a backup or dirty texels to record.
@@ -81,12 +82,14 @@ struct StrokeState {
     return stroke.canvas == canvas && std::ranges::find(stroke.tiles, key, &StrokeTile::key) != stroke.tiles.end();
 }
 
-// Edits the loaded tiles of `layer`. Paint creates the tiles missing under the stroke while atlas cells can be
-// taken; erase skips them.
+// Edits the tiles of `layer` and deletes their level 1-3 tiles. Paint creates the tiles missing under the stroke
+// while atlas cells can be taken; erase skips them. A tile not streamed in waits for it and joins late.
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
 void StrokeTo(StrokePoint point) noexcept;
 void StrokeEnd() noexcept;
-// Frees an ended stroke once the GPU recorded all of it.
+// Once per update, after the frame's visible tiles are marked: attaches the waiting tiles that streamed in and
+// keeps the others wanted. Frees an ended stroke once the GPU recorded all of it; what waiting tiles missed is
+// dropped if they take too long.
 void StrokeUpdate() noexcept;
 // Frees the stroke now, whatever the GPU has not recorded yet is lost.
 void StrokeRelease() noexcept;

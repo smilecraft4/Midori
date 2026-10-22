@@ -5,12 +5,12 @@
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
 #include "midori/stroke.hpp"
+#include "midori/tile.hpp"
 #include "midori/tool.hpp"
 #include "midori/ui.hpp"
 #include <array>
 #include <filesystem>
 #include <span>
-#include <vector>
 
 namespace Midori {
 
@@ -40,7 +40,8 @@ struct AppState {
     std::array<WindowState, kWindowMax> windows;
     std::array<CanvasState, kCanvasMax> canvases;
     std::array<CanvasViewState, kCanvasViewMax> canvasViews;
-    std::vector<TileAtlasCell> freeAtlasCells; // of the tile pool every canvas shares
+    TileAtlasState atlas;
+    TileTransfersState transfers;
     NavigateState navigate;
     StrokeState stroke;
     ToolsState tools;

@@ -17,6 +17,8 @@ struct MDBX_env;
 
 namespace Midori {
 
+struct Job;
+
 using Layer = std::uint16_t;
 constexpr Layer kLayerMax = 0b111111111111 + 1;
 constexpr Layer kLayerInvalid = std::numeric_limits<Layer>::max();
@@ -138,11 +140,82 @@ enum struct TileTransfer : std::uint8_t {
 template<>
 inline constexpr bool kEnumFlags<TileTransfer> = true;
 
-using TileAtlasCell = std::uint16_t;
+// The tile pool every canvas shares: up to kTileAtlasMax atlases of kTileAtlasPages pages, created as needed. A
+// page is one 256^2 slice with 4 mips, numbered atlas * kTileAtlasPages + slice. Mirrored in atlas.hlsli.
+using TileAtlas = std::uint8_t;
+constexpr TileAtlas kTileAtlasMax = 16;
+using TileAtlasPage = std::uint16_t;
+constexpr TileAtlasPage kTileAtlasPages = 64;
+constexpr TileAtlasPage kTileAtlasPageMax = kTileAtlasMax * kTileAtlasPages;
+// Holds the transparent cell new tiles start from. Never handed out.
+constexpr TileAtlasPage kTileAtlasPageClear = 0;
+
+[[nodiscard]] constexpr TileAtlas TileAtlasPageAtlas(TileAtlasPage page) noexcept {
+    return static_cast<TileAtlas>(page / kTileAtlasPages);
+}
+
+[[nodiscard]] constexpr TileAtlasPage TileAtlasPageSlice(TileAtlasPage page) noexcept {
+    return page % kTileAtlasPages;
+}
+
+// A page is 64 blocks of 32^2 in Morton order. A level-k tile takes an aligned cell of 256 >> k, a run of
+// 64 >> 2k blocks; the page's mips give its coarser levels, and box mips stay inside the cell.
+constexpr std::uint8_t kTileAtlasBlocks = 64;
+
+// One allocation: page << 8 | Morton index of its first block << 2 | level.
+using TileAtlasCell = std::uint32_t;
 constexpr TileAtlasCell kTileAtlasCellInvalid = std::numeric_limits<TileAtlasCell>::max();
-constexpr TileAtlasCell kTileAtlasCellMax = 64; // one tile pool shared by every canvas
-// Transparent: new tiles start as a copy of it. Never handed out.
-constexpr TileAtlasCell kTileAtlasCellClear = 0;
+
+[[nodiscard]] constexpr TileAtlasCell TileAtlasCellMake(TileAtlasPage page, std::uint8_t block,
+                                                        std::uint8_t level) noexcept {
+    return (TileAtlasCell{page} << 8) | (TileAtlasCell{block} << 2) | level;
+}
+
+[[nodiscard]] constexpr TileAtlasPage TileAtlasCellPage(TileAtlasCell cell) noexcept {
+    return static_cast<TileAtlasPage>(cell >> 8);
+}
+
+[[nodiscard]] constexpr std::uint8_t TileAtlasCellBlock(TileAtlasCell cell) noexcept {
+    return static_cast<std::uint8_t>((cell >> 2) & 63);
+}
+
+[[nodiscard]] constexpr std::uint8_t TileAtlasCellLevel(TileAtlasCell cell) noexcept {
+    return static_cast<std::uint8_t>(cell & 3);
+}
+
+[[nodiscard]] constexpr std::uint8_t TileAtlasLevelBlocks(std::uint8_t level) noexcept {
+    return static_cast<std::uint8_t>(kTileAtlasBlocks >> (2 * level));
+}
+
+constexpr std::uint32_t kTileAtlasBlockSize = 32; // texels
+
+// Texel origin of a cell in its page, from the Morton index of its first block. Mirrored in atlas.hlsli.
+[[nodiscard]] constexpr std::uint32_t TileAtlasCellX(TileAtlasCell cell) noexcept {
+    const std::uint32_t i = TileAtlasCellBlock(cell);
+    return ((i & 1) | ((i >> 1) & 2) | ((i >> 2) & 4)) * kTileAtlasBlockSize;
+}
+
+[[nodiscard]] constexpr std::uint32_t TileAtlasCellY(TileAtlasCell cell) noexcept {
+    const std::uint32_t i = TileAtlasCellBlock(cell);
+    return (((i >> 1) & 1) | ((i >> 2) & 2) | ((i >> 3) & 4)) * kTileAtlasBlockSize;
+}
+
+constexpr TileAtlasCell kTileAtlasCellClear = TileAtlasCellMake(kTileAtlasPageClear, 0, 0);
+
+// Who holds a block. A tile is found through its canvas's tileIndices; kCanvasInvalid marks a block held by
+// no tile (the clear cell, a stroke backup), which is never evicted.
+struct TileAtlasOwner {
+    TileKey key;
+    Canvas canvas{kCanvasInvalid};
+    std::uint8_t level; // of the owner's whole cell, which may span more blocks than one lookup scans
+};
+
+// Owned by the main thread, in AppState. Only the pages of created atlases are in use.
+struct TileAtlasState {
+    std::array<std::uint64_t, kTileAtlasPageMax> used; // per page, bit i set: Morton block i is taken
+    std::array<std::array<TileAtlasOwner, kTileAtlasBlocks>, kTileAtlasPageMax> owners;
+    TileAtlas count{};                                 // atlases created by the graphics backend, [0, count)
+};
 
 // A tile not visible in the current frame may lose its atlas cell; the lowest `visibleFrame` loses it first.
 struct TileState {
@@ -183,6 +256,7 @@ struct CanvasState {
     std::vector<TileGridPosState> gridPositions;
     std::unordered_map<TileKey, std::uint32_t> gridPosIndices;
     std::vector<TileKey> creates;        // new tiles waiting for their atlas cell to be filled
+    std::vector<TileKey> mipBuilds;      // level-0 tiles whose new level 1-3 tiles the next submit builds
     std::vector<TileKey> tileDeletes;    // tiles in the file deleted since the last save
     std::vector<TileKey> uploads;        // RAM cached tiles waiting for an upload slot
     std::vector<TileRead> reads;         // tiles waiting for a read + decompress + upload job
@@ -194,7 +268,7 @@ struct CanvasState {
     std::vector<Layer> freeLayers;       // largest first, so pop_back gives the smallest
     std::array<LayerState, kLayerMax> layers;
     std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
-    Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 0.5f}; // under every layer, not saved yet
+    Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}; // under every layer, not saved yet
     CanvasFile file;
     CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
     Layer largestLayer{};
@@ -211,13 +285,16 @@ struct CanvasState {
 [[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
 // Writes the whole canvas into a new file that then replaces `path`, and keeps it as the canvas's file.
 [[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
-// Unsaved changes are lost.
+// Unsaved changes are lost. Waits for every job.
 void CanvasDestroy(Canvas canvas) noexcept;
-// Call once the tiles shown this frame have `visibleFrame` set. Writes the loaded tiles no longer visible whose
-// content is stored nowhere into their canvas's cache, which makes them evictable, then loads the visible tiles
-// that are not, from the cache or else the file. Waits for the GPU when it transfers anything. Visible tiles past
-// what the atlas holds stay unloaded.
-[[nodiscard]] Result<void> CanvasTilesStream() noexcept;
+// Once per update, after the tiles shown this frame have `visibleFrame` set; never waits. Takes the finished jobs
+// and GPU copies, then sends the loaded tiles no longer visible whose content is stored nowhere to their canvas's
+// cache (which makes them evictable), and reads the visible tiles that are not loaded, from the cache or else the
+// file. Above the occupancy watermark it evicts the tiles shown the longest ago. Transfers are bounded by the free
+// slots; visible tiles past what the atlas holds stay unloaded.
+void CanvasTilesStream() noexcept;
+// The JobExecuteFn of tile reads and writes, on a job thread.
+[[nodiscard]] Result<void> CanvasJobExecute(const Job& job) noexcept;
 
 struct CanvasViewCreateInfo {
     Viewport viewport{};

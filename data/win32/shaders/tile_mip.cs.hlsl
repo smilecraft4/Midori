@@ -1,11 +1,36 @@
-#include "tile_ops.hlsli"
+#include "atlas.hlsli"
 
-// Builds mip + 1 from mip with a 2x2 box filter; premultiplied, so averaging is correct.
-[RootSignature(TILE_OPS_ROOT_SIGNATURE)]
-[numthreads(kTileOpsGroupSize, kTileOpsGroupSize, 1)]
+// Builds a level-k tile from its level-0 tile, each texel the box average of 2^k x 2^k; premultiplied, so the
+// average is correct. One UAV per atlas, volatile like the tile pipeline's SRVs.
+#define TILE_MIP_ROOT_SIGNATURE                                                                        \
+    "RootConstants(num32BitConstants = 2, b0),"                                                        \
+    "DescriptorTable(UAV(u0, numDescriptors = 16, flags = DESCRIPTORS_VOLATILE))"
+
+static const uint kTileMipGroupSize = 8;
+
+cbuffer TileMip : register(b0) {
+    uint srcCell; // level 0
+    uint dstCell;
+};
+
+RWTexture2DArray<float4> tilePools[kTileAtlasMax] : register(u0);
+
+[RootSignature(TILE_MIP_ROOT_SIGNATURE)]
+[numthreads(kTileMipGroupSize, kTileMipGroupSize, 1)]
 void CSMain(uint2 id : SV_DispatchThreadID) {
-    const uint2 p = id * 2;
-    const float4 sum = dstMips[mip][uint3(p, dstSlice)] + dstMips[mip][uint3(p + uint2(1, 0), dstSlice)]
-                     + dstMips[mip][uint3(p + uint2(0, 1), dstSlice)] + dstMips[mip][uint3(p + uint2(1, 1), dstSlice)];
-    dstMips[mip + 1][uint3(id, dstSlice)] = sum * 0.25;
+    if (any(id >= TileAtlasCellSize(dstCell))) {
+        return;
+    }
+    const uint srcPage = TileAtlasCellPage(srcCell);
+    const uint dstPage = TileAtlasCellPage(dstCell);
+    const uint scale = 1u << TileAtlasCellLevel(dstCell);
+    const uint2 src = TileAtlasCellOrigin(srcCell) + id * scale;
+    float4 sum = 0.0;
+    for (uint y = 0; y < scale; ++y) {
+        for (uint x = 0; x < scale; ++x) {
+            sum += tilePools[TileAtlasPageAtlas(srcPage)][uint3(src + uint2(x, y), TileAtlasPageSlice(srcPage))];
+        }
+    }
+    tilePools[TileAtlasPageAtlas(dstPage)][uint3(TileAtlasCellOrigin(dstCell) + id, TileAtlasPageSlice(dstPage))] =
+        sum / float(scale * scale);
 }
