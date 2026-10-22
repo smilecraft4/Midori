@@ -109,6 +109,9 @@ void AppTerminate() noexcept;
 [[nodiscard]] Result<void> AppUndo(Window window) noexcept;
 [[nodiscard]] Result<void> AppRedo(Window window) noexcept;
 
+// Borderless over the window's monitor, or back to how it was.
+[[nodiscard]] Result<void> AppToggleFullscreen(Window window) noexcept;
+
 [[nodiscard]] Result<void> AppPaintMode() noexcept;
 [[nodiscard]] Result<void> AppEraseMode() noexcept;
 [[nodiscard]] Result<void> AppSelectMode() noexcept;

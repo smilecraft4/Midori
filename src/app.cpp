@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <format>
 #include <limits>
+#include <numbers>
 #include <string>
 #include <utility>
 #include <string_view>
@@ -29,6 +30,7 @@ namespace {
 
 // Pointer travel, in DIPs, that doubles or halves the zoom.
 constexpr float kZoomDragDips = 200.0f;
+constexpr float kRotateSnap = std::numbers::pi_v<float> / 12.0f; // 15 degrees
 
 constexpr std::string_view kCanvasTypeName = "Midori canvas";
 constexpr std::string_view kCanvasExtension = "mori";
@@ -229,7 +231,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 }
 
 // Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating
-// while held. B paints, E erases.
+// while held. B paints, E erases, F11 toggles fullscreen, Tab hides or shows the UI.
 [[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
     const bool repeats = key.key == Key::Z || key.key == Key::Y;
     if (key.inputState != InputState::Press && !(repeats && key.inputState == InputState::Hold)) {
@@ -241,6 +243,13 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
                 return AppPaintMode();
             case Key::E:
                 return AppEraseMode();
+            case Key::F11:
+                return AppToggleFullscreen(key.window);
+            case Key::Tab:
+                if (key.window < kWindowMax) {
+                    gUiState.hidden[key.window] = !gUiState.hidden[key.window];
+                }
+                return {};
             default:
                 return {};
         }
@@ -366,6 +375,22 @@ void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
     };
 }
 
+// The zoom nearest `zoom` at which texels land on whole pixels or in small ratios at some level: whole
+// magnifications above 1, else 2^-k or 2/3 * 2^-k (1, 2/3, 1/2, 1/3, 1/4, 1/6...).
+[[nodiscard]] float ZoomSnap(float zoom) noexcept {
+    if (zoom >= 1.0f) {
+        return std::round(zoom);
+    }
+    const float upper = std::exp2(-std::floor(-std::log2(zoom)));
+    float best = upper;
+    for (const float candidate : {upper * (2.0f / 3.0f), upper * 0.5f}) {
+        if (std::abs(std::log(zoom / candidate)) < std::abs(std::log(zoom / best))) {
+            best = candidate;
+        }
+    }
+    return best;
+}
+
 void NavigateUpdate() noexcept {
     const NavigateState& navigate = gAppState.navigate;
     CanvasViewState& view = gAppState.canvasViews[navigate.view];
@@ -383,7 +408,11 @@ void NavigateUpdate() noexcept {
             break;
         case NavigateMode::Zoom: {
             // Right or up zooms in.
-            const float amount = std::exp2(((x - startX) - (y - startY)) / kZoomDragDips);
+            float amount = std::exp2(((x - startX) - (y - startY)) / kZoomDragDips);
+            if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt)) {
+                const float zoom = std::abs(start.zoomX);
+                amount = ZoomSnap(zoom * amount) / zoom;
+            }
             view.viewport = ViewportZoom(start, amount, amount);
             break;
         }
@@ -392,19 +421,24 @@ void NavigateUpdate() noexcept {
             const bool mirrored = (start.zoomX < 0.0f) != (start.zoomY < 0.0f);
             const float turn = std::atan2(y, x) - std::atan2(startY, startX);
             view.viewport = ViewportRotate(start, mirrored ? -turn : turn);
+            if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt)) {
+                view.viewport.rot = std::remainder(std::round(view.viewport.rot / kRotateSnap) * kRotateSnap,
+                                                   2.0f * std::numbers::pi_v<float>);
+            }
             break;
         }
         case NavigateMode::None:
             break;
     }
+    view.viewport = ViewportSnap(view.viewport, windowState->dpiScale);
 }
 
 void NavigateEnd() noexcept {
     gAppState.navigate = {};
 }
 
-// Space + left drag pans, Ctrl+Space + drag zooms and Shift+Space + drag rotates, around the view center.
-// Space+R resets zoom and rotation.
+// Space + left drag pans, Ctrl+Space + drag zooms and Shift+Space + drag rotates, around the view center. Holding Alt
+// snaps the zoom (ZoomSnap) and the rotation to 15 degrees. Space+R resets zoom and rotation.
 // Pressing or releasing Ctrl or Shift mid-drag switches mode from where the pointer is. Returns true when
 // the event belongs to navigation. Releases and focus loss are handled even when the UI wants them, so a
 // drag never sticks.
@@ -423,7 +457,10 @@ void NavigateEnd() noexcept {
             if (const CanvasView view = WindowCanvasView(event.key.window);
                 event.key.key == Key::R && event.key.inputState == InputState::Press && app.spaceDown
                 && view != kCanvasViewInvalid && !uiWants) {
-                app.canvasViews[view].viewport = ViewportResetZoomRotation(app.canvasViews[view].viewport);
+                const auto windowState = WindowGetState(event.key.window);
+                const float dpiScale = windowState ? windowState->dpiScale : 1.0f;
+                app.canvasViews[view].viewport =
+                    ViewportSnap(ViewportResetZoomRotation(app.canvasViews[view].viewport), dpiScale);
                 // A drag in progress continues from the reset view instead of undoing it.
                 if (app.navigate.mode != NavigateMode::None) {
                     NavigateBegin(app.navigate.view, app.navigate.mode);
@@ -433,6 +470,9 @@ void NavigateEnd() noexcept {
             const NavigateMode mode = NavigateModeFromMods(app.keyMods);
             if (app.navigate.mode != NavigateMode::None && app.navigate.mode != mode) {
                 NavigateBegin(app.navigate.view, mode);
+            } else if (app.navigate.mode != NavigateMode::None) {
+                // Alt pressed or released snaps or frees the view right away.
+                NavigateUpdate();
             }
             return space && (wasDown || app.spaceDown);
         }
@@ -491,11 +531,11 @@ void NavigateEnd() noexcept {
     return kBrushAdjustRangeDips * dpiScale;
 }
 
-// Alt snaps to a power of two.
+// Ctrl snaps to a power of two.
 void BrushAdjustApply() noexcept {
     const BrushAdjustState& adjust = gAppState.brushAdjust;
     float value = adjust.value;
-    if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && value > 0.0f) {
+    if (HasAnyFlag(gAppState.keyMods, KeyMod::Ctrl) && value > 0.0f) {
         value = std::exp2(std::round(std::log2(value)));
     }
     value = adjust.mode == BrushAdjustMode::Radius ? std::clamp(value, kBrushRadiusMin, kBrushRadiusMax)
@@ -510,8 +550,8 @@ void BrushAdjustCancel() noexcept {
 }
 
 // F sets the current tool's brush radius, Shift+F its opacity and Ctrl+F its hardness, from the pointer's distance
-// to a center placed so the current value starts under the pointer. Holding Shift moves it 10 times slower, Alt
-// snaps it to powers of two. Left click or Enter keeps the value, right click or Escape restores it. While
+// to a center placed so the current value starts under the pointer. Holding Shift moves it 10 times slower and
+// Ctrl snaps it to powers of two, together or not. Left click or Enter keeps the value, right click or Escape restores it. While
 // adjusting, every input event belongs to it.
 [[nodiscard]] bool BrushAdjust(const Event& event, bool uiWants) noexcept {
     AppState& app = gAppState;
@@ -828,6 +868,8 @@ Result<void> AppUpdate() noexcept {
             return AppUndo(window);
         case UiCommand::Redo:
             return AppRedo(window);
+        case UiCommand::ToggleFullscreen:
+            return AppToggleFullscreen(window);
         case UiCommand::Exit:
             // Closes every window, stopping at the first the user keeps open.
             for (Window other = 0; other < kWindowMax; ++other) {
@@ -930,6 +972,15 @@ Result<void> AppRedo(Window window) noexcept {
         ++history.pending;
     }
     return {};
+}
+
+Result<void> AppToggleFullscreen(Window window) noexcept {
+    const auto state = WindowGetState(window);
+    if (!state) {
+        return std::unexpected(state.error());
+    }
+    const bool fullscreen = state->displayMode == WindowDisplayMode::Fullscreened;
+    return WindowSetDisplayMode(window, fullscreen ? WindowDisplayMode::Normal : WindowDisplayMode::Fullscreened);
 }
 
 // A stroke in progress keeps the tool it began with.

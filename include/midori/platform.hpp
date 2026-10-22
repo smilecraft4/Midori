@@ -60,7 +60,7 @@ struct WindowState {
 [[nodiscard]] Result<WindowState> WindowGetState(Window window) noexcept;
 [[nodiscard]] Result<void> WindowSetTitle(Window window, std::string_view title) noexcept;
 // Fullscreened is borderless, covering the window's current monitor; leaving it restores the exact
-// previous placement.
+// previous placement, maximized included when leaving for Normal.
 [[nodiscard]] Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) noexcept;
 
 [[nodiscard]] Result<void*> WindowGetNativeHandle(Window window) noexcept;

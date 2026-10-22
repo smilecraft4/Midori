@@ -36,6 +36,23 @@ Viewport ViewportRotate(Viewport viewport, float amount) noexcept {
     return viewport;
 }
 
+Viewport ViewportSnap(Viewport viewport, float dpiScale) noexcept {
+    const double c = std::cos(static_cast<double>(viewport.rot));
+    const double s = std::sin(static_cast<double>(viewport.rot));
+    const double scaleX = static_cast<double>(viewport.zoomX) * dpiScale;
+    const double scaleY = static_cast<double>(viewport.zoomY) * dpiScale;
+    const double anchorX = std::floor(viewport.posX);
+    const double anchorY = std::floor(viewport.posY);
+    const double dx = anchorX - viewport.posX;
+    const double dy = anchorY - viewport.posY;
+    // The anchor in physical pixels from the view center, as Viewport maps it, rounded, then mapped back.
+    const double pixelX = std::round(((dx * c) - (dy * s)) * scaleX) / scaleX;
+    const double pixelY = std::round(((dx * s) + (dy * c)) * scaleY) / scaleY;
+    viewport.posX = anchorX - ((pixelX * c) + (pixelY * s));
+    viewport.posY = anchorY - ((pixelY * c) - (pixelX * s));
+    return viewport;
+}
+
 Viewport ViewportResetZoomRotation(Viewport viewport) noexcept {
     viewport.zoomX = std::copysign(1.0f, viewport.zoomX);
     viewport.zoomY = std::copysign(1.0f, viewport.zoomY);

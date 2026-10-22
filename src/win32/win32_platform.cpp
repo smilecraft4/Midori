@@ -995,6 +995,10 @@ Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) 
         SetWindowPlacement(slot.hwnd, &slot.restore);
         SetWindowPos(slot.hwnd, nullptr, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        // The placement brings back maximized too, which showing it normal would undo.
+        if (displayMode == WindowDisplayMode::Normal) {
+            return {};
+        }
     }
 
     switch (displayMode) {

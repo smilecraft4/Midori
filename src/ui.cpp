@@ -387,6 +387,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.tileAtlasShown[window] = false;
     gUiState.tileAtlasIndex[window] = 0;
     gUiState.tileCellsShown[window] = false;
+    gUiState.hidden[window] = false;
     return context;
 }
 
@@ -477,6 +478,11 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
 
     ImGui::NewFrame();
     // ImGui::ShowDemoWindow();
+    if (gUiState.hidden[window]) {
+        BrushAdjustOverlay(window, *state, tools);
+        ImGui::Render();
+        return UiCommand::None;
+    }
     UiCommand command = UiCommand::None;
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
@@ -508,6 +514,13 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Window")) {
+            if (ImGui::MenuItem("Fullscreen", "F11", state->displayMode == WindowDisplayMode::Fullscreened)) {
+                command = UiCommand::ToggleFullscreen;
+            }
+            ImGui::MenuItem("Hide UI", "Tab", &gUiState.hidden[window]);
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Debug")) {
             ImGui::MenuItem("Tile atlas", nullptr, &gUiState.tileAtlasShown[window]);
             ImGui::MenuItem("Tile cells on canvas", nullptr, &gUiState.tileCellsShown[window]);
@@ -519,6 +532,13 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
         if (ImGui::Begin("View")) {
             ImGui::Text("Zoom %.1f%%  Rotation %.1f deg", std::abs(viewport->zoomX) * 100.0f,
                         viewport->rot * 180.0f / std::numbers::pi_v<float>);
+            // The pointer in canvas units, as painting places it.
+            const float centerX = std::floor(static_cast<float>(state->width) * 0.5f);
+            const float centerY = std::floor(static_cast<float>(state->height) * 0.5f);
+            const Viewport under = ViewportMove(*viewport, -(gAppState.pointerX - centerX) / state->dpiScale,
+                                                -(gAppState.pointerY - centerY) / state->dpiScale);
+            ImGui::Text("Center %.1f, %.1f", viewport->posX, viewport->posY);
+            ImGui::Text("Pointer %.1f, %.1f", under.posX, under.posY);
             if (ImGui::Button("Flip X")) {
                 *viewport = ViewportZoom(*viewport, -1.0f, 1.0f);
             }
@@ -528,7 +548,7 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
             }
             ImGui::SameLine();
             if (ImGui::Button("Reset (Space+R)")) {
-                *viewport = ViewportResetZoomRotation(*viewport);
+                *viewport = ViewportSnap(ViewportResetZoomRotation(*viewport), state->dpiScale);
             }
             ImGui::ColorEdit4("Background", &backgroundColor->r);
         }

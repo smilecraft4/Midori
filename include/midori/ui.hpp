@@ -23,6 +23,7 @@ struct UiState {
     std::array<bool, kWindowMax> tileAtlasShown;     // the tile atlas debug window is open
     std::array<int, kWindowMax> tileAtlasIndex;      // the atlas it shows
     std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
+    std::array<bool, kWindowMax> hidden;             // no menu, panel or debug overlay, only the brush adjust
 };
 
 extern UiState gUiState;
@@ -48,6 +49,7 @@ enum struct UiCommand : std::uint8_t {
     Exit,
     Undo,
     Redo,
+    ToggleFullscreen,
 };
 
 // Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
