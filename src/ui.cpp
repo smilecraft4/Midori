@@ -1,10 +1,15 @@
 #include "midori/ui.hpp"
+#include "midori/app.hpp"
+#include "midori/graphics.hpp"
 #include "midori/log.hpp"
+#include "midori/tile.hpp"
 #include "midori/tool.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <format>
 #include <numbers>
 #include <utility>
 
@@ -192,6 +197,87 @@ void BrushEdit(BrushState& brush) noexcept {
     ImGui::Checkbox("Pressure opacity", &brush.pressureOpacity);
 }
 
+// Outlines every tile of the window's canvas view on screen, labeled with its atlas cell and grid position. Drawn
+// behind the UI windows, over the canvas.
+void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
+    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
+    if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
+        return;
+    }
+    // Canvas to view DIPs as in the renderer, then to client pixels around the floored center.
+    const Viewport& viewport = view->viewport;
+    const float c = std::cos(viewport.rot);
+    const float s = std::sin(viewport.rot);
+    const float centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
+    const float centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
+    const float scale = windowState.dpiScale;
+    const auto toScreen = [&](float x, float y) {
+        const float dx = x - viewport.posX;
+        const float dy = y - viewport.posY;
+        return ImVec2(centerX + (((dx * c) - (dy * s)) * viewport.zoomX * scale),
+                      centerY + (((dx * s) + (dy * c)) * viewport.zoomY * scale));
+    };
+
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    constexpr auto kSize = static_cast<float>(kTileSize);
+    for (const TileState& tile : gAppState.canvases[view->canvas].tiles) {
+        if (!HasAnyFlag(tile.flags, TileFlags::Loaded)) {
+            continue;
+        }
+        const TileGridPos gridPos = TileKeyGridPos(tile.key);
+        const float x = static_cast<float>(gridPos.x) * kSize;
+        const float y = static_cast<float>(gridPos.y) * kSize;
+        drawList->AddQuad(toScreen(x, y), toScreen(x + kSize, y), toScreen(x + kSize, y + kSize),
+                          toScreen(x, y + kSize), IM_COL32(255, 0, 255, 255));
+
+        std::array<char, 64> text{};
+        const auto layer = static_cast<Layer>((tile.key & kTileLayerMask) >> kTileLayerBitOffset);
+        std::format_to_n(text.data(), text.size() - 1, "#{}\n{}, {}\nL{}", tile.cell, gridPos.x, gridPos.y, layer);
+        const ImVec2 center = toScreen(x + (kSize * 0.5f), y + (kSize * 0.5f));
+        const ImVec2 textSize = ImGui::CalcTextSize(text.data());
+        const ImVec2 pos(center.x - (textSize.x * 0.5f), center.y - (textSize.y * 0.5f));
+        // Shadowed so it reads over any paint.
+        drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text.data());
+        drawList->AddText(pos, IM_COL32_WHITE, text.data());
+    }
+}
+
+// Every atlas cell at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
+// drawn as straight alpha, so translucent paint looks darker than on the canvas.
+void TileAtlasWindow(Window window) noexcept {
+    ImGui::SetNextWindowSize(ImVec2(400.0f, 450.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Tile atlas", &gUiState.tileAtlasShown[window])) {
+        ImGui::End();
+        return;
+    }
+    const std::size_t used = kTileAtlasCellMax - gAppState.freeAtlasCells.size();
+    ImGui::Text("%d / %d cells used", static_cast<int>(used), static_cast<int>(kTileAtlasCellMax));
+
+    const std::uint64_t texture = GraphicsTileAtlasDebugTexture();
+    if (texture == 0) {
+        ImGui::TextUnformatted("The atlas texture could not be created.");
+        ImGui::End();
+        return;
+    }
+    constexpr float kColumns = kTileAtlasDebugColumns;
+    constexpr float kRows = kTileAtlasDebugRows;
+    const float cellSize = std::max(ImGui::GetContentRegionAvail().x / kColumns, 16.0f);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    for (TileAtlasCell cell = 0; cell < kTileAtlasCellMax; ++cell) {
+        const int cellRow = cell / kTileAtlasDebugColumns;
+        const auto column = static_cast<float>(cell % kTileAtlasDebugColumns);
+        const auto row = static_cast<float>(cellRow);
+        const ImVec2 min(origin.x + (column * cellSize), origin.y + (row * cellSize));
+        const ImVec2 max(min.x + cellSize, min.y + cellSize);
+        drawList->AddImage(ImTextureRef(texture), min, max, ImVec2(column / kColumns, row / kRows),
+                           ImVec2((column + 1.0f) / kColumns, (row + 1.0f) / kRows));
+        drawList->AddRect(min, max, IM_COL32(128, 128, 128, 255));
+    }
+    ImGui::Dummy(ImVec2(cellSize * kColumns, cellSize * kRows));
+    ImGui::End();
+}
+
 // ScaleAllSizes is not reversible, so a DPI change rebuilds the style from the defaults.
 void ApplyDpiScale(float dpiScale) noexcept {
     ImGuiStyle style{};
@@ -229,6 +315,8 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
 
     gUiState.contexts[window] = context;
     gUiState.frameTimes[window] = 0;
+    gUiState.tileAtlasShown[window] = false;
+    gUiState.tileCellsShown[window] = false;
     return context;
 }
 
@@ -298,7 +386,7 @@ bool UiEvent(const Event& event) noexcept {
     return false;
 }
 
-UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpacity, ToolsState& tools) noexcept {
+UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept {
     ZoneScopedN("UiWindowFrame");
     MIDORI_ASSERT(window < kWindowMax && gUiState.contexts[window], "UiWindowFrame: no context for window {}", window);
     const auto state = WindowGetState(window);
@@ -341,6 +429,11 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpac
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Debug")) {
+            ImGui::MenuItem("Tile atlas", nullptr, &gUiState.tileAtlasShown[window]);
+            ImGui::MenuItem("Tile cells on canvas", nullptr, &gUiState.tileCellsShown[window]);
+            ImGui::EndMenu();
+        }
         ImGui::EndMainMenuBar();
     }
     if (viewport) {
@@ -354,7 +447,11 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpac
             if (ImGui::Button("Flip Y")) {
                 *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
             }
-            ImGui::SliderFloat("Background opacity", &backgroundOpacity, 0.0f, 1.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Reset (Space+R)")) {
+                *viewport = ViewportResetZoomRotation(*viewport);
+            }
+            ImGui::ColorEdit4("Background", &backgroundColor->r);
         }
         ImGui::End();
     }
@@ -378,6 +475,12 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpac
         }
     }
     ImGui::End();
+    if (gUiState.tileAtlasShown[window]) {
+        TileAtlasWindow(window);
+    }
+    if (gUiState.tileCellsShown[window]) {
+        TileCellsOverlay(window, *state);
+    }
     ImGui::Render();
     return command;
 }

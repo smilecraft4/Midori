@@ -24,5 +24,7 @@ struct Viewport {
 [[nodiscard]] Viewport ViewportZoom(Viewport viewport, float amountX, float amountY) noexcept;
 // Turns clockwise on screen around the view center.
 [[nodiscard]] Viewport ViewportRotate(Viewport viewport, float amount) noexcept;
+// Back to zoom 1 and no rotation around the view center; flips are kept.
+[[nodiscard]] Viewport ViewportResetZoomRotation(Viewport viewport) noexcept;
 
 } // namespace Midori

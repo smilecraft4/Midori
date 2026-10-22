@@ -141,8 +141,8 @@ inline constexpr bool kEnumFlags<TileTransfer> = true;
 using TileAtlasCell = std::uint16_t;
 constexpr TileAtlasCell kTileAtlasCellInvalid = std::numeric_limits<TileAtlasCell>::max();
 constexpr TileAtlasCell kTileAtlasCellMax = 64; // one tile pool shared by every canvas
-// Holds the test pattern new tiles start from; never handed out.
-constexpr TileAtlasCell kTileAtlasCellPattern = 0;
+// Transparent: new tiles start as a copy of it. Never handed out.
+constexpr TileAtlasCell kTileAtlasCellClear = 0;
 
 // A tile not visible in the current frame may lose its atlas cell; the lowest `visibleFrame` loses it first.
 struct TileState {
@@ -194,11 +194,12 @@ struct CanvasState {
     std::vector<Layer> freeLayers;       // largest first, so pop_back gives the smallest
     std::array<LayerState, kLayerMax> layers;
     std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
+    Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 0.5f}; // under every layer, not saved yet
     CanvasFile file;
     Layer largestLayer{};
     Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
-    bool modified{}; // changed since the last save, or since created
+    bool modified{};           // changed since the last save, or since created
 };
 
 // These never ask the user anything; the App* calls wrap them with dialogs.

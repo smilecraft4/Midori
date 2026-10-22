@@ -1,6 +1,7 @@
 #pragma once
 
 #include "midori/base.hpp"
+#include "midori/color.hpp"
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
 #include "midori/viewport.hpp"
@@ -19,6 +20,8 @@ struct ToolsState;
 struct UiState {
     std::array<ImGuiContext*, kWindowMax> contexts;  // null marks the slot free
     std::array<std::int64_t, kWindowMax> frameTimes; // steady_clock ticks of the last frame, 0 before the first
+    std::array<bool, kWindowMax> tileAtlasShown;     // the tile atlas debug window is open
+    std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
 };
 
 extern UiState gUiState;
@@ -45,9 +48,9 @@ enum struct UiCommand : std::uint8_t {
 };
 
 // Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
-// panel edits `viewport` and `backgroundOpacity`, and is hidden while the window shows no canvas view (null).
-// The tool panel edits `tools`.
-[[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport, float& backgroundOpacity,
+// panel edits `viewport` and its canvas's `backgroundColor`, and is hidden while the window shows no canvas view
+// (both null). The tool panel edits `tools`.
+[[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor,
                                       ToolsState& tools) noexcept;
 
 } // namespace Midori

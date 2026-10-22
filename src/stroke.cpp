@@ -52,10 +52,19 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
     };
     for (TileAxis y = tileOf(dab.y - reach); y <= tileOf(dab.y + reach); ++y) {
         for (TileAxis x = tileOf(dab.x - reach); x <= tileOf(dab.x + reach); ++x) {
-            const TileKey key = TileKeyMake(stroke.layer, 0, TileGridPos{.x = x, .y = y});
-            const auto found = canvas.tileIndices.find(key);
+            const TileGridPos gridPos{.x = x, .y = y};
+            const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
+            auto found = canvas.tileIndices.find(key);
             if (found == canvas.tileIndices.end()) {
-                continue;
+                // Erasing nothing leaves nothing. A new tile needs a second cell for its backup.
+                if (stroke.mode == StrokeMode::Erase || gAppState.freeAtlasCells.size() < 2) {
+                    continue;
+                }
+                const Tile tile{.canvas = stroke.canvas, .mip = 0, .layer = stroke.layer, .gridPos = gridPos};
+                if (!TileNew(tile)) {
+                    continue;
+                }
+                found = canvas.tileIndices.find(key);
             }
             TileState& tileState = canvas.tiles[found->second];
             auto tile = std::ranges::find(stroke.tiles, key, &StrokeTile::key);

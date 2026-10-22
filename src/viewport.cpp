@@ -36,4 +36,11 @@ Viewport ViewportRotate(Viewport viewport, float amount) noexcept {
     return viewport;
 }
 
+Viewport ViewportResetZoomRotation(Viewport viewport) noexcept {
+    viewport.zoomX = std::copysign(1.0f, viewport.zoomX);
+    viewport.zoomY = std::copysign(1.0f, viewport.zoomY);
+    viewport.rot = 0.0f;
+    return viewport;
+}
+
 } // namespace Midori

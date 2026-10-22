@@ -4,6 +4,7 @@
 #include "midori/canvas.hpp"
 #include "midori/platform.hpp"
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 struct ImGuiContext;
@@ -32,6 +33,12 @@ struct GraphicsWindowInitInfo {
 [[nodiscard]] Result<void> GraphicsWindowTerminate(Window window) noexcept;
 // The window gets a frame at its next vblank, from GraphicsUpdate.
 void GraphicsWindowRequestFrame(Window window) noexcept;
+
+constexpr TileAtlasCell kTileAtlasDebugColumns = 8;
+constexpr TileAtlasCell kTileAtlasDebugRows = (kTileAtlasCellMax + kTileAtlasDebugColumns - 1) / kTileAtlasDebugColumns;
+// A UI texture (ImTextureID) of every atlas cell at mip 0, kTileAtlasDebugColumns cells per row, refreshed in
+// each frame whose UI called this. Created on the first call; 0 when that failed.
+[[nodiscard]] std::uint64_t GraphicsTileAtlasDebugTexture() noexcept;
 
 // Both wait for the GPU. Pixels are kTileBytes per cell, mip 0 only. A download first fills pending new tiles and
 // records the stroke so far.

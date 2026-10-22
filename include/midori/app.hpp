@@ -50,12 +50,11 @@ struct AppState {
     float pointerX; // last pointer position, client-area physical pixels of the window it moved in
     float pointerY;
     float pointerPressure;
-    float backgroundOpacity{0.5f}; // of the white behind the canvas, shared by every window
-    KeyMod keyMods;                // as of the last key event
+    KeyMod keyMods;    // as of the last key event
     Window commandWindow;
-    UiCommand command;             // picked during `commandWindow`'s frame, run by the next AppUpdate
+    UiCommand command; // picked during `commandWindow`'s frame, run by the next AppUpdate
     bool spaceDown;
-    bool modal;                    // a dialog is up: its message loop still delivers events, which are dropped
+    bool modal;        // a dialog is up: its message loop still delivers events, which are dropped
 };
 
 extern AppState gAppState;

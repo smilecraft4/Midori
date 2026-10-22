@@ -335,6 +335,7 @@ void NavigateEnd() noexcept {
 }
 
 // Space + left drag pans, Ctrl+Space + drag zooms and Shift+Space + drag rotates, around the view center.
+// Space+R resets zoom and rotation.
 // Pressing or releasing Ctrl or Shift mid-drag switches mode from where the pointer is. Returns true when
 // the event belongs to navigation. Releases and focus loss are handled even when the UI wants them, so a
 // drag never sticks.
@@ -350,6 +351,16 @@ void NavigateEnd() noexcept {
             } else if (space && event.key.inputState == InputState::Release) {
                 app.spaceDown = false;
                 NavigateEnd();
+            }
+            if (const CanvasView view = WindowCanvasView(event.key.window);
+                event.key.key == Key::R && event.key.inputState == InputState::Press && app.spaceDown
+                && view != kCanvasViewInvalid && !uiWants) {
+                app.canvasViews[view].viewport = ViewportResetZoomRotation(app.canvasViews[view].viewport);
+                // A drag in progress continues from the reset view instead of undoing it.
+                if (app.navigate.mode != NavigateMode::None) {
+                    NavigateBegin(app.navigate.view, app.navigate.mode);
+                }
+                return true;
             }
             const NavigateMode mode = NavigateModeFromMods(app.keyMods);
             if (app.navigate.mode != NavigateMode::None && app.navigate.mode != mode) {
@@ -519,7 +530,7 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
 
     gAppState.freeAtlasCells.reserve(kTileAtlasCellMax);
     for (TileAtlasCell cell = kTileAtlasCellMax; cell-- > 0;) {
-        if (cell != kTileAtlasCellPattern) {
+        if (cell != kTileAtlasCellClear) {
             gAppState.freeAtlasCells.push_back(cell);
         }
     }
@@ -608,8 +619,14 @@ Result<void> AppEvent(Event event) noexcept {
 void AppWindowFrame(Window window) noexcept {
     ZoneScopedN("AppWindowFrame");
     const CanvasView view = WindowCanvasView(window);
-    Viewport* viewport = view != kCanvasViewInvalid ? &gAppState.canvasViews[view].viewport : nullptr;
-    if (const UiCommand command = UiWindowFrame(window, viewport, gAppState.backgroundOpacity, gAppState.tools);
+    Viewport* viewport = nullptr;
+    Color::Srgb* backgroundColor = nullptr;
+    if (view != kCanvasViewInvalid) {
+        CanvasViewState& viewState = gAppState.canvasViews[view];
+        viewport = &viewState.viewport;
+        backgroundColor = &gAppState.canvases[viewState.canvas].backgroundColor;
+    }
+    if (const UiCommand command = UiWindowFrame(window, viewport, backgroundColor, gAppState.tools);
         command != UiCommand::None) {
         gAppState.command = command;
         gAppState.commandWindow = window;

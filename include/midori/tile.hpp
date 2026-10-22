@@ -10,7 +10,7 @@
 namespace Midori {
 
 using TileAxis = std::int32_t;
-constexpr TileAxis kTileSize = 256; // canvas units, and texels at mip 0
+constexpr TileAxis kTileSize = 256;                                        // canvas units, and texels at mip 0
 constexpr std::size_t kTileBytes = std::size_t{kTileSize} * kTileSize * 4; // mip 0, 8-bit RGBA
 
 using TileMip = std::uint8_t;
@@ -87,7 +87,7 @@ struct TileMoveInfo {
 
 [[nodiscard]] Result<void> TileUnload(Tile tile) noexcept;
 
-// Resident only for now: a new tile takes an atlas cell and starts as the test pattern. Creating a tile
+// Resident only for now: a new tile takes an atlas cell and starts transparent. Creating a tile
 // that exists or deleting one that does not does nothing.
 [[nodiscard]] Result<void> TileNew(Tile tile) noexcept;
 [[nodiscard]] Result<void> TileDelete(Tile tile) noexcept;

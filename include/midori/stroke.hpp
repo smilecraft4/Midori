@@ -76,7 +76,8 @@ struct StrokeState {
     return tile.backupCell != kTileAtlasCellInvalid && (!tile.backedUp || tile.dirtyMinX < tile.dirtyMaxX);
 }
 
-// Edits the existing tiles of `layer`; the tiles missing under the stroke are skipped.
+// Edits the tiles of `layer`. Paint creates the tiles missing under the stroke while two atlas cells are free
+// (the tile and its backup); erase skips them.
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
 void StrokeTo(StrokePoint point) noexcept;
 void StrokeEnd() noexcept;
