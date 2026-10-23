@@ -156,7 +156,7 @@ bool TileEvictable(Canvas canvas, const TileState& tile) noexcept {
         && !StrokeHasTile(gAppState.stroke, canvas, tile.key)
         && std::ranges::find(gAppState.canvases[canvas].mipBuilds, tile.key)
                == gAppState.canvases[canvas].mipBuilds.end()
-        && !std::ranges::contains(gAppState.historyPool.ops, tile.cell, &HistoryOp::cell);
+        && !std::ranges::binary_search(gAppState.historyPool.ops, tile.cell, {}, &HistoryOp::cell);
 }
 
 void TileEvict(TileState& tile) noexcept {

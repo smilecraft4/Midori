@@ -86,8 +86,10 @@ struct StrokeState {
     return tile.backupCell != kTileAtlasCellInvalid && (!tile.backedUp || tile.dirtyMinX < tile.dirtyMaxX);
 }
 
+// The tile is in the stroke, or is a level 1-3 tile of one that is: those follow its paint, see RecordStroke.
 [[nodiscard]] inline bool StrokeHasTile(const StrokeState& stroke, Canvas canvas, TileKey key) noexcept {
-    return stroke.canvas == canvas && std::ranges::find(stroke.tiles, key, &StrokeTile::key) != stroke.tiles.end();
+    return stroke.canvas == canvas
+        && std::ranges::find(stroke.tiles, TileKeyWithMip(key, 0), &StrokeTile::key) != stroke.tiles.end();
 }
 
 // Edits the tiles of `layer` and deletes their level 1-3 tiles. Paint creates the tiles missing under the stroke

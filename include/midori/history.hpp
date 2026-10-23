@@ -25,7 +25,7 @@ struct HistoryOp {
 // recorded, so no slot is in two ops of one dispatch.
 struct HistoryPoolState {
     std::vector<std::uint32_t> freeSlots;
-    std::vector<HistoryOp> ops; // at most kHistorySlotsMax
+    std::vector<HistoryOp> ops; // at most kHistorySlotsMax, sorted by cell for TileEvictable
     std::uint64_t sequence{};   // records pushed so far
 };
 

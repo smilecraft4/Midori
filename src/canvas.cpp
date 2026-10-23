@@ -418,8 +418,10 @@ void CacheClose(CanvasFile& cache) noexcept {
         }
     }
 
+    // A tile in the stroke is written whatever it holds: the stroke keeps painting into its cell.
     for (std::size_t i = 0; i < keys.size(); ++i) {
-        if (TileKeyMip(keys[i]) == 0 && TileEmpty(pixels.data() + (i * kTileBytes))) {
+        if (TileKeyMip(keys[i]) == 0 && !StrokeHasTile(gAppState.stroke, canvas.id, keys[i])
+            && TileEmpty(pixels.data() + (i * kTileBytes))) {
             empties.push_back(keys[i]);
         }
     }

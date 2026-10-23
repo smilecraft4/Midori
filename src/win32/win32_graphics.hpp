@@ -109,6 +109,8 @@ struct GraphicsState {
     std::array<bool, kUiTextureMax> uiTextures;
     TileAtlas tileAtlasDebugAtlas; // the atlas `tileAtlasDebug` shows
     bool tileAtlasDebugRequested;  // a UI frame shows `tileAtlasDebug`; the next record refreshes it
+    // Per canvas view: its page table did not fit last time it was drawn, which was logged once.
+    std::array<bool, kCanvasViewMax> pageTableOverflow;
 };
 
 // Fills `handles` with the frame waitables of the windows that need a frame and are not ready for one

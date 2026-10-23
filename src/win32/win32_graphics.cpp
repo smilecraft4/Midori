@@ -119,11 +119,15 @@ constexpr UINT kStrokeGroupSize = 8;
 struct TileMipConstants {
     std::uint32_t srcCell;
     std::uint32_t dstCell;
+    std::uint32_t rectX; // texels of the level-k tile
+    std::uint32_t rectY;
+    std::uint32_t rectWidth;
+    std::uint32_t rectHeight;
 };
 constexpr UINT kTileMipConstantsRootParameter = 0;
 constexpr UINT kTileMipTilePoolRootParameter = 1;
 constexpr UINT kTileMipConstantCount = sizeof(TileMipConstants) / sizeof(std::uint32_t);
-static_assert(kTileMipConstantCount == 2, "must match num32BitConstants in TILE_MIP_ROOT_SIGNATURE");
+static_assert(kTileMipConstantCount == 6, "must match num32BitConstants in TILE_MIP_ROOT_SIGNATURE");
 constexpr UINT kTileMipGroupSize = 8;
 constexpr UINT kHistoryOpsRootParameter = 0;
 constexpr UINT kHistoryStoreRootParameter = 1;
@@ -493,10 +497,12 @@ void RecordStroke() noexcept {
     constants.dabEnd = static_cast<std::uint32_t>(stroke.dabs.size());
     constants.blendMode = std::to_underlying(stroke.blendMode);
     constants.mode = std::to_underlying(stroke.mode);
-    for (StrokeTile& tile : stroke.tiles) {
+    bool painted = false;
+    for (const StrokeTile& tile : stroke.tiles) {
         if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
             continue;
         }
+        painted = true;
         // Relative like the dabs.
         const TileGridPos gridPos = TileKeyGridPos(tile.key);
         constants.gridPos = {.x = gridPos.x - stroke.origin.x, .y = gridPos.y - stroke.origin.y};
@@ -506,10 +512,51 @@ void RecordStroke() noexcept {
         constants.srcPage = TileAtlasCellPage(tile.backupCell);
         constants.dabFirst = tile.firstDab;
         StrokeDispatch(constants, tile.dirtyMaxX - tile.dirtyMinX, tile.dirtyMaxY - tile.dirtyMinY);
-        tile.dirtyMinX = kTileSize;
-        tile.dirtyMinY = kTileSize;
-        tile.dirtyMaxX = 0;
-        tile.dirtyMaxY = 0;
+    }
+
+    // The stroke's loaded level 1-3 tiles follow its dirty texels, widened to whole 2^k blocks so each texel averages a
+    // full box of level 0, as a whole build would; missing or loading ones are built after the stroke. After every
+    // stroke dispatch: one barrier for all.
+    if (painted) {
+        TracyD3D12NamedZone(state.gpuProfiler, gpuStrokeMipsZone, state.list, "GpuStrokeMips", true);
+        const CD3DX12_RESOURCE_BARRIER paint = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+        state.list->ResourceBarrier(1, &paint);
+        state.list->SetComputeRootSignature(state.mipRootSignature);
+        state.list->SetPipelineState(state.mipPipeline);
+        state.list->SetComputeRootDescriptorTable(kTileMipTilePoolRootParameter, ViewGpu(kTilePoolFirstUav));
+        const CanvasState& canvas = gAppState.canvases[stroke.canvas];
+        for (StrokeTile& tile : stroke.tiles) {
+            if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
+                continue;
+            }
+            for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
+                const auto found = canvas.tileIndices.find(TileKeyWithMip(tile.key, mip));
+                if (found == canvas.tileIndices.end() || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)) {
+                    continue;
+                }
+                const std::uint32_t scale = 1u << mip;
+                const std::uint32_t minX = tile.dirtyMinX / scale;
+                const std::uint32_t minY = tile.dirtyMinY / scale;
+                const std::uint32_t maxX = (tile.dirtyMaxX + scale - 1) / scale;
+                const std::uint32_t maxY = (tile.dirtyMaxY + scale - 1) / scale;
+                const TileMipConstants mipConstants{
+                    .srcCell = tile.cell,
+                    .dstCell = canvas.tiles[found->second].cell,
+                    .rectX = minX,
+                    .rectY = minY,
+                    .rectWidth = maxX - minX,
+                    .rectHeight = maxY - minY,
+                };
+                state.list->SetComputeRoot32BitConstants(kTileMipConstantsRootParameter, kTileMipConstantCount,
+                                                         &mipConstants, 0);
+                state.list->Dispatch((mipConstants.rectWidth + kTileMipGroupSize - 1) / kTileMipGroupSize,
+                                     (mipConstants.rectHeight + kTileMipGroupSize - 1) / kTileMipGroupSize, 1);
+            }
+            tile.dirtyMinX = kTileSize;
+            tile.dirtyMinY = kTileSize;
+            tile.dirtyMaxX = 0;
+            tile.dirtyMaxY = 0;
+        }
     }
 
     TilePoolsTransition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -664,10 +711,18 @@ void RecordTileMips() noexcept {
                 if (HasAnyFlag(tile.flags, TileFlags::Loaded) || tile.cell == kTileAtlasCellInvalid) {
                     continue;
                 }
-                const TileMipConstants constants{.srcCell = srcCell, .dstCell = tile.cell};
+                const std::uint32_t size = TileLevelSize(mip);
+                const TileMipConstants constants{
+                    .srcCell = srcCell,
+                    .dstCell = tile.cell,
+                    .rectX = 0,
+                    .rectY = 0,
+                    .rectWidth = size,
+                    .rectHeight = size,
+                };
                 state.list->SetComputeRoot32BitConstants(kTileMipConstantsRootParameter, kTileMipConstantCount,
                                                          &constants, 0);
-                const UINT groups = (TileLevelSize(mip) + kTileMipGroupSize - 1) / kTileMipGroupSize;
+                const UINT groups = (size + kTileMipGroupSize - 1) / kTileMipGroupSize;
                 state.list->Dispatch(groups, groups, 1);
                 tile.flags |= TileFlags::Loaded;
             }
@@ -778,11 +833,15 @@ void RecordTileDownloads() noexcept {
                     const float background[4] = {bg.r * bg.a, bg.g * bg.a, bg.b * bg.a, bg.a};
                     state.list->ClearRenderTargetView(rtvs[i], background, 1, &rect);
                     const std::size_t entries = std::size_t{constants.regionWidth} * constants.regionHeight;
-                    if (pageTableUsed + entries > kPageTableEntriesMax) {
+                    const bool overflow = pageTableUsed + entries > kPageTableEntriesMax;
+                    if (overflow && !std::exchange(state.pageTableOverflow[view.id], true)) {
                         MIDORI_LOG_WARN("canvas view {}: {} tiles in view, past the page table's room", view.id,
                                         entries);
+                    }
+                    if (overflow) {
                         continue;
                     }
+                    state.pageTableOverflow[view.id] = false;
                     const std::size_t first = (std::size_t{frame} * kPageTableEntriesMax) + pageTableUsed;
                     PageTableFill(gAppState.canvases[view.canvas], constants, origin,
                                   std::span(state.pageTablesMapped + first, entries));

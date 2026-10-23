@@ -132,6 +132,7 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
             pool.ops.push_back(HistoryOp{.slot = slot, .cell = tile.backupCell, .block = block, .swap = false});
         }
     }
+    std::ranges::sort(pool.ops, {}, &HistoryOp::cell);
     record.blockCount = static_cast<std::uint32_t>(history.blocks.size()) - record.firstBlock;
     record.tileCount = static_cast<std::uint32_t>(history.tiles.size()) - record.firstTile;
     if (record.blockCount == 0 && record.tileCount == 0) {
@@ -240,6 +241,7 @@ void HistoryUpdate(Canvas canvas) noexcept {
         std::erase(state.mipBuilds, blocks[i].key);
         TileMipsDelete(canvas, blocks[i].key);
     }
+    std::ranges::sort(pool.ops, {}, &HistoryOp::cell);
     state.modified = true;
     history.current = undo ? history.current - 1 : history.current + 1;
     history.pending += undo ? 1 : -1;

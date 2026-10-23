@@ -44,6 +44,35 @@ constexpr std::uint32_t kStrokeWaitUpdates = 300;
     return mask;
 }
 
+// The level 1-3 tiles of a tile the stroke reaches for the first time. The loaded ones follow its paint, see
+// RecordStroke: edited from now on, so a download requested before does not count. The others would come back stale
+// and are deleted, built again once the stroke is released. Deleting moves tiles around.
+void StrokeMipsPrepare(Canvas canvasId, TileKey key) noexcept {
+    ZoneScopedN("StrokeMipsPrepare");
+    CanvasState& canvas = gAppState.canvases[canvasId];
+    for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
+        const auto found = canvas.tileIndices.find(TileKeyWithMip(key, mip));
+        if (found == canvas.tileIndices.end()) {
+            continue;
+        }
+        TileState& tile = canvas.tiles[found->second];
+        if (tile.cell != kTileAtlasCellInvalid) {
+            tile.flags = (tile.flags | TileFlags::Modified) & ~TileFlags::CachedDisk;
+            ++tile.edits;
+            continue;
+        }
+        const Tile stale{
+            .canvas = canvasId,
+            .mip = mip,
+            .layer = static_cast<Layer>(key >> kTileLayerBitOffset),
+            .gridPos = TileKeyGridPos(key),
+        };
+        if (!TileDelete(stale)) {
+            MIDORI_LOG_WARN("stroke: stale tile {:#018x} level {} not deleted", key, mip);
+        }
+    }
+}
+
 // Paint from here on goes into the tile: it gets its cell and a backup of what it holds now. A tile the stroke created
 // is still clear, so the clear cell serves as its backup.
 void StrokeTileAttach(StrokeTile& tile, TileState& tileState, bool created) noexcept {
@@ -105,9 +134,7 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             }
             auto tile = std::ranges::find(stroke.tiles, key, &StrokeTile::key);
             if (tile == stroke.tiles.end()) {
-                // Its level 1-3 tiles are stale from the first dab; they are rebuilt once the stroke is released.
-                // Deleting them moves tiles around, so the tile is looked up again.
-                TileMipsDelete(stroke.canvas, key);
+                StrokeMipsPrepare(stroke.canvas, key);
                 found = canvas.tileIndices.find(key);
                 stroke.tiles.push_back(StrokeTile{
                     .key = key,
