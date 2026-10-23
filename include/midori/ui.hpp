@@ -25,6 +25,7 @@ struct UiState {
     std::array<int, kWindowMax> tileAtlasIndex;      // the atlas it shows
     std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
     std::array<bool, kWindowMax> hidden;             // no menu, panel or debug overlay, only the brush adjust
+    std::array<bool, kWindowMax> helpShown;          // the help window, shown at first; its tips follow what the user does
 };
 
 extern UiState gUiState;

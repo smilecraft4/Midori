@@ -12,6 +12,7 @@
 #include <cmath>
 #include <format>
 #include <numbers>
+#include <span>
 #include <utility>
 
 #include <imgui.h>
@@ -350,6 +351,99 @@ void TileAtlasWindow(Window window) noexcept {
     ImGui::End();
 }
 
+struct HelpEntry {
+    const char* keys;
+    const char* action;
+};
+
+constexpr std::array kHelpPaint = {
+    HelpEntry{"Left drag", "Paint with the brush"},
+    HelpEntry{"E", "Switch to the eraser"},
+};
+constexpr std::array kHelpErase = {
+    HelpEntry{"Left drag", "Erase with the brush; its color picks the channels removed"},
+    HelpEntry{"B", "Switch to the paint brush"},
+};
+constexpr std::array kHelpBrush = {
+    HelpEntry{"F", "Change the brush radius"},        HelpEntry{"Shift+F", "Change the brush opacity"},
+    HelpEntry{"Ctrl+F", "Change the brush hardness"}, HelpEntry{"Space", "Hold to move the view"},
+    HelpEntry{"Space+R", "Reset zoom and rotation"},  HelpEntry{"Ctrl+Z", "Undo the last stroke"},
+    HelpEntry{"Ctrl+Shift+Z, Ctrl+Y", "Redo"},
+};
+constexpr std::array kHelpStroke = {
+    HelpEntry{"Release", "Finish the stroke"},
+    HelpEntry{"Ctrl+Z", "Undo it once finished"},
+};
+constexpr std::array kHelpNavigate = {
+    HelpEntry{"Space + drag", "Pan"},
+    HelpEntry{"Ctrl+Space + drag", "Zoom, right or up zooms in"},
+    HelpEntry{"Shift+Space + drag", "Rotate around the center"},
+    HelpEntry{"Alt", "Snap the zoom to texel-friendly steps, the rotation to 15 degrees"},
+    HelpEntry{"Space+R", "Reset zoom and rotation"},
+};
+constexpr std::array kHelpAdjust = {
+    HelpEntry{"Move", "Away from the center raises the value, toward it lowers it"},
+    HelpEntry{"Shift", "Change it 10 times slower"},
+    HelpEntry{"Alt", "Snap it to powers of two"},
+    HelpEntry{"Left click, Enter", "Keep the value"},
+    HelpEntry{"Right click, Escape", "Restore the previous value"},
+};
+constexpr std::array kHelpGeneral = {
+    HelpEntry{"Tab", "Hide or show the UI"},
+    HelpEntry{"F11", "Toggle fullscreen"},
+    HelpEntry{"Ctrl+N", "New canvas"},
+    HelpEntry{"Ctrl+O", "Open a canvas"},
+    HelpEntry{"Ctrl+S", "Save"},
+    HelpEntry{"Ctrl+Shift+S", "Save as"},
+};
+
+void HelpTable(const char* id, std::span<const HelpEntry> entries) noexcept {
+    if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+        return;
+    }
+    for (const HelpEntry& entry : entries) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(entry.keys);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(entry.action);
+    }
+    ImGui::EndTable();
+}
+
+// Tips for what the user is doing right now: adjusting the brush, navigating, stroking, or else the current tool. The
+// shortcuts that work everywhere follow, folded.
+void HelpWindow(Window window, const ToolsState& tools) noexcept {
+    ZoneScopedN("HelpWindow");
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 360.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Help", &gUiState.helpShown[window])) {
+        ImGui::End();
+        return;
+    }
+    const AppState& app = gAppState;
+    constexpr std::array kAdjustNames = {"", "radius", "opacity", "hardness"};
+    if (app.brushAdjust.mode != BrushAdjustMode::None) {
+        ImGui::Text("Adjusting the brush %s", kAdjustNames[std::to_underlying(app.brushAdjust.mode)]);
+        HelpTable("adjust", kHelpAdjust);
+    } else if (app.spaceDown || app.navigate.mode != NavigateMode::None) {
+        ImGui::TextUnformatted("Moving the view");
+        HelpTable("navigate", kHelpNavigate);
+    } else if (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended) {
+        ImGui::TextUnformatted(app.stroke.mode == StrokeMode::Erase ? "Erasing" : "Painting");
+        HelpTable("stroke", kHelpStroke);
+    } else {
+        ImGui::TextUnformatted(tools.tool == Tool::Erase ? "Eraser" : "Paint brush");
+        HelpTable("tool", tools.tool == Tool::Erase ? std::span<const HelpEntry>(kHelpErase)
+                                                    : std::span<const HelpEntry>(kHelpPaint));
+        HelpTable("brush", kHelpBrush);
+    }
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Everywhere")) {
+        HelpTable("general", kHelpGeneral);
+    }
+    ImGui::End();
+}
+
 // ScaleAllSizes is not reversible, so a DPI change rebuilds the style from the defaults.
 void ApplyDpiScale(float dpiScale) noexcept {
     ZoneScopedN("ApplyDpiScale");
@@ -393,6 +487,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.tileAtlasIndex[window] = 0;
     gUiState.tileCellsShown[window] = false;
     gUiState.hidden[window] = false;
+    gUiState.helpShown[window] = true;
     return context;
 }
 
@@ -562,6 +657,8 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
         if (ImGui::BeginMenu("Debug")) {
             ImGui::MenuItem("Tile atlas", nullptr, &gUiState.tileAtlasShown[window]);
             ImGui::MenuItem("Tile cells on canvas", nullptr, &gUiState.tileCellsShown[window]);
+            ImGui::Separator();
+            ImGui::MenuItem("Help", nullptr, &gUiState.helpShown[window]);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -614,6 +711,9 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
     ImGui::End();
     if (gUiState.tileAtlasShown[window]) {
         TileAtlasWindow(window);
+    }
+    if (gUiState.helpShown[window]) {
+        HelpWindow(window, tools);
     }
     if (gUiState.tileCellsShown[window]) {
         TileCellsOverlay(window, *state);
