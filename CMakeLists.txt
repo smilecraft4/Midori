@@ -65,6 +65,10 @@ target_include_directories(mdbx SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendor
 target_compile_definitions(mdbx PRIVATE _WIN32_WINNT=0x0A00)
 target_link_libraries(mdbx PRIVATE ntdll)
 
+# Tiles are stored as QOI, in the canvas file and the cache. No stdio: only the in-memory calls are built.
+add_library(qoi STATIC vendors/qoi/qoi.c)
+target_include_directories(qoi SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendors/qoi)
+
 set(MIDORI_SOURCES
     src/app.cpp
     src/base.cpp
@@ -164,6 +168,6 @@ target_precompile_headers(midori PRIVATE
     <string_view>
 )
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32)
+target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})

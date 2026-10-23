@@ -27,9 +27,10 @@ struct Job {
     Canvas canvas;
     JobType type;
     bool failed;
+    bool empty; // TileWrite: the tile was transparent, so nothing was written
 };
 
-using JobExecuteFn = Result<void>(const Job& job) noexcept;
+using JobExecuteFn = Result<void>(Job& job) noexcept;
 
 struct JobQueue {
     std::mutex mutex;

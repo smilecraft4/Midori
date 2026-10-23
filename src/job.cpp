@@ -43,6 +43,7 @@ void JobsRun(const std::stop_token& stop, JobQueue& queue) noexcept {
 } // namespace
 
 void JobsInit(JobsInitInfo initInfo) noexcept {
+    ZoneScopedN("JobsInit");
     JobsState& state = gJobsState;
     MIDORI_ASSERT(state.threads.empty(), "JobsInit called twice");
     state.execute = initInfo.execute;
@@ -60,6 +61,7 @@ void JobsInit(JobsInitInfo initInfo) noexcept {
 }
 
 void JobsTerminate() noexcept {
+    ZoneScopedN("JobsTerminate");
     JobsState& state = gJobsState;
     for (std::jthread& thread : state.threads) {
         thread.request_stop();
@@ -72,6 +74,7 @@ void JobsTerminate() noexcept {
 }
 
 void JobSubmit(const Job& job) noexcept {
+    ZoneScopedN("JobSubmit");
     JobsState& state = gJobsState;
     {
         const std::scoped_lock lock(state.finishedMutex);
@@ -86,6 +89,7 @@ void JobSubmit(const Job& job) noexcept {
 }
 
 void JobsTakeFinished(std::vector<Job>& jobs) noexcept {
+    ZoneScopedN("JobsTakeFinished");
     JobsState& state = gJobsState;
     const std::scoped_lock lock(state.finishedMutex);
     jobs.insert(jobs.end(), state.finished.begin(), state.finished.end());

@@ -100,6 +100,7 @@ void Utf8ToWide(std::string_view text, std::span<wchar_t> out) noexcept {
 int DialogTask(Window window, std::string_view title, std::string_view instruction, std::string_view content,
                PCWSTR icon, std::span<const TASKDIALOG_BUTTON> buttons,
                TASKDIALOG_COMMON_BUTTON_FLAGS commonButtons) noexcept {
+    ZoneScopedN("DialogTask");
     const std::wstring wideTitle = WideFromUtf8(title);
     const std::wstring wideInstruction = WideFromUtf8(instruction);
     const std::wstring wideContent = WideFromUtf8(content);
@@ -137,6 +138,7 @@ constexpr DWORD kDialogPathMax = 32768;
 }
 
 [[nodiscard]] Result<std::filesystem::path> DialogFile(const DialogFileInfo& info, bool save) noexcept {
+    ZoneScopedN("DialogFile");
     const std::wstring filter = DialogFilter(info);
     const std::wstring extension = WideFromUtf8(info.extension);
     std::wstring file = info.initial.wstring();
@@ -162,6 +164,7 @@ constexpr DWORD kDialogPathMax = 32768;
 }
 
 void DispatchResize(Window window) noexcept {
+    ZoneScopedN("DispatchResize");
     const WindowState& state = gPlatformState.windows[window].state;
     Event event{};
     event.type = EventType::WindowResize;
@@ -309,6 +312,7 @@ constexpr LPARAM kPenSignature = 0xFF515700;
 }
 
 void DispatchKey(Window window, WPARAM wParam, LPARAM lParam, bool down) noexcept {
+    ZoneScopedN("DispatchKey");
     // Bit 30 is the key's previous state: down and down again is auto-repeat.
     InputState inputState = InputState::Release;
     if (down) {
@@ -333,6 +337,7 @@ void DispatchKey(Window window, WPARAM wParam, LPARAM lParam, bool down) noexcep
 }
 
 void HandleButton(Window window, Button button, bool down) noexcept {
+    ZoneScopedN("HandleButton");
     if (FromPen(window)) {
         return;
     }
@@ -355,6 +360,7 @@ void HandleButton(Window window, Button button, bool down) noexcept {
 }
 
 void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
+    ZoneScopedN("DispatchMouseMove");
     Event event{};
     event.type = EventType::Pointer;
     event.pointer = PointerEvent{
@@ -372,6 +378,7 @@ void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
 // WM_CHAR sends UTF-16 units: a codepoint above U+FFFF arrives as two messages. Control characters
 // are not text; they arrive as key events.
 void DispatchText(Window window, WPARAM wParam) noexcept {
+    ZoneScopedN("DispatchText");
     Win32Window& slot = gPlatformState.windows[window];
     const auto unit = static_cast<char32_t>(wParam);
     if (unit >= 0xD800 && unit <= 0xDBFF) {
@@ -396,6 +403,7 @@ void DispatchText(Window window, WPARAM wParam) noexcept {
 }
 
 void DispatchWheel(Window window, WPARAM wParam, bool horizontal) noexcept {
+    ZoneScopedN("DispatchWheel");
     const float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
     Event event{};
     event.type = EventType::Wheel;
@@ -409,6 +417,7 @@ void DispatchWheel(Window window, WPARAM wParam, bool horizontal) noexcept {
 }
 
 void DispatchFocus(Window window, bool focused) noexcept {
+    ZoneScopedN("DispatchFocus");
     Event event{};
     event.type = EventType::WindowFocus;
     event.windowFocus = WindowFocusEvent{.window = window, .focused = focused};
@@ -416,6 +425,7 @@ void DispatchFocus(Window window, bool focused) noexcept {
 }
 
 void DispatchClose(Window window) noexcept {
+    ZoneScopedN("DispatchClose");
     Event event{};
     event.type = EventType::WindowClose;
     event.windowClose = WindowCloseEvent{.window = window};
@@ -423,6 +433,7 @@ void DispatchClose(Window window) noexcept {
 }
 
 void DispatchDestroy(Window window) noexcept {
+    ZoneScopedN("DispatchDestroy");
     Event event{};
     event.type = EventType::WindowDestroy;
     event.windowDestroy = WindowDestroyEvent{.window = window};
@@ -482,10 +493,12 @@ void DispatchDestroy(Window window) noexcept {
 
 template<typename F>
 [[nodiscard]] F WintabLoad(HMODULE dll, const char* name) noexcept {
+    ZoneScopedN("WintabLoad");
     return reinterpret_cast<F>(GetProcAddress(dll, name));
 }
 
 void WintabTerminate() noexcept {
+    ZoneScopedN("WintabTerminate");
     if (gPlatformState.wintab.dll) {
         FreeLibrary(gPlatformState.wintab.dll);
     }
@@ -583,6 +596,7 @@ void WintabOpen(Window window) noexcept {
 }
 
 void WintabClose(Window window) noexcept {
+    ZoneScopedN("WintabClose");
     Win32Window& slot = gPlatformState.windows[window];
     if (slot.tablet) {
         gPlatformState.wintab.close(slot.tablet);
@@ -591,6 +605,7 @@ void WintabClose(Window window) noexcept {
 }
 
 void WintabActivate(Window window) noexcept {
+    ZoneScopedN("WintabActivate");
     // The focused window's context goes on top, so it is the one receiving packets.
     const Win32Window& slot = gPlatformState.windows[window];
     if (slot.tablet) {
@@ -599,6 +614,7 @@ void WintabActivate(Window window) noexcept {
 }
 
 void WintabDispatchButton(Window window, Device device, Button button, bool down) noexcept {
+    ZoneScopedN("WintabDispatchButton");
     Event event{};
     event.type = EventType::Button;
     event.button = ButtonEvent{
@@ -897,6 +913,7 @@ Result<Window> WindowCreate(WindowCreateInfo createInfo) noexcept {
 }
 
 Result<void> WindowDestroy(Window window) noexcept {
+    ZoneScopedN("WindowDestroy");
     if (!WindowValid(window)) {
         return std::unexpected(Error::WindowInvalid);
     }
@@ -955,6 +972,7 @@ Result<WindowState> WindowGetState(Window window) noexcept {
 }
 
 Result<void> WindowSetTitle(Window window, std::string_view title) noexcept {
+    ZoneScopedN("WindowSetTitle");
     if (!WindowValid(window)) {
         return std::unexpected(Error::WindowInvalid);
     }

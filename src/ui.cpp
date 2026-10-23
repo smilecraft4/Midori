@@ -189,6 +189,7 @@ constexpr std::array<const char*, std::to_underlying(BlendMode::Count_)> kBlendM
 }
 
 void BrushEdit(BrushState& brush) noexcept {
+    ZoneScopedN("BrushEdit");
     ImGui::SliderFloat("Radius (F)", &brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.1f",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SliderFloat("Hardness (Ctrl+F)", &brush.hardness, 0.0f, 1.0f);
@@ -202,6 +203,7 @@ void BrushEdit(BrushState& brush) noexcept {
 // Outlines every tile of the window's canvas view on screen, labeled with its atlas cell and grid position. Drawn
 // behind the UI windows, over the canvas.
 void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
+    ZoneScopedN("TileCellsOverlay");
     const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
     if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
         return;
@@ -250,6 +252,7 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
 // The brush value being adjusted, around its center. Radius shows the brush outline with its hard core. Opacity and
 // hardness show the value's ring inside the faint ring of 1; hardness also draws the dab's falloff across it.
 void BrushAdjustOverlay(Window window, const WindowState& windowState, const ToolsState& tools) noexcept {
+    ZoneScopedN("BrushAdjustOverlay");
     const BrushAdjustState& adjust = gAppState.brushAdjust;
     if (adjust.mode == BrushAdjustMode::None || gAppState.canvasViews[adjust.view].window != window) {
         return;
@@ -299,6 +302,7 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
 // The chosen atlas's cells at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
 // drawn as straight alpha, so translucent paint looks darker than on the canvas.
 void TileAtlasWindow(Window window) noexcept {
+    ZoneScopedN("TileAtlasWindow");
     ImGui::SetNextWindowSize(ImVec2(400.0f, 450.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Tile atlas", &gUiState.tileAtlasShown[window])) {
         ImGui::End();
@@ -349,6 +353,7 @@ void TileAtlasWindow(Window window) noexcept {
 
 // ScaleAllSizes is not reversible, so a DPI change rebuilds the style from the defaults.
 void ApplyDpiScale(float dpiScale) noexcept {
+    ZoneScopedN("ApplyDpiScale");
     ImGuiStyle style{};
     ImGui::StyleColorsDark(&style);
     style.ScaleAllSizes(dpiScale);
@@ -402,6 +407,7 @@ void UiWindowTerminate(Window window) noexcept {
 }
 
 bool UiEvent(const Event& event) noexcept {
+    ZoneScopedN("UiEvent");
     const Window window = EventWindow(event);
     if (window >= kWindowMax || !gUiState.contexts[window]) {
         return false;

@@ -76,7 +76,7 @@ static_assert(std::is_trivially_copyable_v<LayerFileEntry>);
 static_assert(sizeof(LayerFileEntry) == kLayerNameLenMax + 16);
 
 constexpr std::uint32_t kCanvasFileMagic = 0x4F44494D; // "MIDO"
-constexpr std::uint32_t kCanvasFileVersion = 1;
+constexpr std::uint32_t kCanvasFileVersion = 2; // 2: tiles are QOI; version 1 raw tiles still read
 
 // Keys of the meta table.
 enum struct CanvasFileMeta : std::uint32_t {
@@ -330,6 +330,7 @@ struct CanvasState {
 // Tiles stay in the file until visible.
 [[nodiscard]] Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept;
 // Writes what changed since the last save into the canvas's file, in one transaction. The canvas must have one.
+// Transparent level-0 tiles are deleted, from the file and the canvas, with their level 1-3 tiles.
 [[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
 // Writes the whole canvas into a new file that then replaces `path`, and keeps it as the canvas's file.
 [[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
@@ -341,8 +342,9 @@ void CanvasDestroy(Canvas canvas) noexcept;
 // file. Above the occupancy watermark it evicts the tiles shown the longest ago. Transfers are bounded by the free
 // slots; visible tiles past what the atlas holds stay unloaded.
 void CanvasTilesStream() noexcept;
-// The JobExecuteFn of tile reads and writes, on a job thread.
-[[nodiscard]] Result<void> CanvasJobExecute(const Job& job) noexcept;
+// The JobExecuteFn of tile reads and writes, on a job thread. A transparent level-0 tile is not written but flagged
+// `empty`, and the main thread deletes it.
+[[nodiscard]] Result<void> CanvasJobExecute(Job& job) noexcept;
 
 struct CanvasViewCreateInfo {
     Viewport viewport{};

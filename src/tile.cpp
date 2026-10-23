@@ -56,6 +56,7 @@ namespace {
 
 // Best fit: the fullest page with a free run of the size.
 [[nodiscard]] TileAtlasCell TileAtlasCellPlaceFree(std::uint8_t level, TileAtlasOwner owner) noexcept {
+    ZoneScopedN("TileAtlasCellPlaceFree");
     const TileAtlasState& atlas = gAppState.atlas;
     std::uint32_t best = kTileAtlasPageMax;
     int bestUsed = -1;
@@ -112,6 +113,7 @@ namespace {
 // Evicts every owner of the aligned run whose owners were shown the longest ago, then places the cell there.
 // The GPU may still read an evicted cell in a frame in flight; its next fill is recorded after that frame.
 [[nodiscard]] TileAtlasCell TileAtlasCellPlaceEvicting(std::uint8_t level, TileAtlasOwner owner) noexcept {
+    ZoneScopedN("TileAtlasCellPlaceEvicting");
     TileAtlasState& atlas = gAppState.atlas;
     const std::uint8_t blocks = TileAtlasLevelBlocks(level);
     std::uint32_t bestPage = kTileAtlasPageMax;
@@ -158,12 +160,14 @@ bool TileEvictable(Canvas canvas, const TileState& tile) noexcept {
 }
 
 void TileEvict(TileState& tile) noexcept {
+    ZoneScopedN("TileEvict");
     TileAtlasCellFree(tile.cell);
     tile.cell = kTileAtlasCellInvalid;
     tile.flags &= ~(TileFlags::Loaded | TileFlags::Editable);
 }
 
 TileAtlasCell TileAtlasCellTake(std::uint8_t level, Canvas canvas, TileKey key) noexcept {
+    ZoneScopedN("TileAtlasCellTake");
     MIDORI_ASSERT(level < kTileMipMax, "atlas level {}", level);
     const TileAtlasOwner owner{.key = key, .canvas = canvas, .level = level};
     if (const TileAtlasCell cell = TileAtlasCellPlaceFree(level, owner); cell != kTileAtlasCellInvalid) {
@@ -179,6 +183,7 @@ TileAtlasCell TileAtlasCellTake(std::uint8_t level, Canvas canvas, TileKey key) 
 }
 
 void TileAtlasCellFree(TileAtlasCell cell) noexcept {
+    ZoneScopedN("TileAtlasCellFree");
     TileAtlasState& atlas = gAppState.atlas;
     const TileAtlasPage page = TileAtlasCellPage(cell);
     const std::uint8_t block = TileAtlasCellBlock(cell);
@@ -192,6 +197,7 @@ void TileAtlasCellFree(TileAtlasCell cell) noexcept {
 }
 
 void TileAtlasCellOwn(TileAtlasCell cell, Canvas canvas, TileKey key) noexcept {
+    ZoneScopedN("TileAtlasCellOwn");
     const TileAtlasPage page = TileAtlasCellPage(cell);
     const std::uint8_t block = TileAtlasCellBlock(cell);
     const std::uint8_t level = TileAtlasCellLevel(cell);
@@ -221,6 +227,7 @@ Result<void> TileNew(Tile tile) noexcept {
 }
 
 TileState& TileInsert(CanvasState& canvas, TileKey key, TileAtlasCell cell) noexcept {
+    ZoneScopedN("TileInsert");
     canvas.tileIndices.emplace(key, static_cast<std::uint32_t>(canvas.tiles.size()));
     canvas.tiles.push_back(TileState{
         .key = key,
@@ -237,6 +244,7 @@ TileState& TileInsert(CanvasState& canvas, TileKey key, TileAtlasCell cell) noex
 }
 
 void TileMipsDelete(Canvas canvas, TileKey key) noexcept {
+    ZoneScopedN("TileMipsDelete");
     const auto layer = static_cast<Layer>(key >> kTileLayerBitOffset);
     for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
         if (!TileDelete(Tile{.canvas = canvas, .mip = mip, .layer = layer, .gridPos = TileKeyGridPos(key)})) {

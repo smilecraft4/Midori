@@ -21,6 +21,7 @@ constexpr std::uint32_t kHistoryWaitUpdates = 300;
 
 // Frees the slots and cells of records [first, end), leaving the records in place.
 void HistoryRecordsFree(HistoryState& history, std::size_t first, std::size_t end) noexcept {
+    ZoneScopedN("HistoryRecordsFree");
     for (std::size_t r = first; r < end; ++r) {
         const HistoryRecord& record = history.records[r];
         for (std::uint32_t i = record.firstBlock; i < record.firstBlock + record.blockCount; ++i) {
@@ -36,6 +37,7 @@ void HistoryRecordsFree(HistoryState& history, std::size_t first, std::size_t en
 
 // Drops records [current, end).
 void HistoryRedoDrop(HistoryState& history) noexcept {
+    ZoneScopedN("HistoryRedoDrop");
     if (history.current == history.records.size()) {
         return;
     }
@@ -50,6 +52,7 @@ void HistoryRedoDrop(HistoryState& history) noexcept {
 // Drops the oldest record of any canvas: when its canvas has nothing left to undo, every record of it, since each
 // one only redoes onto the one before. False when no canvas has a record.
 [[nodiscard]] bool HistoryDropOldest() noexcept {
+    ZoneScopedN("HistoryDropOldest");
     HistoryState* oldest = nullptr;
     for (CanvasState& canvas : gAppState.canvases) {
         HistoryState& history = canvas.history;
@@ -151,11 +154,24 @@ void HistoryUpdate(Canvas canvas) noexcept {
     const std::span<HistoryBlock> blocks(history.blocks.data() + record.firstBlock, record.blockCount);
     const std::span<HistoryTile> tiles(history.tiles.data() + record.firstTile, record.tileCount);
 
-    // An upload placed but not recorded yet would land after the swap.
+    // An upload placed but not recorded yet would land after the swap. A tile deleted for being empty comes back clear
+    // for its blocks; its clear copy is recorded after the ops of the same submit, so the swap waits for the next one.
     bool ready = true;
-    const auto want = [&](TileKey key) {
+    const auto want = [&](TileKey key, bool recreate) {
         const auto found = state.tileIndices.find(key);
         if (found == state.tileIndices.end()) {
+            if (recreate) {
+                const Tile tile{
+                    .canvas = canvas,
+                    .mip = 0,
+                    .layer = static_cast<Layer>(key >> kTileLayerBitOffset),
+                    .gridPos = TileKeyGridPos(key),
+                };
+                ready = false;
+                if (!TileNew(tile)) {
+                    MIDORI_LOG_WARN("history: tile {:#018x} not created again", key);
+                }
+            }
             return;
         }
         TileState& tile = state.tiles[found->second];
@@ -163,10 +179,10 @@ void HistoryUpdate(Canvas canvas) noexcept {
         ready = ready && HasAnyFlag(tile.flags, TileFlags::Loaded) && !HasAnyFlag(tile.transfer, TileTransfer::Load);
     };
     for (const HistoryBlock& block : blocks) {
-        want(block.key);
+        want(block.key, true);
     }
     for (const HistoryTile& tile : tiles) {
-        want(tile.key);
+        want(tile.key, false);
     }
     if (!ready) {
         if (gAppState.frame - history.pendingFrame >= kHistoryWaitUpdates) {
@@ -207,7 +223,7 @@ void HistoryUpdate(Canvas canvas) noexcept {
             }
         }
     }
-    // A tile's blocks are contiguous. A tile deleted since keeps them for when it comes back.
+    // A tile's blocks are contiguous.
     for (std::size_t i = 0; i < blocks.size(); ++i) {
         const auto found = state.tileIndices.find(blocks[i].key);
         if (found == state.tileIndices.end()) {

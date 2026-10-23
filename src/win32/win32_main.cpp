@@ -21,6 +21,7 @@ namespace {
 // Every argument after the executable is a file to open, such as the one double-clicked in Explorer.
 // Relative paths are made absolute against the working directory.
 [[nodiscard]] std::vector<std::filesystem::path> CommandLineFiles() noexcept {
+    ZoneScopedN("CommandLineFiles");
     std::vector<std::filesystem::path> files;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);

@@ -51,6 +51,7 @@ constexpr std::uint32_t kStrokeWaitUpdates = 300;
 // Paint from here on goes into the tile: it gets its cell and a backup of what it holds now. A tile the stroke created
 // is still clear, so the clear cell serves as its backup.
 void StrokeTileAttach(StrokeTile& tile, TileState& tileState, bool created) noexcept {
+    ZoneScopedN("StrokeTileAttach");
     tile.cell = tileState.cell;
     if (created) {
         tile.backupCell = kTileAtlasCellClear;
@@ -68,6 +69,7 @@ void StrokeTileAttach(StrokeTile& tile, TileState& tileState, bool created) noex
 }
 
 void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
+    ZoneScopedN("DabAdd");
     if (stroke.dabs.size() >= kStrokeDabMax) {
         return;
     }
@@ -200,11 +202,13 @@ void StrokeTo(StrokePoint point) noexcept {
 }
 
 void StrokeEnd() noexcept {
+    ZoneScopedN("StrokeEnd");
     gAppState.stroke.ended = true;
     gAppState.stroke.endFrame = gAppState.frame;
 }
 
 void StrokeUpdate() noexcept {
+    ZoneScopedN("StrokeUpdate");
     StrokeState& stroke = gAppState.stroke;
     if (stroke.canvas == kCanvasInvalid) {
         return;
@@ -246,6 +250,7 @@ void StrokeUpdate() noexcept {
 }
 
 void StrokeRelease() noexcept {
+    ZoneScopedN("StrokeRelease");
     StrokeState& stroke = gAppState.stroke;
     // The GPU may still read a backup in a frame in flight; its next fill is recorded after that frame.
     for (const StrokeTile& tile : stroke.tiles) {

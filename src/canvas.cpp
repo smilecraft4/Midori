@@ -20,7 +20,22 @@
 #include <vector>
 
 #include <mdbx.h>
+#include <qoi.h>
 #include <tracy/Tracy.hpp>
+
+namespace Midori {
+
+// QOI's worst case for a tile: 5 bytes a texel, plus its header and end marker. Decoding needs less, 4 a texel.
+constexpr std::size_t kQoiBytesMax = (std::size_t{kTileSize} * kTileSize * 5) + 14 + 8;
+
+} // namespace Midori
+
+// QOI_MALLOC in qoi.c. A thread encodes or decodes one tile at a time, so each thread reuses one buffer, made on its
+// first call; QOI_FREE does nothing. A stream stays valid until the thread's next encode or decode.
+extern "C" void* MidoriQoiBuffer(std::size_t size) noexcept {
+    thread_local std::vector<std::byte> buffer(Midori::kQoiBytesMax);
+    return size <= buffer.size() ? buffer.data() : nullptr;
+}
 
 namespace Midori {
 
@@ -50,6 +65,7 @@ template<typename T>
 
 // libmdbx keeps the lock file even in exclusive mode; nothing else can be using it once the env is closed.
 void CanvasFileClose(CanvasFile& file) noexcept {
+    ZoneScopedN("CanvasFileClose");
     if (file.env) {
         const wchar_t* path = nullptr;
         std::filesystem::path lock;
@@ -110,6 +126,7 @@ void CanvasFileClose(CanvasFile& file) noexcept {
 
 // A new file in the temp directory. Losing it in a crash loses nothing saved, so it is never synced.
 [[nodiscard]] CanvasFile CacheOpen(Canvas canvas) noexcept {
+    ZoneScopedN("CacheOpen");
     std::error_code ec;
     const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
     if (!ec) {
@@ -125,6 +142,7 @@ void CanvasFileClose(CanvasFile& file) noexcept {
 }
 
 void CacheClose(CanvasFile& cache) noexcept {
+    ZoneScopedN("CacheClose");
     std::filesystem::path path;
     const wchar_t* raw = nullptr;
     if (cache.env && mdbx_env_get_pathW(cache.env, &raw) == MDBX_SUCCESS) {
@@ -135,9 +153,76 @@ void CacheClose(CanvasFile& cache) noexcept {
     std::filesystem::remove(path, ec);
 }
 
+// Every texel transparent: premultiplied, so every byte is zero. Only level-0 tiles are removed for it; an empty
+// level 1-3 tile of a painted one would only be built again.
+[[nodiscard]] bool TileEmpty(const std::byte* pixels) noexcept {
+    for (std::size_t row = 0; row < kTileBytes; row += std::size_t{kTileSize} * 4) {
+        std::uint64_t bits = 0;
+        for (std::size_t i = row; i < row + (std::size_t{kTileSize} * 4); i += sizeof(bits)) {
+            std::uint64_t word = 0;
+            std::memcpy(&word, pixels + i, sizeof(word));
+            bits |= word;
+        }
+        if (bits != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// QOI stream of a tile of `level` laid out as TileLevelBytes in `pixels`, in this thread's QOI buffer until its next
+// encode or decode. QOI keeps the premultiplied channels as they are. Null on failure.
+[[nodiscard]] void* TileEncode(TileMip level, const std::byte* pixels, int& size) noexcept {
+    ZoneScopedN("TileEncode");
+    const std::uint32_t side = TileLevelSize(level);
+    const std::size_t row = std::size_t{side} * 4;
+    // Only rows narrower than the 256-byte pitch are padded: level 3, 32^2.
+    std::array<std::byte, 32 * 32 * 4> packed;
+    if (TileLevelPitch(level) != row) {
+        MIDORI_ASSERT(row * side <= packed.size(), "level {} padded", level);
+        for (std::uint32_t y = 0; y < side; ++y) {
+            std::memcpy(packed.data() + (y * row), pixels + (y * TileLevelPitch(level)), row);
+        }
+        pixels = packed.data();
+    }
+    const qoi_desc desc{.width = side, .height = side, .channels = 4, .colorspace = QOI_LINEAR};
+    return qoi_encode(pixels, &desc, &size);
+}
+
+// Into TileLevelBytes of `pixels`. Version 1 files hold tiles raw: QOI's magic "qoif" read as a premultiplied texel has
+// more red than alpha, so no raw tile starts with it.
+[[nodiscard]] bool TileDecode(TileMip level, const MDBX_val& value, std::byte* pixels) noexcept {
+    ZoneScopedN("TileDecode");
+    const auto* data = static_cast<const unsigned char*>(value.iov_base);
+    if (value.iov_len == TileLevelBytes(level) && std::memcmp(data, "qoif", 4) != 0) {
+        std::memcpy(pixels, data, value.iov_len);
+        return true;
+    }
+    // The header's size is checked first, so a broken stream never asks for a large allocation.
+    const std::uint32_t side = TileLevelSize(level);
+    const auto bigEndian = [data](std::size_t offset) {
+        return (std::uint32_t{data[offset]} << 24) | (std::uint32_t{data[offset + 1]} << 16)
+             | (std::uint32_t{data[offset + 2]} << 8) | std::uint32_t{data[offset + 3]};
+    };
+    if (value.iov_len < 12 || bigEndian(4) != side || bigEndian(8) != side) {
+        return false;
+    }
+    qoi_desc desc{};
+    void* decoded = qoi_decode(data, static_cast<int>(value.iov_len), &desc, 4);
+    if (!decoded) {
+        return false;
+    }
+    const std::size_t row = std::size_t{side} * 4;
+    for (std::uint32_t y = 0; y < side; ++y) {
+        std::memcpy(pixels + (y * TileLevelPitch(level)), static_cast<const std::byte*>(decoded) + (y * row), row);
+    }
+    return true;
+}
+
 // A kTileBytes stride per key in `pixels`, each tile TileLevelBytes of its level.
 [[nodiscard]] Result<void> TilesRead(const CanvasFile& file, std::span<const TileKey> keys,
                                      std::span<std::byte> pixels) noexcept {
+    ZoneScopedN("TilesRead");
     MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
     if (keys.empty()) {
         return {};
@@ -151,13 +236,12 @@ void CacheClose(CanvasFile& cache) noexcept {
         MDBX_val key = Val(keys[i]);
         MDBX_val value{};
         const int rc = mdbx_get(txn, file.tilesDbi, &key, &value);
-        if (rc != MDBX_SUCCESS || value.iov_len != TileLevelBytes(TileKeyMip(keys[i]))) {
+        if (rc != MDBX_SUCCESS || !TileDecode(TileKeyMip(keys[i]), value, pixels.data() + (i * kTileBytes))) {
             MIDORI_LOG_ERROR("reading tile {:#018x}: {}", keys[i],
-                             rc == MDBX_SUCCESS ? "invalid size" : mdbx_strerror(rc));
+                             rc == MDBX_SUCCESS ? "invalid data" : mdbx_strerror(rc));
             mdbx_txn_abort(txn);
             return std::unexpected(Error::TileReadFailed);
         }
-        std::memcpy(pixels.data() + (i * kTileBytes), value.iov_base, value.iov_len);
     }
     mdbx_txn_abort(txn);
     return {};
@@ -165,6 +249,7 @@ void CacheClose(CanvasFile& cache) noexcept {
 
 [[nodiscard]] Result<void> TilesWrite(const CanvasFile& file, std::span<const TileKey> keys,
                                       std::span<const std::byte> pixels) noexcept {
+    ZoneScopedN("TilesWrite");
     MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
     MDBX_txn* txn = nullptr;
     if (const int rc = mdbx_txn_begin(file.env, nullptr, MDBX_TXN_READWRITE, &txn); rc != MDBX_SUCCESS) {
@@ -172,10 +257,17 @@ void CacheClose(CanvasFile& cache) noexcept {
         return std::unexpected(Error::TileCacheFailed);
     }
     for (std::size_t i = 0; i < keys.size(); ++i) {
+        int size = 0;
+        void* encoded = TileEncode(TileKeyMip(keys[i]), pixels.data() + (i * kTileBytes), size);
+        if (!encoded) {
+            MIDORI_LOG_ERROR("encoding tile {:#018x} failed", keys[i]);
+            mdbx_txn_abort(txn);
+            return std::unexpected(Error::TileCacheFailed);
+        }
         MDBX_val key = Val(keys[i]);
-        MDBX_val value{.iov_base = const_cast<std::byte*>(pixels.data() + (i * kTileBytes)),
-                       .iov_len = TileLevelBytes(TileKeyMip(keys[i]))};
-        if (const int rc = mdbx_put(txn, file.tilesDbi, &key, &value, MDBX_UPSERT); rc != MDBX_SUCCESS) {
+        MDBX_val value{.iov_base = encoded, .iov_len = static_cast<std::size_t>(size)};
+        const int rc = mdbx_put(txn, file.tilesDbi, &key, &value, MDBX_UPSERT);
+        if (rc != MDBX_SUCCESS) {
             LogMdbx("mdbx_put tile", rc);
             mdbx_txn_abort(txn);
             return std::unexpected(Error::TileCacheFailed);
@@ -189,8 +281,10 @@ void CacheClose(CanvasFile& cache) noexcept {
 }
 
 // Writes what changed since the last save, or the whole canvas into a new file when `all`. Deletes go
-// first, so a tile deleted then created again is written.
-[[nodiscard]] Result<void> CanvasFileWrite(CanvasState& canvas, const CanvasFile& file, bool all) noexcept {
+// first, so a tile deleted then created again is written. Transparent level-0 tiles are not written but deleted from
+// the file with their level 1-3 tiles, and returned in `empties`, sorted, for the caller to delete once committed.
+[[nodiscard]] Result<void> CanvasFileWrite(CanvasState& canvas, const CanvasFile& file, bool all,
+                                           std::vector<TileKey>& empties) noexcept {
     ZoneScopedN("CanvasFileWrite");
     // Tiles in the atlas are downloaded. Evicted ones are read from the cache, or from the canvas's own file when
     // unchanged since its last save.
@@ -325,9 +419,33 @@ void CacheClose(CanvasFile& cache) noexcept {
     }
 
     for (std::size_t i = 0; i < keys.size(); ++i) {
-        const MDBX_val value{.iov_base = pixels.data() + (i * kTileBytes),
-                             .iov_len = TileLevelBytes(TileKeyMip(keys[i]))};
-        if (const int rc = put(file.tilesDbi, Val(keys[i]), value); rc != MDBX_SUCCESS) {
+        if (TileKeyMip(keys[i]) == 0 && TileEmpty(pixels.data() + (i * kTileBytes))) {
+            empties.push_back(keys[i]);
+        }
+    }
+    std::ranges::sort(empties);
+    for (const TileKey empty : all ? std::span<const TileKey>{} : std::span<const TileKey>(empties)) {
+        for (TileMip mip = 0; mip < kTileMipMax; ++mip) {
+            MDBX_val key = Val(TileKeyWithMip(empty, mip));
+            if (const int rc = mdbx_del(txn, file.tilesDbi, &key, nullptr); rc != MDBX_SUCCESS && rc != MDBX_NOTFOUND) {
+                return fail("mdbx_del", rc);
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (std::ranges::binary_search(empties, TileKeyWithMip(keys[i], 0))) {
+            continue;
+        }
+        int size = 0;
+        void* encoded = TileEncode(TileKeyMip(keys[i]), pixels.data() + (i * kTileBytes), size);
+        if (!encoded) {
+            MIDORI_LOG_ERROR("encoding tile {:#018x} failed", keys[i]);
+            mdbx_txn_abort(txn);
+            return std::unexpected(Error::CanvasSaveFailed);
+        }
+        const int rc = put(file.tilesDbi, Val(keys[i]), MDBX_val{.iov_base = encoded, .iov_len = static_cast<std::size_t>(size)});
+        if (rc != MDBX_SUCCESS) {
             return fail("mdbx_put tile", rc);
         }
     }
@@ -340,7 +458,23 @@ void CacheClose(CanvasFile& cache) noexcept {
     return {};
 }
 
+// After the save committed, so the file no longer holds them either.
+void CanvasEmptiesDelete(CanvasState& canvas, std::span<const TileKey> empties) noexcept {
+    for (const TileKey key : empties) {
+        const Tile tile{
+            .canvas = canvas.id,
+            .mip = 0,
+            .layer = static_cast<Layer>(key >> kTileLayerBitOffset),
+            .gridPos = TileKeyGridPos(key),
+        };
+        if (!TileDelete(tile)) {
+            MIDORI_LOG_WARN("empty tile {:#018x} not deleted", key);
+        }
+    }
+}
+
 void CanvasMarkSaved(CanvasState& canvas) noexcept {
+    ZoneScopedN("CanvasMarkSaved");
     for (TileState& tile : canvas.tiles) {
         tile.flags = (tile.flags | TileFlags::Saved) & ~TileFlags::Modified;
     }
@@ -359,6 +493,7 @@ void CanvasMarkSaved(CanvasState& canvas) noexcept {
 }
 
 [[nodiscard]] Result<Canvas> CanvasSlotTake() noexcept {
+    ZoneScopedN("CanvasSlotTake");
     const auto it = std::ranges::find(gAppState.canvases, kCanvasInvalid, &CanvasState::id);
     if (it == gAppState.canvases.end()) {
         MIDORI_LOG_ERROR("all {} canvases are in use", kCanvasMax);
@@ -394,6 +529,7 @@ constexpr std::uint32_t kMipBuildsPerUpdate = 16;
 }
 
 void TileJobsFinish() noexcept {
+    ZoneScopedN("TileJobsFinish");
     TileTransfersState& transfers = gAppState.transfers;
     std::vector<Job> jobs;
     JobsTakeFinished(jobs);
@@ -412,10 +548,22 @@ void TileJobsFinish() noexcept {
         } else {
             TileSlot& slot = transfers.downloads[job.slot];
             if (TileState* tile = TileFind(slot.canvas, slot.key)) {
-                if (!job.failed && tile->edits == tile->cacheEdits) {
+                tile->transfer &= ~TileTransfer::Cache;
+                // Any edit since the download bumped `edits`, so the tile is still what was found empty.
+                const bool current = !job.failed && tile->edits == tile->cacheEdits;
+                if (current && job.empty && !StrokeHasTile(gAppState.stroke, slot.canvas, slot.key)) {
+                    const Tile empty{
+                        .canvas = slot.canvas,
+                        .mip = 0,
+                        .layer = static_cast<Layer>(slot.key >> kTileLayerBitOffset),
+                        .gridPos = TileKeyGridPos(slot.key),
+                    };
+                    if (!TileDelete(empty)) {
+                        MIDORI_LOG_WARN("empty tile {:#018x} not deleted", slot.key);
+                    }
+                } else if (current && !job.empty) {
                     tile->flags |= TileFlags::CachedDisk;
                 }
-                tile->transfer &= ~TileTransfer::Cache;
             }
             slot.state = TileSlotState::Free;
         }
@@ -424,6 +572,7 @@ void TileJobsFinish() noexcept {
 
 // Uploads are done once the GPU passes their fence; downloads then go to the writer.
 void TileSlotsAdvance() noexcept {
+    ZoneScopedN("TileSlotsAdvance");
     TileTransfersState& transfers = gAppState.transfers;
     const std::uint64_t completed = GraphicsCompletedFence();
     for (TileSlot& slot : transfers.uploads) {
@@ -451,6 +600,7 @@ void TileSlotsAdvance() noexcept {
             .canvas = slot.canvas,
             .type = JobType::TileWrite,
             .failed = false,
+            .empty = false,
         });
         slot.state = TileSlotState::Job;
     }
@@ -459,6 +609,7 @@ void TileSlotsAdvance() noexcept {
 // Read uploads take their cell now, not before the read, so a slow read holds no atlas space. The tile counts
 // as Loaded from here: the next submit records its copy before any draw or stroke.
 void TileUploadsPlace() noexcept {
+    ZoneScopedN("TileUploadsPlace");
     for (TileSlot& slot : gAppState.transfers.uploads) {
         if (slot.state != TileSlotState::Ready) {
             continue;
@@ -481,6 +632,7 @@ void TileUploadsPlace() noexcept {
 
 // Loaded tiles no longer shown whose content is stored nowhere go to the cache, which makes them evictable.
 void TileCachesSchedule(CanvasState& canvas) noexcept {
+    ZoneScopedN("TileCachesSchedule");
     if (!canvas.cache.env) {
         return;
     }
@@ -509,6 +661,7 @@ void TileCachesSchedule(CanvasState& canvas) noexcept {
 
 // The cache holds the latest content of a tile edited since the save, so it goes first.
 void TileLoadsSchedule(CanvasState& canvas) noexcept {
+    ZoneScopedN("TileLoadsSchedule");
     auto& slots = gAppState.transfers.uploads;
     for (TileState& tile : canvas.tiles) {
         if (tile.visibleFrame != gAppState.frame || tile.cell != kTileAtlasCellInvalid
@@ -528,6 +681,7 @@ void TileLoadsSchedule(CanvasState& canvas) noexcept {
             .canvas = canvas.id,
             .type = JobType::TileRead,
             .failed = false,
+            .empty = false,
         });
         slots[i] = TileSlot{
             .fence = 0,
@@ -544,6 +698,7 @@ void TileLoadsSchedule(CanvasState& canvas) noexcept {
 // Modified, so streaming caches them once off screen and a save writes them, while views zoomed out draw them
 // instead of level 0. Up to `budget` level-0 tiles per update, shared by every canvas.
 void TileMipsSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept {
+    ZoneScopedN("TileMipsSchedule");
     for (std::uint32_t i = 0; i < canvas.tiles.size() && budget > 0; ++i) {
         // Copied: TileInsert grows `tiles`.
         const TileKey key = canvas.tiles[i].key;
@@ -736,7 +891,8 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
         }
         TileKey tileKey{};
         std::memcpy(&tileKey, key.iov_base, sizeof(tileKey));
-        if (value.iov_len != TileLevelBytes(TileKeyMip(tileKey))) {
+        // Decoding checks the content when the tile is read.
+        if (value.iov_len == 0) {
             break;
         }
         canvas.tileIndices.emplace(tileKey, static_cast<std::uint32_t>(canvas.tiles.size()));
@@ -765,9 +921,11 @@ Result<void> CanvasSave(Canvas canvas) noexcept {
     ZoneScopedN("CanvasSave");
     CanvasState& state = gAppState.canvases[canvas];
     MIDORI_ASSERT(state.id == canvas && state.file.env, "canvas {} has no file", canvas);
-    if (const auto res = CanvasFileWrite(state, state.file, false); !res) {
+    std::vector<TileKey> empties;
+    if (const auto res = CanvasFileWrite(state, state.file, false, empties); !res) {
         return res;
     }
+    CanvasEmptiesDelete(state, empties);
     CanvasMarkSaved(state);
     return {};
 }
@@ -793,7 +951,8 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
     if (!file) {
         return std::unexpected(file.error());
     }
-    const auto written = CanvasFileWrite(state, *file, true);
+    std::vector<TileKey> empties;
+    const auto written = CanvasFileWrite(state, *file, true, empties);
     CanvasFileClose(*file);
     if (!written) {
         std::filesystem::remove(temp, ec);
@@ -810,6 +969,7 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
     JobsWaitIdle();
     CanvasFileClose(state.file);
     state.path = path;
+    CanvasEmptiesDelete(state, empties);
     CanvasMarkSaved(state);
     const auto reopened = CanvasFileOpen(path, false, Error::CanvasSaveFailed, MDBX_ENV_DEFAULTS);
     if (!reopened) {
@@ -873,10 +1033,15 @@ void CanvasTilesStream() noexcept {
     TileAtlasRelieve();
 }
 
-Result<void> CanvasJobExecute(const Job& job) noexcept {
+Result<void> CanvasJobExecute(Job& job) noexcept {
+    ZoneScopedN("CanvasJobExecute");
     const std::span<const TileKey> key(&job.key, 1);
     const std::span<std::byte> pixels(job.pixels, kTileBytes);
-    return job.type == JobType::TileRead ? TilesRead(job.file, key, pixels) : TilesWrite(job.file, key, pixels);
+    if (job.type == JobType::TileRead) {
+        return TilesRead(job.file, key, pixels);
+    }
+    job.empty = TileKeyMip(job.key) == 0 && TileEmpty(job.pixels);
+    return job.empty ? Result<void>{} : TilesWrite(job.file, key, pixels);
 }
 
 } // namespace Midori

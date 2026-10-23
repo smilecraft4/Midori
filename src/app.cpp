@@ -56,6 +56,7 @@ static_assert(kCanvasViewMax >= kWindowMax, "a window without a view always find
 // A canvas nobody can see is gone: its unsaved changes were saved or discarded before, see
 // CanvasViewReleaseConfirmed.
 void CanvasViewDetach(CanvasView view) noexcept {
+    ZoneScopedN("CanvasViewDetach");
     CanvasViewState& viewState = gAppState.canvasViews[view];
     const Canvas canvas = viewState.canvas;
     viewState = {};
@@ -78,6 +79,7 @@ void CanvasViewDetach(CanvasView view) noexcept {
 }
 
 void CanvasTitlesUpdate(Canvas canvas) noexcept {
+    ZoneScopedN("CanvasTitlesUpdate");
     const CanvasState& state = gAppState.canvases[canvas];
     const std::string title = std::format("{}{} - {}", CanvasName(state), state.modified ? "*" : "", MIDORI_NAME);
     for (const CanvasViewState& view : gAppState.canvasViews) {
@@ -91,6 +93,7 @@ void CanvasTitlesUpdate(Canvas canvas) noexcept {
 
 // The window's view shows `canvas` from now on, with a fresh viewport.
 void WindowShowCanvas(Window window, Canvas canvas) noexcept {
+    ZoneScopedN("WindowShowCanvas");
     AppState& app = gAppState;
     CanvasView view = WindowCanvasView(window);
     if (view != kCanvasViewInvalid) {
@@ -109,6 +112,7 @@ void WindowShowCanvas(Window window, Canvas canvas) noexcept {
 
 // Dialogs run their own message loop; AppEvent drops what arrives meanwhile.
 [[nodiscard]] DialogChoice AppAskSave(Window window, std::string_view name) noexcept {
+    ZoneScopedN("AppAskSave");
     const std::string instruction = std::format("Do you want to save changes to {}?", name);
     gAppState.modal = true;
     const DialogChoice choice = DialogAsk(DialogAskInfo{
@@ -124,6 +128,7 @@ void WindowShowCanvas(Window window, Canvas canvas) noexcept {
 }
 
 void AppError(Window window, std::string_view instruction, Error error) noexcept {
+    ZoneScopedN("AppError");
     const std::string content = std::format("Reason: {}.", ErrorMessage(error));
     gAppState.modal = true;
     DialogError(window, MIDORI_NAME, instruction, content);
@@ -132,6 +137,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 
 [[nodiscard]] Result<std::filesystem::path> AppFileDialog(Window window, bool save,
                                                           const std::filesystem::path& initial) noexcept {
+    ZoneScopedN("AppFileDialog");
     const DialogFileInfo info{
         .initial = initial,
         .typeName = kCanvasTypeName,
@@ -149,6 +155,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 
 // True once the canvas is on disk, false when the user canceled. Failures were shown to the user.
 [[nodiscard]] Result<bool> CanvasSaveWithDialogs(Window window, Canvas canvas, bool saveAs) noexcept {
+    ZoneScopedN("CanvasSaveWithDialogs");
     const CanvasState& state = gAppState.canvases[canvas];
     if (!saveAs && state.file.env) {
         if (const auto res = CanvasSave(canvas); !res) {
@@ -182,6 +189,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 // Before `view` stops showing its canvas. False when the user cancels, or the save they asked for did not
 // happen.
 [[nodiscard]] bool CanvasViewReleaseConfirmed(CanvasView view) noexcept {
+    ZoneScopedN("CanvasViewReleaseConfirmed");
     const Window window = gAppState.canvasViews[view].window;
     const Canvas canvas = gAppState.canvasViews[view].canvas;
     if (!gAppState.canvases[canvas].modified || CanvasShownElsewhere(canvas, view)) {
@@ -201,6 +209,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 }
 
 [[nodiscard]] Result<void> WindowCanvasSave(Window window, bool saveAs) noexcept {
+    ZoneScopedN("WindowCanvasSave");
     const CanvasView view = WindowCanvasView(window);
     if (view == kCanvasViewInvalid) {
         return {};
@@ -213,6 +222,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 
 // Replaces the window's canvas without asking: callers confirm first. Failures are shown to the user.
 [[nodiscard]] Result<void> WindowOpenFile(Window window, const std::filesystem::path& path) noexcept {
+    ZoneScopedN("WindowOpenFile");
     // Already open, and so locked: show that canvas.
     std::error_code ec;
     for (const CanvasState& canvas : gAppState.canvases) {
@@ -233,6 +243,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 // Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating
 // while held. B paints, E erases, F11 toggles fullscreen, Tab hides or shows the UI.
 [[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
+    ZoneScopedN("KeyShortcut");
     const bool repeats = key.key == Key::Z || key.key == Key::Y;
     if (key.inputState != InputState::Press && !(repeats && key.inputState == InputState::Hold)) {
         return {};
@@ -298,6 +309,7 @@ struct ViewPoint {
 
 // The canvas point under the last pointer position.
 [[nodiscard]] Result<StrokePoint> CanvasPointUnderPointer(CanvasView view, float pressure) noexcept {
+    ZoneScopedN("CanvasPointUnderPointer");
     const CanvasViewState& viewState = gAppState.canvasViews[view];
     const auto windowState = WindowGetState(viewState.window);
     if (!windowState) {
@@ -312,6 +324,7 @@ struct ViewPoint {
 // Starts a frame: the tiles any view's client area overlaps get the new frame as `visibleFrame`. A rotated view
 // marks the tiles of its bounding box.
 void TilesMarkVisible() noexcept {
+    ZoneScopedN("TilesMarkVisible");
     const std::uint32_t frame = ++gAppState.frame;
     for (const CanvasViewState& view : gAppState.canvasViews) {
         if (view.id == kCanvasViewInvalid) {
@@ -366,6 +379,7 @@ void TilesMarkVisible() noexcept {
 }
 
 void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
+    ZoneScopedN("NavigateBegin");
     gAppState.navigate = NavigateState{
         .viewportStart = gAppState.canvasViews[view].viewport,
         .pointerStartX = gAppState.pointerX,
@@ -392,6 +406,7 @@ void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
 }
 
 void NavigateUpdate() noexcept {
+    ZoneScopedN("NavigateUpdate");
     const NavigateState& navigate = gAppState.navigate;
     CanvasViewState& view = gAppState.canvasViews[navigate.view];
     const auto windowState = WindowGetState(view.window);
@@ -443,6 +458,7 @@ void NavigateEnd() noexcept {
 // the event belongs to navigation. Releases and focus loss are handled even when the UI wants them, so a
 // drag never sticks.
 [[nodiscard]] bool Navigate(const Event& event, bool uiWants) noexcept {
+    ZoneScopedN("Navigate");
     AppState& app = gAppState;
     switch (event.type) {
         case EventType::Key: {
@@ -533,6 +549,7 @@ void NavigateEnd() noexcept {
 
 // Ctrl snaps to a power of two.
 void BrushAdjustApply() noexcept {
+    ZoneScopedN("BrushAdjustApply");
     const BrushAdjustState& adjust = gAppState.brushAdjust;
     float value = adjust.value;
     if (HasAnyFlag(gAppState.keyMods, KeyMod::Ctrl) && value > 0.0f) {
@@ -544,6 +561,7 @@ void BrushAdjustApply() noexcept {
 }
 
 void BrushAdjustCancel() noexcept {
+    ZoneScopedN("BrushAdjustCancel");
     BrushAdjustState& adjust = gAppState.brushAdjust;
     BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = adjust.startValue;
     adjust = {};
@@ -554,6 +572,7 @@ void BrushAdjustCancel() noexcept {
 // Ctrl snaps it to powers of two, together or not. Left click or Enter keeps the value, right click or Escape restores it. While
 // adjusting, every input event belongs to it.
 [[nodiscard]] bool BrushAdjust(const Event& event, bool uiWants) noexcept {
+    ZoneScopedN("BrushAdjust");
     AppState& app = gAppState;
     BrushAdjustState& adjust = app.brushAdjust;
     if (adjust.mode == BrushAdjustMode::None) {
@@ -663,6 +682,7 @@ void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
 // Left drag paints or erases layer 0, by the current tool. Releases and focus loss end the stroke even when the UI
 // wants them. Returns true when the event belongs to the stroke.
 [[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
+    ZoneScopedN("Paint");
     StrokeState& stroke = gAppState.stroke;
     const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended;
     switch (event.type) {
@@ -944,6 +964,7 @@ Result<void> AppCanvasSaveAs(Window window) noexcept {
 }
 
 Result<void> AppUndo(Window window) noexcept {
+    ZoneScopedN("AppUndo");
     const CanvasView view = WindowCanvasView(window);
     if (view == kCanvasViewInvalid) {
         return {};
@@ -959,6 +980,7 @@ Result<void> AppUndo(Window window) noexcept {
 }
 
 Result<void> AppRedo(Window window) noexcept {
+    ZoneScopedN("AppRedo");
     const CanvasView view = WindowCanvasView(window);
     if (view == kCanvasViewInvalid) {
         return {};
@@ -975,6 +997,7 @@ Result<void> AppRedo(Window window) noexcept {
 }
 
 Result<void> AppToggleFullscreen(Window window) noexcept {
+    ZoneScopedN("AppToggleFullscreen");
     const auto state = WindowGetState(window);
     if (!state) {
         return std::unexpected(state.error());
@@ -985,11 +1008,13 @@ Result<void> AppToggleFullscreen(Window window) noexcept {
 
 // A stroke in progress keeps the tool it began with.
 Result<void> AppPaintMode() noexcept {
+    ZoneScopedN("AppPaintMode");
     gAppState.tools.tool = Tool::Paint;
     return {};
 }
 
 Result<void> AppEraseMode() noexcept {
+    ZoneScopedN("AppEraseMode");
     gAppState.tools.tool = Tool::Erase;
     return {};
 }

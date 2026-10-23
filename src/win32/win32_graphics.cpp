@@ -191,10 +191,12 @@ void WaitForFence(std::uint64_t value) noexcept {
 }
 
 void WaitIdle() noexcept {
+    ZoneScopedN("WaitIdle");
     WaitForFence(gGraphicsState.fenceValue);
 }
 
 [[nodiscard]] Result<void> AcquireBuffers(Window window) noexcept {
+    ZoneScopedN("AcquireBuffers");
     Win32SwapChain& slot = gGraphicsState.windows[window];
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         if (const HRESULT hr = slot.swapChain->GetBuffer(i, IID_PPV_ARGS(&slot.buffers[i])); FAILED(hr)) {
@@ -218,6 +220,7 @@ void WaitIdle() noexcept {
 
 void UiTextureAlloc(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE* cpu,
                     D3D12_GPU_DESCRIPTOR_HANDLE* gpu) {
+    ZoneScopedN("UiTextureAlloc");
     for (UINT i = 0; i < kUiTextureMax; ++i) {
         if (!gGraphicsState.uiTextures[i]) {
             gGraphicsState.uiTextures[i] = true;
@@ -232,6 +235,7 @@ void UiTextureAlloc(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HAND
 
 void UiTextureFree(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE cpu,
                    D3D12_GPU_DESCRIPTOR_HANDLE /*gpu*/) {
+    ZoneScopedN("UiTextureFree");
     const SIZE_T offset = cpu.ptr - ViewCpu(kUiTextureFirstView).ptr;
     const auto texture = static_cast<UINT>(offset / gGraphicsState.viewIncrement);
     MIDORI_ASSERT(texture < kUiTextureMax && gGraphicsState.uiTextures[texture], "UI texture view {} not in use",
@@ -241,6 +245,7 @@ void UiTextureFree(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDL
 
 // The GPU must be done with the window's buffers and UI resources.
 void ReleaseWindow(Win32SwapChain& slot) noexcept {
+    ZoneScopedN("ReleaseWindow");
     if (slot.ui) {
         ImGui::SetCurrentContext(slot.ui);
         ImGui_ImplDX12_Shutdown();
@@ -288,6 +293,7 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
 
 // Created in PIXEL_SHADER_RESOURCE, the state every atlas is in between transfers.
 [[nodiscard]] Result<void> TilePoolCreate(TileAtlas atlas) noexcept {
+    ZoneScopedN("TilePoolCreate");
     GraphicsState& state = gGraphicsState;
     const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
     const CD3DX12_RESOURCE_DESC desc =
@@ -490,6 +496,7 @@ void RecordTileAtlasDebug() noexcept {
     }
     state.tileAtlasDebugRequested = false;
     ZoneScopedN("RecordTileAtlasDebug");
+    TracyD3D12NamedZone(state.gpuProfiler, gpuAtlasDebugZone, state.list, "GpuTileAtlasDebug", true);
 
     ID3D12Resource* pool = state.tilePools[state.tileAtlasDebugAtlas];
     const std::array toCopy = {
@@ -516,6 +523,7 @@ void RecordTileAtlasDebug() noexcept {
 
 // Outside Submit: waits for the GPU so the current allocator is free, and opens the list on it.
 void ListBeginAndWait() noexcept {
+    ZoneScopedN("ListBeginAndWait");
     GraphicsState& state = gGraphicsState;
     WaitIdle();
     state.allocators[state.allocatorIndex]->Reset();
@@ -523,6 +531,7 @@ void ListBeginAndWait() noexcept {
 }
 
 void ListExecuteAndWait() noexcept {
+    ZoneScopedN("ListExecuteAndWait");
     GraphicsState& state = gGraphicsState;
     state.list->Close();
     ID3D12CommandList* lists[] = {state.list};
@@ -534,6 +543,7 @@ void ListExecuteAndWait() noexcept {
 
 // A buffer holding `count` tiles back to back; the pool's mip 0 rows need no padding.
 [[nodiscard]] Result<ID3D12Resource*> TileBufferCreate(D3D12_HEAP_TYPE heapType, std::size_t count) noexcept {
+    ZoneScopedN("TileBufferCreate");
     const CD3DX12_HEAP_PROPERTIES heap(heapType);
     const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(count * kTileBytes);
     const D3D12_RESOURCE_STATES initial =
@@ -582,6 +592,7 @@ void RecordTileUploads() noexcept {
         return;
     }
     ZoneScopedN("RecordTileUploads");
+    TracyD3D12NamedZone(state.gpuProfiler, gpuUploadsZone, state.list, "GpuTileUploads", true);
     TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
     for (TileTransferSlot i = 0; i < kTileTransferSlots; ++i) {
         TileSlot& slot = slots[i];
@@ -646,6 +657,7 @@ void RecordTileDownloads() noexcept {
         return;
     }
     ZoneScopedN("RecordTileDownloads");
+    TracyD3D12NamedZone(state.gpuProfiler, gpuDownloadsZone, state.list, "GpuTileDownloads", true);
     TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
     for (TileTransferSlot i = 0; i < kTileTransferSlots; ++i) {
         TileSlot& slot = slots[i];
@@ -778,6 +790,7 @@ void RecordTileDownloads() noexcept {
 
                 // Straight-alpha "over" blending, which also leaves the target premultiplied.
                 if (slot.ui) {
+                    TracyD3D12NamedZone(state.gpuProfiler, gpuUiZone, state.list, "GpuUi", true);
                     ImGui::SetCurrentContext(slot.ui);
                     if (ImDrawData* drawData = ImGui::GetDrawData()) {
                         ImGui_ImplDX12_RenderDrawData(drawData, state.list);
@@ -1356,6 +1369,7 @@ Result<void> GraphicsTileAtlasCreate(TileAtlas atlas) noexcept {
 
 // One debug texture: when windows show different atlases in a frame, the last to ask wins.
 std::uint64_t GraphicsTileAtlasDebugTexture(TileAtlas atlas) noexcept {
+    ZoneScopedN("GraphicsTileAtlasDebugTexture");
     GraphicsState& state = gGraphicsState;
     MIDORI_ASSERT(atlas < kTileAtlasMax && state.tilePools[atlas], "atlas {} not created", atlas);
     state.tileAtlasDebugAtlas = atlas;
@@ -1390,16 +1404,20 @@ Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells, std::sp
 
     ListBeginAndWait();
     state.list->SetDescriptorHeaps(1, &state.views);
-    RecordHistory();
-    RecordTileCreates();
-    RecordTileUploads();
-    RecordStroke();
-    RecordTileMips();
-    TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-        TileCopyFromCell(cells[i], *readback, i);
+    {
+        // GPU zones record timestamp queries into the list, so they must close before it does.
+        TracyD3D12NamedZone(state.gpuProfiler, gpuSaveZone, state.list, "GpuTilesDownload", true);
+        RecordHistory();
+        RecordTileCreates();
+        RecordTileUploads();
+        RecordStroke();
+        RecordTileMips();
+        TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        for (std::size_t i = 0; i < cells.size(); ++i) {
+            TileCopyFromCell(cells[i], *readback, i);
+        }
+        TilePoolsTransition(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
-    TilePoolsTransition(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     ListExecuteAndWait();
 
     void* mapped = nullptr;
@@ -1417,6 +1435,7 @@ Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells, std::sp
 }
 
 DWORD GraphicsFrameWaitables(std::span<HANDLE, kWindowMax> handles, std::span<Window, kWindowMax> windows) noexcept {
+    ZoneScopedN("GraphicsFrameWaitables");
     DWORD count = 0;
     for (Window window = 0; window < kWindowMax; ++window) {
         const Win32SwapChain& slot = gGraphicsState.windows[window];
