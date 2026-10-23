@@ -77,6 +77,8 @@ struct GraphicsState {
     ID3D12DescriptorHeap* rtvs;
     ID3D12RootSignature* tileRootSignature;   // embedded in tile.vs.hlsl
     ID3D12PipelineState* tilePipeline;
+    ID3D12RootSignature* outlineRootSignature; // embedded in brush_outline.vs.hlsl
+    ID3D12PipelineState* outlinePipeline;
     ID3D12RootSignature* strokeRootSignature; // embedded in stroke.cs.hlsl
     ID3D12PipelineState* strokePipeline;
     ID3D12RootSignature* mipRootSignature; // embedded in tile_mip.cs.hlsl

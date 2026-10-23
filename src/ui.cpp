@@ -249,7 +249,7 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
     }
 }
 
-// The brush value being adjusted, around its center. Radius shows the brush outline with its hard core. Opacity and
+// The brush value being adjusted, around its center. Radius shows the brush outline. Opacity and
 // hardness show the value's ring inside the faint ring of 1; hardness also draws the dab's falloff across it.
 void BrushAdjustOverlay(Window window, const WindowState& windowState, const ToolsState& tools) noexcept {
     ZoneScopedN("BrushAdjustOverlay");
@@ -268,7 +268,6 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     if (adjust.mode == BrushAdjustMode::Radius) {
         const float radius = brush.radius * std::abs(gAppState.canvasViews[adjust.view].viewport.zoomX) * scale;
         drawList->AddCircle(center, radius, kStrong, 0, 2.0f * scale);
-        drawList->AddCircle(center, radius * brush.hardness, kFaint, 0, scale);
         value = brush.radius;
     } else {
         const float range = kBrushAdjustRangeDips * scale;
@@ -382,6 +381,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.BackendPlatformName = "midori";
+    io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;
     // No keyboard navigation: Space would press the focused widget instead of navigating the canvas.
     // imgui.cpp's default Win32 IME handler places the candidate window over this handle.
     ImGui::GetMainViewport()->PlatformHandleRaw = *hwnd;
@@ -461,6 +461,38 @@ bool UiEvent(const Event& event) noexcept {
             break;
     }
     return false;
+}
+
+std::optional<WindowCursor> UiCursor(Window window) noexcept {
+    if (window >= kWindowMax || !gUiState.contexts[window]) {
+        return std::nullopt;
+    }
+    ImGui::SetCurrentContext(gUiState.contexts[window]);
+    if (!ImGui::GetIO().WantCaptureMouse) {
+        return std::nullopt;
+    }
+    switch (ImGui::GetMouseCursor()) {
+        case ImGuiMouseCursor_None:
+            return WindowCursor::None;
+        case ImGuiMouseCursor_TextInput:
+            return WindowCursor::Text;
+        case ImGuiMouseCursor_ResizeAll:
+            return WindowCursor::Move;
+        case ImGuiMouseCursor_ResizeNS:
+            return WindowCursor::ResizeNS;
+        case ImGuiMouseCursor_ResizeEW:
+            return WindowCursor::ResizeEW;
+        case ImGuiMouseCursor_ResizeNESW:
+            return WindowCursor::ResizeNESW;
+        case ImGuiMouseCursor_ResizeNWSE:
+            return WindowCursor::ResizeNWSE;
+        case ImGuiMouseCursor_Hand:
+            return WindowCursor::Hand;
+        case ImGuiMouseCursor_NotAllowed:
+            return WindowCursor::NotAllowed;
+        default:
+            return WindowCursor::Arrow;
+    }
 }
 
 UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept {

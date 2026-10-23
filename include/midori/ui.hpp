@@ -7,6 +7,7 @@
 #include "midori/viewport.hpp"
 #include <array>
 #include <cstdint>
+#include <optional>
 
 struct ImGuiContext;
 
@@ -55,6 +56,9 @@ enum struct UiCommand : std::uint8_t {
 // Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
 // panel edits `viewport` and its canvas's `backgroundColor`, and is hidden while the window shows no canvas view
 // (both null). The tool panel edits `tools`.
+// The cursor the UI asks for while it has the pointer, as of the window's last frame; nothing when the canvas has it.
+[[nodiscard]] std::optional<WindowCursor> UiCursor(Window window) noexcept;
+
 [[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor,
                                       ToolsState& tools) noexcept;
 

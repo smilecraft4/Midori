@@ -25,6 +25,21 @@ enum struct WindowDisplayMode : std::uint8_t {
     Fullscreened,
 };
 
+// Shown while the pointer is over the client area. A cursor the system lacks shows as None.
+enum struct WindowCursor : std::uint8_t {
+    Arrow,
+    None,
+    Text,
+    Hand,
+    Move,
+    ResizeNS,
+    ResizeEW,
+    ResizeNESW,
+    ResizeNWSE,
+    NotAllowed,
+    Count_,
+};
+
 using Window = std::uint8_t;
 constexpr Window kWindowMax = 8;
 constexpr Window kWindowInvalid = std::numeric_limits<Window>::max();
@@ -50,6 +65,7 @@ struct WindowState {
     float dpiScale{1.0f};
     Window id{kWindowInvalid};
     WindowDisplayMode displayMode{};
+    bool hovered{}; // the pointer is over the client area
 };
 
 // The app quits once its last window is destroyed, whether by the user or by WindowDestroy.
@@ -62,6 +78,8 @@ struct WindowState {
 // Fullscreened is borderless, covering the window's current monitor; leaving it restores the exact
 // previous placement, maximized included when leaving for Normal.
 [[nodiscard]] Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) noexcept;
+// Takes effect at once when the pointer is over the window, else when it next enters.
+[[nodiscard]] Result<void> WindowSetCursor(Window window, WindowCursor cursor) noexcept;
 
 [[nodiscard]] Result<void*> WindowGetNativeHandle(Window window) noexcept;
 

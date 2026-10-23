@@ -58,6 +58,16 @@ struct BrushAdjustState {
     BrushAdjustMode mode{}; // None while not adjusting
 };
 
+// Where a window shows the brush outline this frame, in physical pixels of its client area. AppWindowFrame sets it,
+// the renderer draws it over the canvas, inverting what is below.
+struct BrushOutlineState {
+    float x;
+    float y;
+    float radius; // the current tool's brush, or what the stroke paints at right now
+    float lineWidth;
+    bool shown;
+};
+
 // Owned by the main thread. A canvas id indexes `canvases`, a canvas view id indexes `canvasViews`.
 // Pointer and keyboard state is the devices', not any one view's.
 struct AppState {
@@ -69,6 +79,7 @@ struct AppState {
     HistoryPoolState historyPool;
     NavigateState navigate;
     BrushAdjustState brushAdjust;
+    std::array<BrushOutlineState, kWindowMax> brushOutlines; // indexed by window
     StrokeState stroke;
     ToolsState tools;
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible

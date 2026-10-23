@@ -77,6 +77,10 @@ struct StrokeState {
     bool ended{};             // the GPU records what is left, then StrokeUpdate frees the backups
 };
 
+[[nodiscard]] constexpr float DabRadius(const BrushState& brush, float pressure) noexcept {
+    return brush.pressureRadius ? brush.radius * pressure : brush.radius;
+}
+
 // The GPU has a backup or dirty texels to record.
 [[nodiscard]] constexpr bool StrokeTilePending(const StrokeTile& tile) noexcept {
     return tile.backupCell != kTileAtlasCellInvalid && (!tile.backedUp || tile.dirtyMinX < tile.dirtyMaxX);

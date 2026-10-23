@@ -547,12 +547,12 @@ void NavigateEnd() noexcept {
     return kBrushAdjustRangeDips * dpiScale;
 }
 
-// Ctrl snaps to a power of two.
+// Alt snaps to a power of two, as it snaps navigation.
 void BrushAdjustApply() noexcept {
     ZoneScopedN("BrushAdjustApply");
     const BrushAdjustState& adjust = gAppState.brushAdjust;
     float value = adjust.value;
-    if (HasAnyFlag(gAppState.keyMods, KeyMod::Ctrl) && value > 0.0f) {
+    if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && value > 0.0f) {
         value = std::exp2(std::round(std::log2(value)));
     }
     value = adjust.mode == BrushAdjustMode::Radius ? std::clamp(value, kBrushRadiusMin, kBrushRadiusMax)
@@ -569,8 +569,8 @@ void BrushAdjustCancel() noexcept {
 
 // F sets the current tool's brush radius, Shift+F its opacity and Ctrl+F its hardness, from the pointer's distance
 // to a center placed so the current value starts under the pointer. Holding Shift moves it 10 times slower and
-// Ctrl snaps it to powers of two, together or not. Left click or Enter keeps the value, right click or Escape restores it. While
-// adjusting, every input event belongs to it.
+// Alt snaps it to powers of two, together or not. Left click or Enter keeps the value, right click or Escape restores
+// it. While adjusting, every input event belongs to it.
 [[nodiscard]] bool BrushAdjust(const Event& event, bool uiWants) noexcept {
     ZoneScopedN("BrushAdjust");
     AppState& app = gAppState;
@@ -646,6 +646,61 @@ void BrushAdjustCancel() noexcept {
         default:
             return false;
     }
+}
+
+// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, else none, the brush outline showing
+// where the paint or erase lands. Zoom drags right or up, like the NE-SW arrow; rotation has no system cursor.
+[[nodiscard]] WindowCursor AppCursor(Window window) noexcept {
+    ZoneScopedN("AppCursor");
+    const AppState& app = gAppState;
+    if (const auto ui = UiCursor(window)) {
+        return *ui;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return WindowCursor::Arrow;
+    }
+    NavigateMode mode = NavigateMode::None;
+    if (app.navigate.mode != NavigateMode::None && app.navigate.view == view) {
+        mode = app.navigate.mode;
+    } else if (app.spaceDown) {
+        mode = NavigateModeFromMods(app.keyMods);
+    }
+    switch (mode) {
+        case NavigateMode::Pan:
+            return WindowCursor::Move;
+        case NavigateMode::Zoom:
+            return WindowCursor::ResizeNESW;
+        case NavigateMode::Rotate:
+            return WindowCursor::None;
+        case NavigateMode::None:
+            break;
+    }
+    return WindowCursor::None;
+}
+
+// The current tool's brush under the pointer, over the canvas only: not over the UI, while navigating, or while
+// adjusting the brush, which shows its own. While painting or erasing, the radius the stroke paints at now.
+[[nodiscard]] BrushOutlineState BrushOutline(Window window) noexcept {
+    ZoneScopedN("BrushOutline");
+    const AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    const auto windowState = WindowGetState(window);
+    if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
+        || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None) {
+        return {};
+    }
+    const float scale = std::abs(app.canvasViews[view].viewport.zoomX) * windowState->dpiScale;
+    const StrokeState& stroke = app.stroke;
+    const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended && stroke.view == view;
+    return BrushOutlineState{
+        .x = app.pointerX,
+        .y = app.pointerY,
+        .radius = (painting ? DabRadius(stroke.brush, stroke.last.pressure) : ToolBrush(app.tools, app.tools.tool).radius)
+                * scale,
+        .lineWidth = std::max(1.0f, std::round(windowState->dpiScale)),
+        .shown = true,
+    };
 }
 
 // The titles show the * once an edit modified the canvas.
@@ -853,6 +908,10 @@ void AppWindowFrame(Window window) noexcept {
         command != UiCommand::None) {
         gAppState.command = command;
         gAppState.commandWindow = window;
+    }
+    gAppState.brushOutlines[window] = BrushOutline(window);
+    if (const auto res = WindowSetCursor(window, AppCursor(window)); !res) {
+        MIDORI_LOG_ERROR("WindowSetCursor failed: {}", ErrorMessage(res.error()));
     }
     // ImGui animates and trickles queued input over several frames, so keep presenting while it is shown.
     GraphicsWindowRequestFrame(window);

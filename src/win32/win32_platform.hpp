@@ -15,6 +15,7 @@
 #include <wintab.h>
 
 #include <array>
+#include <utility>
 
 #include "midori/input.hpp"    // IWYU pragma: export
 #include "midori/platform.hpp" // IWYU pragma: export
@@ -34,6 +35,7 @@ struct Win32Window {
     HCTX tablet;           // Wintab context, null without a tablet
     DWORD tabletButtons;   // button bits of the last tablet packet, to detect press and release
     wchar_t highSurrogate; // first half of a UTF-16 pair from WM_CHAR, 0 when none is pending
+    WindowCursor cursor;   // answered to WM_SETCURSOR over the client area
     bool tabletProximity;  // pen in range: mouse messages it generates are ignored
 };
 
@@ -66,6 +68,7 @@ struct PlatformState {
     HINSTANCE hInstance;
     std::array<Win32Window, kWindowMax> windows;
     Wintab wintab;
+    std::array<HCURSOR, std::to_underlying(WindowCursor::Count_)> cursors; // shared system cursors, null for None
     int nShowCmd;
     ATOM windowClass;
 };

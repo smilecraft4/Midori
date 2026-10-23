@@ -477,10 +477,20 @@ void DispatchDestroy(Window window) noexcept {
         case WM_RBUTTONUP:
             HandleButton(window, Button::Right, message == WM_RBUTTONDOWN);
             return true;
-        case WM_MOUSEMOVE:
+        case WM_MOUSEMOVE: {
+            // The pen moves the pointer too, so hovering is tracked before its messages are dropped.
+            Win32Window& slot = gPlatformState.windows[window];
+            if (!slot.state.hovered) {
+                TRACKMOUSEEVENT track{.cbSize = sizeof(TRACKMOUSEEVENT), .dwFlags = TME_LEAVE, .hwndTrack = slot.hwnd};
+                slot.state.hovered = TrackMouseEvent(&track) != 0;
+            }
             if (!FromPen(window)) {
                 DispatchMouseMove(window, wParam, lParam);
             }
+            return true;
+        }
+        case WM_MOUSELEAVE:
+            gPlatformState.windows[window].state.hovered = false;
             return true;
         case WM_MOUSEWHEEL:
         case WM_MOUSEHWHEEL:
@@ -761,6 +771,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         case kWmTabletQuerySystemGestureStatus:
             return kTabletDisableGestures;
+        case WM_SETCURSOR:
+            if (LOWORD(lParam) == HTCLIENT) {
+                SetCursor(gPlatformState.cursors[std::to_underlying(slot.cursor)]);
+                return TRUE;
+            }
+            break;
         case WM_ERASEBKGND:
             // The renderer paints the whole client area; erasing first would only flicker.
             return 1;
@@ -800,6 +816,19 @@ Result<void> PlatformInit(PlatformInitInfo initInfo) noexcept {
     MIDORI_ASSERT_ALWAYS(initInfo.hInstance, "PlatformInit needs the HINSTANCE passed to wWinMain");
     gPlatformState.hInstance = initInfo.hInstance;
     gPlatformState.nShowCmd = initInfo.nShowCmd;
+    // Shared system cursors, never destroyed.
+    const auto cursor = [](WindowCursor kind, LPCWSTR id) {
+        gPlatformState.cursors[std::to_underlying(kind)] = LoadCursorW(nullptr, id);
+    };
+    cursor(WindowCursor::Arrow, IDC_ARROW);
+    cursor(WindowCursor::Text, IDC_IBEAM);
+    cursor(WindowCursor::Hand, IDC_HAND);
+    cursor(WindowCursor::Move, IDC_SIZEALL);
+    cursor(WindowCursor::ResizeNS, IDC_SIZENS);
+    cursor(WindowCursor::ResizeEW, IDC_SIZEWE);
+    cursor(WindowCursor::ResizeNESW, IDC_SIZENESW);
+    cursor(WindowCursor::ResizeNWSE, IDC_SIZENWSE);
+    cursor(WindowCursor::NotAllowed, IDC_NO);
 
     // No CS_HREDRAW/CS_VREDRAW and no background brush: the renderer repaints the whole client area.
     const WNDCLASSEXW windowClass{
@@ -969,6 +998,21 @@ Result<WindowState> WindowGetState(Window window) noexcept {
         return std::unexpected(Error::WindowInvalid);
     }
     return gPlatformState.windows[window].state;
+}
+
+Result<void> WindowSetCursor(Window window, WindowCursor cursor) noexcept {
+    if (!WindowValid(window)) {
+        return std::unexpected(Error::WindowInvalid);
+    }
+    Win32Window& slot = gPlatformState.windows[window];
+    if (slot.cursor == cursor) {
+        return {};
+    }
+    slot.cursor = cursor;
+    if (slot.state.hovered) {
+        SetCursor(gPlatformState.cursors[std::to_underlying(cursor)]);
+    }
+    return {};
 }
 
 Result<void> WindowSetTitle(Window window, std::string_view title) noexcept {

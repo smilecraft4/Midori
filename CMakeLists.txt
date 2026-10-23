@@ -95,6 +95,9 @@ set(MIDORI_SHADERS_WIN32
     data/win32/shaders/tile_ops.hlsli
     data/win32/shaders/tile.vs.hlsl
     data/win32/shaders/tile.ps.hlsl
+    data/win32/shaders/brush_outline.hlsli
+    data/win32/shaders/brush_outline.vs.hlsl
+    data/win32/shaders/brush_outline.ps.hlsl
     data/win32/shaders/tile_blend.cs.hlsl
     data/win32/shaders/tile_mip.cs.hlsl
     data/win32/shaders/stroke.cs.hlsl

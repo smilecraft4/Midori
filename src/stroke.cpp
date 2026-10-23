@@ -18,10 +18,6 @@ namespace {
 // Keeps a tiny brush from emitting thousands of dabs per canvas unit.
 constexpr float kDabSpacingMin = 0.25f;
 
-[[nodiscard]] float DabRadius(const BrushState& brush, float pressure) noexcept {
-    return brush.pressureRadius ? brush.radius * pressure : brush.radius;
-}
-
 [[nodiscard]] float DabSpacing(const BrushState& brush, float pressure) noexcept {
     return std::max(2.0f * DabRadius(brush, pressure) * brush.spacing, kDabSpacingMin);
 }
