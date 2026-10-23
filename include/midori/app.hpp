@@ -28,7 +28,8 @@ enum struct NavigateMode : std::uint8_t {
 
 // The one navigation drag in progress, on `view`. Every pointer move recomputes from the start.
 struct NavigateState {
-    Viewport viewportStart;
+    Viewport viewportStart;  // where the current mode started from
+    Viewport gestureStart;   // where Space + drag started, whatever modes it went through: one history step
     float pointerStartX; // client-area physical pixels
     float pointerStartY;
     CanvasView view{kCanvasViewInvalid};

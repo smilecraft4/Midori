@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -250,6 +251,35 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
     }
 }
 
+// The view's position, zoom and rotation in the bottom right corner, small and faint so it never draws the eye, behind
+// the UI windows and shown with them hidden too.
+void ViewInfoOverlay(const WindowState& windowState, const Viewport& viewport) noexcept {
+    ZoneScopedN("ViewInfoOverlay");
+    std::array<char, 128> text{};
+    const char* flip = "";
+    if (viewport.zoomX < 0.0f && viewport.zoomY < 0.0f) {
+        flip = " flip XY";
+    } else if (viewport.zoomX < 0.0f) {
+        flip = " flip X";
+    } else if (viewport.zoomY < 0.0f) {
+        flip = " flip Y";
+    }
+    // The texel under the view center.
+    std::format_to_n(text.data(), text.size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
+                     static_cast<std::int64_t>(std::floor(viewport.posX)),
+                     static_cast<std::int64_t>(std::floor(viewport.posY)), std::abs(viewport.zoomX) * 100.0f,
+                     viewport.rot * 180.0f / std::numbers::pi_v<float>, flip);
+    ImFont* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize() * 0.85f;
+    const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.data());
+    const float margin = 8.0f * windowState.dpiScale;
+    const ImVec2 pos(static_cast<float>(windowState.width) - extent.x - margin,
+                     static_cast<float>(windowState.height) - extent.y - margin);
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    drawList->AddText(font, size, ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 90), text.data());
+    drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 150), text.data());
+}
+
 // The brush value being adjusted, around its center. Radius shows the brush outline. Opacity and
 // hardness show the value's ring inside the faint ring of 1; hardness also draws the dab's falloff across it.
 void BrushAdjustOverlay(Window window, const WindowState& windowState, const ToolsState& tools) noexcept {
@@ -275,28 +305,26 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
         value = adjust.mode == BrushAdjustMode::Opacity ? brush.opacity : brush.hardness;
         drawList->AddCircle(center, range, kFaint, 0, scale);
         drawList->AddCircle(center, value * range, kStrong, 0, 2.0f * scale);
-        // if (adjust.mode == BrushAdjustMode::Hardness) {
-        //     // DabMask in stroke.cs.hlsl, for a dab as wide as the range.
-        //     constexpr std::size_t kSegments = 64;
-        //     std::array<ImVec2, kSegments + 1> curve{};
-        //     const float edge = std::max((1.0f - brush.hardness) * range, 1.0f);
-        //     for (std::size_t i = 0; i <= kSegments; ++i) {
-        //         const float x = ((2.0f * static_cast<float>(i) / static_cast<float>(kSegments)) - 1.0f) * range;
-        //         const float t = std::clamp((range - std::abs(x)) / edge, 0.0f, 1.0f);
-        //         curve[i] = ImVec2(center.x + x, center.y - (t * t * (3.0f - (2.0f * t)) * range));
-        //     }
-        //     drawList->AddPolyline(curve.data(), static_cast<int>(curve.size()), IM_COL32(220, 220, 220, 255), 0,
-        //                           scale);
-        // }
     }
 
+    // Shadowed so it reads over any paint, centered on x with its top at y.
+    const auto label = [drawList](const char* text, float x, float y) {
+        const ImVec2 pos(x - (ImGui::CalcTextSize(text).x * 0.5f), y);
+        drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text);
+        drawList->AddText(pos, IM_COL32_WHITE, text);
+    };
+    constexpr std::array kNames = {"", "Radius", "Opacity", "Hardness"};
     std::array<char, 16> text{};
-    std::format_to_n(text.data(), text.size() - 1, "{:.{}f}", value, adjust.mode == BrushAdjustMode::Radius ? 1 : 3);
-    const ImVec2 textSize = ImGui::CalcTextSize(text.data());
-    const ImVec2 pos(center.x - (textSize.x * 0.5f), center.y - (textSize.y * 0.5f));
-    drawList->AddCircle(center, (textSize.x * 0.5f) + (6.0f * scale), kFaint, 0, scale);
-    drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text.data());
-    drawList->AddText(pos, IM_COL32_WHITE, text.data());
+    // A radius is whole from 1 up, see BrushAdjustApply.
+    int decimals = 3;
+    if (adjust.mode == BrushAdjustMode::Radius) {
+        decimals = value >= 1.0f ? 0 : 1;
+    }
+    std::format_to_n(text.data(), text.size() - 1, "{:.{}f}", value, decimals);
+    // The value at the center, the property it belongs to right above.
+    const float lineHeight = ImGui::GetTextLineHeight();
+    label(kNames[std::to_underlying(adjust.mode)], center.x, center.y - (lineHeight * 1.5f));
+    label(text.data(), center.x, center.y - (lineHeight * 0.5f));
 }
 
 // The chosen atlas's cells at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
@@ -357,44 +385,52 @@ struct HelpEntry {
 };
 
 constexpr std::array kHelpPaint = {
-    HelpEntry{"Left drag", "Paint with the brush"},
-    HelpEntry{"E", "Switch to the eraser"},
+    HelpEntry{.keys = "Left drag", .action = "Paint with the brush"},
+    HelpEntry{.keys = "E", .action = "Switch to the eraser"},
 };
 constexpr std::array kHelpErase = {
-    HelpEntry{"Left drag", "Erase with the brush; its color picks the channels removed"},
-    HelpEntry{"B", "Switch to the paint brush"},
+    HelpEntry{.keys = "Left drag", .action = "Erase with the brush; its color picks the channels removed"},
+    HelpEntry{.keys = "B", .action = "Switch to the paint brush"},
 };
 constexpr std::array kHelpBrush = {
-    HelpEntry{"F", "Change the brush radius"},        HelpEntry{"Shift+F", "Change the brush opacity"},
-    HelpEntry{"Ctrl+F", "Change the brush hardness"}, HelpEntry{"Space", "Hold to move the view"},
-    HelpEntry{"Space+R", "Reset zoom and rotation"},  HelpEntry{"Ctrl+Z", "Undo the last stroke"},
-    HelpEntry{"Ctrl+Shift+Z, Ctrl+Y", "Redo"},
+    HelpEntry{.keys = "F", .action = "Change the brush radius"},
+    HelpEntry{.keys = "Shift+F", .action = "Change the brush opacity"},
+    HelpEntry{.keys = "Ctrl+F", .action = "Change the brush hardness"},
+    HelpEntry{.keys = "Space", .action = "Hold to move the view"},
+    HelpEntry{.keys = "Space+R", .action = "Reset zoom and rotation"},
+    HelpEntry{.keys = "Space+Z", .action = "Back to the previous view"},
+    HelpEntry{.keys = "Ctrl+Z", .action = "Undo the last stroke"},
+    HelpEntry{.keys = "Ctrl+Shift+Z, Ctrl+Y", .action = "Redo"},
 };
 constexpr std::array kHelpStroke = {
-    HelpEntry{"Release", "Finish the stroke"},
-    HelpEntry{"Ctrl+Z", "Undo it once finished"},
+    HelpEntry{.keys = "Release", .action = "Finish the stroke"},
+    HelpEntry{.keys = "Ctrl+Z", .action = "Undo it once finished"},
 };
 constexpr std::array kHelpNavigate = {
-    HelpEntry{"Space + drag", "Pan"},
-    HelpEntry{"Ctrl+Space + drag", "Zoom, right or up zooms in"},
-    HelpEntry{"Shift+Space + drag", "Rotate around the center"},
-    HelpEntry{"Alt", "Snap the zoom to texel-friendly steps, the rotation to 15 degrees"},
-    HelpEntry{"Space+R", "Reset zoom and rotation"},
+    HelpEntry{.keys = "Space + drag", .action = "Pan"},
+    HelpEntry{.keys = "Ctrl+Space + drag", .action = "Zoom, right or up zooms in"},
+    HelpEntry{.keys = "Shift+Space + drag", .action = "Rotate around the center"},
+    HelpEntry{.keys = "Alt", .action = "Snap the zoom to texel-friendly steps, the rotation to 15 degrees"},
+    HelpEntry{.keys = "Space+R", .action = "Reset zoom and rotation"},
+    HelpEntry{.keys = "Space+F", .action = "Flip the view horizontally"},
+    HelpEntry{.keys = "Space+Shift+F", .action = "Flip the view vertically"},
+    HelpEntry{.keys = "Space+Z", .action = "Back to the previous view"},
+    HelpEntry{.keys = "Space+Shift+Z", .action = "Forward to the next view"},
 };
 constexpr std::array kHelpAdjust = {
-    HelpEntry{"Move", "Away from the center raises the value, toward it lowers it"},
-    HelpEntry{"Shift", "Change it 10 times slower"},
-    HelpEntry{"Alt", "Snap it to powers of two"},
-    HelpEntry{"Left click, Enter", "Keep the value"},
-    HelpEntry{"Right click, Escape", "Restore the previous value"},
+    HelpEntry{.keys = "Move", .action = "Away from the center raises the value, toward it lowers it"},
+    HelpEntry{.keys = "Shift", .action = "Change it 10 times slower"},
+    HelpEntry{.keys = "Alt", .action = "Snap it to powers of two"},
+    HelpEntry{.keys = "Left click, Enter", .action = "Keep the value"},
+    HelpEntry{.keys = "Right click, Escape", .action = "Restore the previous value"},
 };
 constexpr std::array kHelpGeneral = {
-    HelpEntry{"Tab", "Hide or show the UI"},
-    HelpEntry{"F11", "Toggle fullscreen"},
-    HelpEntry{"Ctrl+N", "New canvas"},
-    HelpEntry{"Ctrl+O", "Open a canvas"},
-    HelpEntry{"Ctrl+S", "Save"},
-    HelpEntry{"Ctrl+Shift+S", "Save as"},
+    HelpEntry{.keys = "Tab", .action = "Hide or show the UI"},
+    HelpEntry{.keys = "F11", .action = "Toggle fullscreen"},
+    HelpEntry{.keys = "Ctrl+N", .action = "New canvas"},
+    HelpEntry{.keys = "Ctrl+O", .action = "Open a canvas"},
+    HelpEntry{.keys = "Ctrl+S", .action = "Save"},
+    HelpEntry{.keys = "Ctrl+Shift+S", .action = "Save as"},
 };
 
 void HelpTable(const char* id, std::span<const HelpEntry> entries) noexcept {
@@ -611,6 +647,9 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
 
     ImGui::NewFrame();
     // ImGui::ShowDemoWindow();
+    if (viewport) {
+        ViewInfoOverlay(*state, *viewport);
+    }
     if (gUiState.hidden[window]) {
         BrushAdjustOverlay(window, *state, tools);
         ImGui::Render();
@@ -674,11 +713,11 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
                                                 -(gAppState.pointerY - centerY) / state->dpiScale);
             ImGui::Text("Center %.1f, %.1f", viewport->posX, viewport->posY);
             ImGui::Text("Pointer %.1f, %.1f", under.posX, under.posY);
-            if (ImGui::Button("Flip X")) {
+            if (ImGui::Button("Flip X (Space+F)")) {
                 *viewport = ViewportZoom(*viewport, -1.0f, 1.0f);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Flip Y")) {
+            if (ImGui::Button("Flip Y (Space+Shift+F)")) {
                 *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
             }
             ImGui::SameLine();

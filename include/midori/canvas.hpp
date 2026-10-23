@@ -359,6 +359,10 @@ struct CanvasViewCreateInfo {
 // Lives in AppState::canvasViews, indexed by its id. Attached to `canvas` and owned by `window`: it is
 // destroyed with the window.
 struct CanvasViewState {
+    // Navigation history, apart from the canvas's: earlier viewports, the most recent last, and the ones stepped back
+    // from. Each pan, zoom or rotation that ended somewhere else, reset or panel edit is one step.
+    std::vector<Viewport> viewportUndo;
+    std::vector<Viewport> viewportRedo;
     Viewport viewport;
     CanvasView id{kCanvasViewInvalid}; // kCanvasViewInvalid marks the slot free
     Canvas canvas{kCanvasInvalid};

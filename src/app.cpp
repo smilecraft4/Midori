@@ -28,6 +28,9 @@ AppState gAppState{};
 
 namespace {
 
+// Navigation steps each view keeps.
+constexpr std::size_t kNavigationHistoryMax = 256;
+
 // Pointer travel, in DIPs, that doubles or halves the zoom.
 constexpr float kZoomDragDips = 200.0f;
 constexpr float kRotateSnap = std::numbers::pi_v<float> / 12.0f; // 15 degrees
@@ -378,10 +381,42 @@ void TilesMarkVisible() noexcept {
     }
 }
 
+// Before the view leaves `previous`. The oldest steps go past kNavigationHistoryMax, and nothing is left to redo.
+void NavigationPush(CanvasView view, const Viewport& previous) noexcept {
+    CanvasViewState& state = gAppState.canvasViews[view];
+    if (state.viewportUndo.size() == kNavigationHistoryMax) {
+        state.viewportUndo.erase(state.viewportUndo.begin());
+    }
+    state.viewportUndo.push_back(previous);
+    state.viewportRedo.clear();
+}
+
+// Back to the previous viewport, or forward again with `redo`.
+void NavigationStep(CanvasView view, bool redo) noexcept {
+    ZoneScopedN("NavigationStep");
+    CanvasViewState& state = gAppState.canvasViews[view];
+    std::vector<Viewport>& from = redo ? state.viewportRedo : state.viewportUndo;
+    std::vector<Viewport>& to = redo ? state.viewportUndo : state.viewportRedo;
+    if (from.empty()) {
+        return;
+    }
+    to.push_back(state.viewport);
+    state.viewport = from.back();
+    from.pop_back();
+}
+
+[[nodiscard]] bool ViewportEqual(const Viewport& a, const Viewport& b) noexcept {
+    return a.posX == b.posX && a.posY == b.posY && a.zoomX == b.zoomX && a.zoomY == b.zoomY && a.rot == b.rot;
+}
+
+// Starts a drag, or switches the one in progress to `mode` from where it is.
 void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
     ZoneScopedN("NavigateBegin");
+    const Viewport& viewport = gAppState.canvasViews[view].viewport;
+    const bool dragging = gAppState.navigate.mode != NavigateMode::None;
     gAppState.navigate = NavigateState{
-        .viewportStart = gAppState.canvasViews[view].viewport,
+        .viewportStart = viewport,
+        .gestureStart = dragging ? gAppState.navigate.gestureStart : viewport,
         .pointerStartX = gAppState.pointerX,
         .pointerStartY = gAppState.pointerY,
         .view = view,
@@ -448,12 +483,20 @@ void NavigateUpdate() noexcept {
     view.viewport = ViewportSnap(view.viewport, windowState->dpiScale);
 }
 
+// A drag that left the view somewhere else is one history step.
 void NavigateEnd() noexcept {
+    const NavigateState& navigate = gAppState.navigate;
+    if (navigate.mode != NavigateMode::None
+        && !ViewportEqual(navigate.gestureStart, gAppState.canvasViews[navigate.view].viewport)) {
+        NavigationPush(navigate.view, navigate.gestureStart);
+    }
     gAppState.navigate = {};
 }
 
 // Space + left drag pans, Ctrl+Space + drag zooms and Shift+Space + drag rotates, around the view center. Holding Alt
-// snaps the zoom (ZoomSnap) and the rotation to 15 degrees. Space+R resets zoom and rotation.
+// snaps the zoom (ZoomSnap) and the rotation to 15 degrees. Space+R resets zoom and rotation, Space+F flips the view
+// horizontally and Space+Shift+F vertically. Space+Z steps back
+// through the navigation history and Space+Shift+Z forward, repeating while held, when no drag is in progress.
 // Pressing or releasing Ctrl or Shift mid-drag switches mode from where the pointer is. Returns true when
 // the event belongs to navigation. Releases and focus loss are handled even when the UI wants them, so a
 // drag never sticks.
@@ -475,11 +518,38 @@ void NavigateEnd() noexcept {
                 && view != kCanvasViewInvalid && !uiWants) {
                 const auto windowState = WindowGetState(event.key.window);
                 const float dpiScale = windowState ? windowState->dpiScale : 1.0f;
+                // During a drag the reset is part of its step.
+                if (app.navigate.mode == NavigateMode::None) {
+                    NavigationPush(view, app.canvasViews[view].viewport);
+                }
                 app.canvasViews[view].viewport =
                     ViewportSnap(ViewportResetZoomRotation(app.canvasViews[view].viewport), dpiScale);
                 // A drag in progress continues from the reset view instead of undoing it.
                 if (app.navigate.mode != NavigateMode::None) {
                     NavigateBegin(app.navigate.view, app.navigate.mode);
+                }
+                return true;
+            }
+            if (const CanvasView view = WindowCanvasView(event.key.window);
+                event.key.key == Key::F && event.key.inputState == InputState::Press && app.spaceDown
+                && view != kCanvasViewInvalid && !uiWants) {
+                // Like the reset: one step on its own, or part of the drag in progress, which goes on from the flip.
+                if (app.navigate.mode == NavigateMode::None) {
+                    NavigationPush(view, app.canvasViews[view].viewport);
+                }
+                const bool vertical = HasAnyFlag(app.keyMods, KeyMod::Shift);
+                app.canvasViews[view].viewport =
+                    ViewportZoom(app.canvasViews[view].viewport, vertical ? 1.0f : -1.0f, vertical ? -1.0f : 1.0f);
+                if (app.navigate.mode != NavigateMode::None) {
+                    NavigateBegin(app.navigate.view, app.navigate.mode);
+                }
+                return true;
+            }
+            if (const CanvasView view = WindowCanvasView(event.key.window);
+                event.key.key == Key::Z && event.key.inputState != InputState::Release && app.spaceDown
+                && view != kCanvasViewInvalid && !uiWants) {
+                if (app.navigate.mode == NavigateMode::None) {
+                    NavigationStep(view, HasAnyFlag(app.keyMods, KeyMod::Shift));
                 }
                 return true;
             }
@@ -557,6 +627,11 @@ void BrushAdjustApply() noexcept {
     }
     value = adjust.mode == BrushAdjustMode::Radius ? std::clamp(value, kBrushRadiusMin, kBrushRadiusMax)
                                                    : std::clamp(value, 0.0f, 1.0f);
+    // Whole canvas units from 1 up; only a sub-unit brush keeps a fraction. `adjust.value` keeps the fraction, so Shift
+    // still moves it smoothly toward the next whole unit.
+    if (adjust.mode == BrushAdjustMode::Radius && value >= 1.0f) {
+        value = std::round(value);
+    }
     BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = value;
 }
 
@@ -696,8 +771,9 @@ void BrushAdjustCancel() noexcept {
     return BrushOutlineState{
         .x = app.pointerX,
         .y = app.pointerY,
-        .radius = (painting ? DabRadius(stroke.brush, stroke.last.pressure) : ToolBrush(app.tools, app.tools.tool).radius)
-                * scale,
+        .radius =
+            (painting ? DabRadius(stroke.brush, stroke.last.pressure) : ToolBrush(app.tools, app.tools.tool).radius)
+            * scale,
         .lineWidth = std::max(1.0f, std::round(windowState->dpiScale)),
         .shown = true,
     };
@@ -904,10 +980,15 @@ void AppWindowFrame(Window window) noexcept {
         viewport = &viewState.viewport;
         backgroundColor = &gAppState.canvases[viewState.canvas].backgroundColor;
     }
+    const Viewport before = viewport ? *viewport : Viewport{};
     if (const UiCommand command = UiWindowFrame(window, viewport, backgroundColor, gAppState.tools);
         command != UiCommand::None) {
         gAppState.command = command;
         gAppState.commandWindow = window;
+    }
+    // The view panel's flips and reset.
+    if (viewport && !ViewportEqual(before, *viewport)) {
+        NavigationPush(view, before);
     }
     gAppState.brushOutlines[window] = BrushOutline(window);
     if (const auto res = WindowSetCursor(window, AppCursor(window)); !res) {
