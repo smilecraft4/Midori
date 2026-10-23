@@ -1,29 +1,28 @@
 #ifndef MIDORI_COMMON_HLSLI
 #define MIDORI_COMMON_HLSLI
 
-// Root signature of the tile pipeline, embedded in tile.vs.hlsl and created from its bytecode. One SRV per atlas;
-// volatile, so the atlases not created yet may stay null and new ones may be written while a frame is in flight.
+// Root signature of the canvas pipeline, embedded in tile.vs.hlsl and created from its bytecode. The page table is a
+// root SRV. One SRV per atlas; volatile, so the atlases not created yet may stay null and new ones may be written while
+// a frame is in flight.
 #define TILE_ROOT_SIGNATURE                                                                            \
-    "RootConstants(num32BitConstants = 32, b0, visibility = SHADER_VISIBILITY_VERTEX),"                \
-    "RootConstants(num32BitConstants = 11, b1),"                                                       \
+    "RootConstants(num32BitConstants = 11, b0, visibility = SHADER_VISIBILITY_PIXEL),"                 \
+    "SRV(t0, space = 1, visibility = SHADER_VISIBILITY_PIXEL),"                                        \
     "DescriptorTable(SRV(t0, numDescriptors = 16, flags = DESCRIPTORS_VOLATILE),"                      \
     " visibility = SHADER_VISIBILITY_PIXEL)"
 
-cbuffer Viewport : register(b0) {
-    row_major float4x4 canvasToView;
-    row_major float4x4 viewToClip;
+// CanvasViewConstants in win32_graphics.cpp. A pixel center p (physical pixels of the window) lands on the canvas at
+// (dot(pixelToCanvasX, p), dot(pixelToCanvasY, p)) + canvasOffset, in canvas units from the view's origin tile, so the
+// numbers stay small anywhere on the canvas.
+cbuffer CanvasView : register(b0) {
+    float2 pixelToCanvasX;
+    float2 pixelToCanvasY;
+    float2 canvasOffset;
+    int2 regionOrigin; // the page table's first tile, from the origin tile
+    uint2 regionSize;  // tiles in the page table, row by row
+    uint level;        // the view's level: its texels span 2^level canvas units
 };
 
-cbuffer TileDraw : register(b1) {
-    uint4 tileNeighboursTop;    // the cells beside the tile: top left, top, top right, left
-    uint4 tileNeighboursBottom; // right, bottom left, bottom, bottom right
-    int2 tileGridPos;           // relative to the view's tile, see canvasToView
-    uint tileCell;
-};
-
-struct TileVertex {
-    float4 position : SV_Position;
-    float2 uv       : TEXCOORD;
-};
+// The cell drawn at each tile of the region, kTileAtlasCellInvalid where nothing is.
+StructuredBuffer<uint> pageTable : register(t0, space1);
 
 #endif

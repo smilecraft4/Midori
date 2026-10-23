@@ -11,12 +11,12 @@ constexpr float kBrushRadiusMax = 512.0f;
 // Shape and dynamics of the dabs a tool draws with, whatever the tool does with them.
 struct BrushState {
     float radius{16.0f};  // canvas units
-    float hardness{0.8f}; // 0 fades from the center, 1 is a hard edge
+    float hardness{0.9f}; // 0 fades from the center, 1 is a hard edge
     float flow{0.5f};     // alpha of one dab
     float opacity{1.0f};  // the most a stroke covers
     float spacing{0.1f};  // between dabs, in diameters
     bool pressureRadius{true};
-    bool pressureOpacity{false};
+    bool pressureOpacity{true};
 };
 
 enum struct Tool : std::uint8_t {

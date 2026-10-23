@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <limits>
+#include <span>
 #include <imgui_internal.h>
 #include <string_view>
 #include <utility>
@@ -38,8 +40,10 @@ namespace {
 // Premultiplied; shown where no canvas view covers the window.
 constexpr float kWindowBackground[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-constexpr UINT kTileVertexCount = 4;
 constexpr DXGI_FORMAT kTileFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+// Page table entries per frame in flight, shared by the views drawn in it: a 4K view zoomed out to 1/64 needs about
+// half a million.
+constexpr std::size_t kPageTableEntriesMax = std::size_t{1} << 21;
 constexpr UINT kTileTexels = kTileSize;
 // Mip 0 only until the mips are built. Also the null views of atlases not created yet.
 constexpr D3D12_SHADER_RESOURCE_VIEW_DESC kTilePoolSrvDesc{
@@ -54,76 +58,33 @@ constexpr D3D12_UNORDERED_ACCESS_VIEW_DESC kTilePoolUavDesc{
     .Texture2DArray = {.MipSlice = 0, .FirstArraySlice = 0, .ArraySize = kTileAtlasPages, .PlaneSlice = 0},
 };
 
-// Row-major, row vectors: p' = p * M, matching `row_major` and mul(p, M) in HLSL.
-struct Matrix4 {
-    std::array<float, 16> m;
-};
-
-// Maps [left, right] x [top, bottom] x [nearZ, farZ] to D3D clip space: x to [-1, 1], y to [1, -1] (so
-// `top` lands at the top of the viewport whichever way y grows) and z to [0, 1].
-[[nodiscard]] constexpr Matrix4 Matrix4Orthographic(float left, float right, float top, float bottom, float nearZ,
-                                                    float farZ) noexcept {
-    const float width = right - left;
-    const float height = top - bottom;
-    const float depth = farZ - nearZ;
-    return Matrix4{.m = {
-                       2.0f / width, 0.0f, 0.0f, 0.0f,                                         //
-                       0.0f, 2.0f / height, 0.0f, 0.0f,                                        //
-                       0.0f, 0.0f, 1.0f / depth, 0.0f,                                         //
-                       -(left + right) / width, -(top + bottom) / height, -nearZ / depth, 1.0f //
-                   }};
-}
-
-// The tile under the view's center. Tiles are drawn relative to it.
+// The tile under the view's center. The canvas pass works in canvas units from it, so its numbers stay small.
 [[nodiscard]] TileGridPos ViewportOriginTile(const Viewport& viewport) noexcept {
     return TileGridPos{.x = static_cast<TileAxis>(std::floor(viewport.posX / kTileSize)),
                        .y = static_cast<TileAxis>(std::floor(viewport.posY / kTileSize))};
 }
 
-// The rows of view = ((canvas - pos) * R(rot)) * S(zoomX, zoomY), see Viewport, for canvas units relative to `origin`.
-[[nodiscard]] Matrix4 Matrix4CanvasToView(const Viewport& viewport, TileGridPos origin) noexcept {
-    const auto posX = static_cast<float>(viewport.posX - (static_cast<double>(origin.x) * kTileSize));
-    const auto posY = static_cast<float>(viewport.posY - (static_cast<double>(origin.y) * kTileSize));
-    const float c = std::cos(viewport.rot);
-    const float s = std::sin(viewport.rot);
-    const float m00 = c * viewport.zoomX;
-    const float m01 = s * viewport.zoomY;
-    const float m10 = -s * viewport.zoomX;
-    const float m11 = c * viewport.zoomY;
-    return Matrix4{.m = {
-                       m00, m01, 0.0f, 0.0f,                                        //
-                       m10, m11, 0.0f, 0.0f,                                        //
-                       0.0f, 0.0f, 1.0f, 0.0f,                                      //
-                       -((posX * m00) + (posY * m10)),
-                       -((posX * m01) + (posY * m11)), 0.0f, 1.0f //
-                   }};
-}
-
-// One canvas view's transforms. Mirrors the Viewport cbuffer in common.hlsli, bound as root constants
-// (TILE_ROOT_SIGNATURE) and set on every draw. Float cannot place a texel far from the canvas origin, so the
-// view's tile is subtracted on the CPU: the matrix and the tile positions only carry view-relative numbers.
-struct ViewportConstants {
-    Matrix4 canvasToView; // view: pan, zoom, rotation; canvas units to DIPs
-    Matrix4 viewToClip;   // orthographic projection of the view's rectangle, origin at its center; DIPs to clip
+// One canvas view's draw. Mirrors the CanvasView cbuffer in common.hlsli, bound as root constants
+// (TILE_ROOT_SIGNATURE).
+struct CanvasViewConstants {
+    std::array<float, 2> pixelToCanvasX;
+    std::array<float, 2> pixelToCanvasY;
+    std::array<float, 2> canvasOffset;
+    TileGridPos regionOrigin;
+    std::uint32_t regionWidth;
+    std::uint32_t regionHeight;
+    std::uint32_t level;
 };
-// One tile's draw. Mirrors the TileDraw cbuffer in common.hlsli.
-struct TileDrawConstants {
-    std::array<TileAtlasCell, 8> neighbours; // row by row from the top left, skipping the tile itself
-    TileGridPos gridPos;
-    std::uint32_t cell;
-};
-constexpr UINT kViewportRootParameter = 0;
-constexpr UINT kTileDrawRootParameter = 1;
+constexpr UINT kCanvasViewRootParameter = 0;
+constexpr UINT kPageTableRootParameter = 1;
 constexpr UINT kTilePoolRootParameter = 2;
 // One SRV and one UAV per atlas, null until it is created.
 constexpr UINT kTilePoolFirstView = 0;
 constexpr UINT kTilePoolFirstUav = kTilePoolFirstView + kTileAtlasMax;
 constexpr UINT kTileAtlasDebugView = kTilePoolFirstUav + kTileAtlasMax;
 constexpr UINT kUiTextureFirstView = kTileAtlasDebugView + 1;
-constexpr UINT kViewportConstantCount = sizeof(ViewportConstants) / sizeof(std::uint32_t);
-static_assert(kViewportConstantCount == 32, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
-constexpr UINT kTileDrawConstantCount = sizeof(TileDrawConstants) / sizeof(std::uint32_t);
-static_assert(kTileDrawConstantCount == 11, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
+constexpr UINT kCanvasViewConstantCount = sizeof(CanvasViewConstants) / sizeof(std::uint32_t);
+static_assert(kCanvasViewConstantCount == 11, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
 // One window's brush outline. Mirrors the BrushOutline cbuffer in brush_outline.hlsli.
 struct BrushOutlineConstants {
     float centerX;
@@ -327,18 +288,72 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
     return {};
 }
 
-// The cell of the tile beside `key` at its level, which the pixel shader filters across the edge with: the clear cell
-// where the canvas is empty, kTileAtlasCellInvalid where that tile is not loaded (the edge then clamps).
-[[nodiscard]] TileAtlasCell TileNeighbourCell(const CanvasState& canvas, TileKey key, TileAxis dx, TileAxis dy) noexcept {
-    const TileGridPos gridPos = TileKeyGridPos(key);
-    const TileGridPos beside{.x = gridPos.x + dx, .y = gridPos.y + dy};
-    const auto layer = static_cast<Layer>(key >> kTileLayerBitOffset);
-    if (const auto found = canvas.tileIndices.find(TileKeyMake(layer, TileKeyMip(key), beside));
-        found != canvas.tileIndices.end()) {
-        const TileState& tile = canvas.tiles[found->second];
-        return HasAnyFlag(tile.flags, TileFlags::Loaded) ? tile.cell : kTileAtlasCellInvalid;
+// The canvas pass's constants for `view` over a window of `width` x `height` physical pixels, and its page table's
+// region: every tile the window shows, plus one around so filtering finds its neighbours.
+[[nodiscard]] CanvasViewConstants CanvasViewConstantsMake(const Viewport& viewport, TileGridPos origin, UINT width,
+                                                          UINT height, float dpiScale) noexcept {
+    // canvas = pos + R^T (S^-1 v), with v the pixel in DIPs from the view center, floored to a whole pixel like the
+    // brush and the pointer mapping. Computed in double relative to the origin tile, then narrowed.
+    const double c = std::cos(static_cast<double>(viewport.rot));
+    const double s = std::sin(static_cast<double>(viewport.rot));
+    const double scaleX = static_cast<double>(viewport.zoomX) * dpiScale;
+    const double scaleY = static_cast<double>(viewport.zoomY) * dpiScale;
+    const double xx = c / scaleX;
+    const double xy = s / scaleY;
+    const double yx = -s / scaleX;
+    const double yy = c / scaleY;
+    const double centerX = std::floor(static_cast<double>(width) * 0.5);
+    const double centerY = std::floor(static_cast<double>(height) * 0.5);
+    const double posX = viewport.posX - (static_cast<double>(origin.x) * kTileSize);
+    const double posY = viewport.posY - (static_cast<double>(origin.y) * kTileSize);
+    const double offsetX = posX - ((xx * centerX) + (xy * centerY));
+    const double offsetY = posY - ((yx * centerX) + (yy * centerY));
+
+    double minX = std::numeric_limits<double>::max();
+    double minY = std::numeric_limits<double>::max();
+    double maxX = std::numeric_limits<double>::lowest();
+    double maxY = std::numeric_limits<double>::lowest();
+    for (const auto [px, py] : {std::pair{0.0, 0.0}, std::pair{static_cast<double>(width), 0.0},
+                                std::pair{0.0, static_cast<double>(height)},
+                                std::pair{static_cast<double>(width), static_cast<double>(height)}}) {
+        const double x = (xx * px) + (xy * py) + offsetX;
+        const double y = (yx * px) + (yy * py) + offsetY;
+        minX = std::min(minX, x);
+        minY = std::min(minY, y);
+        maxX = std::max(maxX, x);
+        maxY = std::max(maxY, y);
     }
-    return canvas.tileIndices.contains(TileKeyMake(layer, 0, beside)) ? kTileAtlasCellInvalid : kTileAtlasCellClear;
+    const auto tileOf = [](double pos) { return static_cast<TileAxis>(std::floor(pos / kTileSize)); };
+    const TileGridPos regionOrigin{.x = tileOf(minX) - 1, .y = tileOf(minY) - 1};
+    return CanvasViewConstants{
+        .pixelToCanvasX = {static_cast<float>(xx), static_cast<float>(xy)},
+        .pixelToCanvasY = {static_cast<float>(yx), static_cast<float>(yy)},
+        .canvasOffset = {static_cast<float>(offsetX), static_cast<float>(offsetY)},
+        .regionOrigin = regionOrigin,
+        .regionWidth = static_cast<std::uint32_t>(tileOf(maxX) + 2 - regionOrigin.x),
+        .regionHeight = static_cast<std::uint32_t>(tileOf(maxY) + 2 - regionOrigin.y),
+        .level = TileLevelForZoom(viewport.zoomX),
+    };
+}
+
+// Fills `table`, row by row over the region, with the cell each tile position shows: its tile at the view's level, else
+// its level-0 tile while that one loads (TileDrawn). Layer 0 only until layers composite.
+void PageTableFill(const CanvasState& canvas, const CanvasViewConstants& constants, TileGridPos origin,
+                   std::span<std::uint32_t> table) noexcept {
+    ZoneScopedN("PageTableFill");
+    std::ranges::fill(table, kTileAtlasCellInvalid);
+    const auto level = static_cast<TileMip>(constants.level);
+    for (const TileState& tile : canvas.tiles) {
+        if ((tile.key & kTileLayerMask) != 0 || !TileDrawn(canvas, tile, level)) {
+            continue;
+        }
+        const TileGridPos gridPos = TileKeyGridPos(tile.key);
+        const std::int64_t x = std::int64_t{gridPos.x} - origin.x - constants.regionOrigin.x;
+        const std::int64_t y = std::int64_t{gridPos.y} - origin.y - constants.regionOrigin.y;
+        if (x >= 0 && y >= 0 && x < constants.regionWidth && y < constants.regionHeight) {
+            table[(static_cast<std::size_t>(y) * constants.regionWidth) + static_cast<std::size_t>(x)] = tile.cell;
+        }
+    }
 }
 
 // Before anything else in the list: a cell freed after its op was queued may be filled by work recorded below.
@@ -732,6 +747,7 @@ void RecordTileDownloads() noexcept {
 
             const auto count = static_cast<UINT>(windows.size());
             state.list->ResourceBarrier(count, toTarget.data());
+            std::size_t pageTableUsed = 0; // entries of this frame's page table memory taken by earlier views
             for (std::size_t i = 0; i < windows.size(); ++i) {
                 TracyD3D12NamedZone(state.gpuProfiler, gpuWindowZone, state.list, "GpuDrawWindow", true);
                 // Only the source region is shown; the rest of the buffer is left as is.
@@ -750,55 +766,36 @@ void RecordTileDownloads() noexcept {
                     if (view.id == kCanvasViewInvalid || view.window != windows[i]) {
                         continue;
                     }
-                    // Every view covers the whole client area for now, rebuilt every frame so a resize or
-                    // DPI change shows on the next present. The projection spans the view in DIPs, so a
-                    // canvas unit keeps its physical size at any DPI; the viewport maps clip space back to
-                    // physical pixels. View space (0, 0) is the center of the view, y down. The center is
-                    // floored to a whole physical pixel so canvas edges stay on pixel boundaries when the
-                    // size is odd.
-                    const float width = static_cast<float>(slot.width);
-                    const float height = static_cast<float>(slot.height);
+                    // Every view covers the whole client area for now, rebuilt every frame so a resize or DPI change
+                    // shows on the next present. One triangle covers it; the pixel shader looks each pixel's tiles up
+                    // in the view's page table, so filtering crosses tile edges like any other texel.
+                    TracyD3D12NamedZone(state.gpuProfiler, gpuCanvasZone, state.list, "GpuCanvas", true);
                     const float dpiScale = gPlatformState.windows[windows[i]].state.dpiScale;
-                    const float centerX = std::floor(width * 0.5f);
-                    const float centerY = std::floor(height * 0.5f);
                     const TileGridPos origin = ViewportOriginTile(view.viewport);
-                    const ViewportConstants viewport{
-                        .canvasToView = Matrix4CanvasToView(view.viewport, origin),
-                        .viewToClip =
-                            Matrix4Orthographic(-centerX / dpiScale, (width - centerX) / dpiScale, -centerY / dpiScale,
-                                                (height - centerY) / dpiScale, 0.0f, 1.0f),
-                    };
+                    const CanvasViewConstants constants =
+                        CanvasViewConstantsMake(view.viewport, origin, slot.width, slot.height, dpiScale);
                     const Color::Srgb bg = gAppState.canvases[view.canvas].backgroundColor;
                     const float background[4] = {bg.r * bg.a, bg.g * bg.a, bg.b * bg.a, bg.a};
                     state.list->ClearRenderTargetView(rtvs[i], background, 1, &rect);
-                    const CD3DX12_VIEWPORT target(0.0f, 0.0f, width, height);
-                    state.list->RSSetViewports(1, &target);
-                    state.list->SetGraphicsRoot32BitConstants(kViewportRootParameter, kViewportConstantCount, &viewport,
-                                                              0);
-                    const CanvasState& canvas = gAppState.canvases[view.canvas];
-                    const TileMip level = TileLevelForZoom(view.viewport.zoomX);
-                    for (const TileState& tile : canvas.tiles) {
-                        if (!TileDrawn(canvas, tile, level)) {
-                            continue;
-                        }
-                        const TileGridPos gridPos = TileKeyGridPos(tile.key);
-                        TileDrawConstants draw{
-                            .neighbours = {},
-                            .gridPos = {.x = gridPos.x - origin.x, .y = gridPos.y - origin.y},
-                            .cell = tile.cell,
-                        };
-                        std::size_t neighbour = 0;
-                        for (TileAxis dy = -1; dy <= 1; ++dy) {
-                            for (TileAxis dx = -1; dx <= 1; ++dx) {
-                                if (dx != 0 || dy != 0) {
-                                    draw.neighbours[neighbour++] = TileNeighbourCell(canvas, tile.key, dx, dy);
-                                }
-                            }
-                        }
-                        state.list->SetGraphicsRoot32BitConstants(kTileDrawRootParameter, kTileDrawConstantCount, &draw,
-                                                                  0);
-                        state.list->DrawInstanced(kTileVertexCount, 1, 0, 0);
+                    const std::size_t entries = std::size_t{constants.regionWidth} * constants.regionHeight;
+                    if (pageTableUsed + entries > kPageTableEntriesMax) {
+                        MIDORI_LOG_WARN("canvas view {}: {} tiles in view, past the page table's room", view.id,
+                                        entries);
+                        continue;
                     }
+                    const std::size_t first = (std::size_t{frame} * kPageTableEntriesMax) + pageTableUsed;
+                    PageTableFill(gAppState.canvases[view.canvas], constants, origin,
+                                  std::span(state.pageTablesMapped + first, entries));
+                    pageTableUsed += entries;
+                    const CD3DX12_VIEWPORT target(0.0f, 0.0f, static_cast<float>(slot.width),
+                                                  static_cast<float>(slot.height));
+                    state.list->RSSetViewports(1, &target);
+                    state.list->SetGraphicsRoot32BitConstants(kCanvasViewRootParameter, kCanvasViewConstantCount,
+                                                              &constants, 0);
+                    state.list->SetGraphicsRootShaderResourceView(
+                        kPageTableRootParameter,
+                        state.pageTables->GetGPUVirtualAddress() + (first * sizeof(std::uint32_t)));
+                    state.list->DrawInstanced(3, 1, 0, 0);
                 }
 
                 // Over the canvas, under the UI, which never has the pointer while the outline shows.
@@ -957,7 +954,7 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
             return fail("ID3D12Device::CreateRootSignature", hr);
         }
 
-        // No depth: premultiplied tiles go over the canvas background.
+        // No depth: the premultiplied canvas goes over its background.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
         desc.pRootSignature = state.tileRootSignature;
         desc.VS = {.pShaderBytecode = tile_vs, .BytecodeLength = sizeof(tile_vs)};
@@ -982,6 +979,23 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
             FAILED(hr)) {
             return fail("ID3D12Device::CreateGraphicsPipelineState", hr);
         }
+
+        // Written by the CPU every frame, so an upload heap mapped for its whole life, one part per frame in flight.
+        const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
+            std::size_t{kGraphicsFramesInFlight} * kPageTableEntriesMax * sizeof(std::uint32_t));
+        if (const HRESULT hr = state.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                                                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                                     IID_PPV_ARGS(&state.pageTables));
+            FAILED(hr)) {
+            return fail("ID3D12Device::CreateCommittedResource", hr);
+        }
+        void* mapped = nullptr;
+        const D3D12_RANGE noRead{.Begin = 0, .End = 0};
+        if (const HRESULT hr = state.pageTables->Map(0, &noRead, &mapped); FAILED(hr)) {
+            return fail("ID3D12Resource::Map", hr);
+        }
+        state.pageTablesMapped = static_cast<std::uint32_t*>(mapped);
     }
 
     {
@@ -1264,6 +1278,7 @@ void GraphicsTerminate() noexcept {
     Release(state.views);
     Release(state.outlinePipeline);
     Release(state.outlineRootSignature);
+    Release(state.pageTables);
     Release(state.tilePipeline);
     Release(state.tileRootSignature);
     Release(state.rtvs);

@@ -77,6 +77,8 @@ struct GraphicsState {
     ID3D12DescriptorHeap* rtvs;
     ID3D12RootSignature* tileRootSignature;   // embedded in tile.vs.hlsl
     ID3D12PipelineState* tilePipeline;
+    ID3D12Resource* pageTables;               // upload heap, kPageTableEntriesMax cells per frame in flight
+    std::uint32_t* pageTablesMapped;
     ID3D12RootSignature* outlineRootSignature; // embedded in brush_outline.vs.hlsl
     ID3D12PipelineState* outlinePipeline;
     ID3D12RootSignature* strokeRootSignature; // embedded in stroke.cs.hlsl
