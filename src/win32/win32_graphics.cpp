@@ -76,6 +76,7 @@ struct CanvasViewConstants {
     std::uint32_t regionWidth;
     std::uint32_t regionHeight;
     std::uint32_t level;
+    std::uint32_t filter; // CanvasFilter
 };
 constexpr UINT kCanvasViewRootParameter = 0;
 constexpr UINT kPageTableRootParameter = 1;
@@ -86,7 +87,7 @@ constexpr UINT kTilePoolFirstUav = kTilePoolFirstView + kTileAtlasMax;
 constexpr UINT kTileAtlasDebugView = kTilePoolFirstUav + kTileAtlasMax;
 constexpr UINT kUiTextureFirstView = kTileAtlasDebugView + 1;
 constexpr UINT kCanvasViewConstantCount = sizeof(CanvasViewConstants) / sizeof(std::uint32_t);
-static_assert(kCanvasViewConstantCount == 11, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
+static_assert(kCanvasViewConstantCount == 12, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
 // One window's brush outline. Mirrors the BrushOutline cbuffer in brush_outline.hlsli.
 struct BrushOutlineConstants {
     float centerX;
@@ -355,6 +356,7 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
         .regionWidth = static_cast<std::uint32_t>(tileOf(maxX) + 2 - regionOrigin.x),
         .regionHeight = static_cast<std::uint32_t>(tileOf(maxY) + 2 - regionOrigin.y),
         .level = TileLevelForZoom(viewport.zoomX),
+        .filter = std::to_underlying(gAppState.canvasFilter),
     };
 }
 

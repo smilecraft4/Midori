@@ -5,7 +5,7 @@
 // root SRV. One SRV per atlas; volatile, so the atlases not created yet may stay null and new ones may be written while
 // a frame is in flight.
 #define TILE_ROOT_SIGNATURE                                                                            \
-    "RootConstants(num32BitConstants = 11, b0, visibility = SHADER_VISIBILITY_PIXEL),"                 \
+    "RootConstants(num32BitConstants = 12, b0, visibility = SHADER_VISIBILITY_PIXEL),"                 \
     "SRV(t0, space = 1, visibility = SHADER_VISIBILITY_PIXEL),"                                        \
     "DescriptorTable(SRV(t0, numDescriptors = 16, flags = DESCRIPTORS_VOLATILE),"                      \
     " visibility = SHADER_VISIBILITY_PIXEL)"
@@ -20,6 +20,7 @@ cbuffer CanvasView : register(b0) {
     int2 regionOrigin; // the page table's first tile, from the origin tile
     uint2 regionSize;  // tiles in the page table, row by row
     uint level;        // the view's level: its texels span 2^level canvas units
+    uint filter;       // kFilter* in tile.ps.hlsl
 };
 
 // The cell drawn at each tile of the region, kTileAtlasCellInvalid where nothing is.

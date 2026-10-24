@@ -5,6 +5,7 @@
 #include "midori/tile.hpp"
 #include "midori/tool.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -78,7 +79,8 @@ struct StrokeState {
 };
 
 [[nodiscard]] constexpr float DabRadius(const BrushState& brush, float pressure) noexcept {
-    return brush.pressureRadius ? brush.radius * pressure : brush.radius;
+    return brush.pressureRadius ? brush.radius * std::lerp(brush.pressureRadiusMin, brush.pressureRadiusMax, pressure)
+                                : brush.radius;
 }
 
 // The GPU has a backup or dirty texels to record.

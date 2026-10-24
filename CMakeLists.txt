@@ -77,6 +77,7 @@ set(MIDORI_SOURCES
     src/history.cpp
     src/job.cpp
     src/layer.cpp
+    src/preferences.cpp
     src/stroke.cpp
     src/tile.cpp
     src/ui.cpp
@@ -142,6 +143,9 @@ target_include_directories(midori PRIVATE
 
 target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
 target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
+# Preferences are JSON; only preferences.cpp includes it. Exceptions are off: it aborts where it would throw.
+target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/json)
+target_compile_definitions(midori PRIVATE JSON_NOEXCEPTION)
 
 target_compile_definitions(midori PRIVATE
     $<$<CONFIG:Debug>:MIDORI_DEBUG=1>
@@ -171,6 +175,6 @@ target_precompile_headers(midori PRIVATE
     <string_view>
 )
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32)
+target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32 ole32)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})

@@ -12,6 +12,7 @@
 #include <array>
 #include <filesystem>
 #include <span>
+#include <vector>
 
 namespace Midori {
 
@@ -85,17 +86,21 @@ struct AppState {
     std::array<BrushOutlineState, kWindowMax> brushOutlines; // indexed by window
     StrokeState stroke;
     ToolsState tools;
+    std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
+    WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
+    CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible
     // tile grid positions, so a tile with an older `visibleFrame` is shown nowhere.
     std::uint32_t frame;
     float pointerX; // last pointer position, client-area physical pixels of the window it moved in
     float pointerY;
     float pointerPressure;
-    KeyMod keyMods;    // as of the last key event
+    KeyMod keyMods;             // as of the last key event
     Window commandWindow;
-    UiCommand command; // picked during `commandWindow`'s frame, run by the next AppUpdate
+    UiCommand command;          // picked during `commandWindow`'s frame, run by the next AppUpdate
+    std::uint8_t commandRecent; // CanvasOpenRecent: the index in `recentFiles`
     bool spaceDown;
-    bool modal;        // a dialog is up: its message loop still delivers events, which are dropped
+    bool modal;                 // a dialog is up: its message loop still delivers events, which are dropped
 };
 
 extern AppState gAppState;
@@ -113,11 +118,15 @@ void AppTerminate() noexcept;
 // changes. Canceling any dialog is not an error. Failures are shown to the user, then returned.
 [[nodiscard]] Result<void> AppCanvasNew(Window window) noexcept;
 [[nodiscard]] Result<void> AppCanvasOpen(Window window) noexcept;
+// A file of `recentFiles`; one that does not open leaves the list.
+[[nodiscard]] Result<void> AppCanvasOpenRecent(Window window, std::size_t index) noexcept;
 // Asks for a file when the canvas has none.
 [[nodiscard]] Result<void> AppCanvasSave(Window window) noexcept;
 [[nodiscard]] Result<void> AppCanvasSaveAs(Window window) noexcept;
 // The user asked to close the window: destroys it once unsaved changes are saved or discarded.
 [[nodiscard]] Result<void> AppWindowClose(Window window) noexcept;
+// Closes every window the same way, stopping at the first the user keeps open.
+[[nodiscard]] Result<void> AppQuit() noexcept;
 
 // The window's canvas undoes or redoes one more stroke, once no stroke is on it and the tiles are loaded.
 [[nodiscard]] Result<void> AppUndo(Window window) noexcept;

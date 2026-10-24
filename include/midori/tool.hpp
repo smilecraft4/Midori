@@ -15,8 +15,19 @@ struct BrushState {
     float flow{0.5f};     // alpha of one dab
     float opacity{1.0f};  // the most a stroke covers
     float spacing{0.1f};  // between dabs, in diameters
+    // With pressure, no pressure to full pressure scale the property from min to max.
+    float pressureRadiusMin{0.0f};
+    float pressureRadiusMax{1.0f};
+    float pressureOpacityMin{0.0f};
+    float pressureOpacityMax{1.0f};
+    float pressureFlowMin{0.0f};
+    float pressureFlowMax{1.0f};
+    float pressureHardnessMin{0.0f};
+    float pressureHardnessMax{1.0f};
     bool pressureRadius{true};
     bool pressureOpacity{true};
+    bool pressureFlow{false};
+    bool pressureHardness{false};
 };
 
 enum struct Tool : std::uint8_t {

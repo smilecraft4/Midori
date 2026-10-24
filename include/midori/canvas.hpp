@@ -388,6 +388,18 @@ void CanvasTilesStream() noexcept;
 // `empty`, and the main thread deletes it.
 [[nodiscard]] Result<void> CanvasJobExecute(Job& job) noexcept;
 
+// How views rebuild the canvas between its texels, sharpest last. The wider ones stay sharp where bilinear blurs:
+// rotated, or between zoom steps. Mirrors kFilter* in tile.ps.hlsl.
+enum struct CanvasFilter : std::uint8_t {
+    Nearest,  // 1 tap: hard texels
+    Bilinear, // 2x2: soft
+    Bicubic,  // 4x4 Catmull-Rom: sharp, a slight halo at hard edges
+    Mitchell, // 4x4 Mitchell-Netravali: smooth, almost no halo
+    Lanczos2, // 4x4: sharp
+    Lanczos3, // 6x6: sharpest, a little ringing at hard edges
+    Count_,
+};
+
 struct CanvasViewCreateInfo {
     Viewport viewport{};
     int x{-1};      // `-1` for automatic x position

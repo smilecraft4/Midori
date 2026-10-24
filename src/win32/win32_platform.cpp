@@ -17,6 +17,7 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <shlobj.h>
 #include <windowsx.h>
 
 #include <cmath>
@@ -902,9 +903,15 @@ Result<Window> WindowCreate(WindowCreateInfo createInfo) noexcept {
     int y = rect.top;
     int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
-    if (createInfo.x >= 0 && createInfo.y >= 0) {
-        x = MulDiv(createInfo.x, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
-        y = MulDiv(createInfo.y, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+    if (createInfo.x != kWindowPosDefault && createInfo.y != kWindowPosDefault) {
+        const int placedX = MulDiv(createInfo.x, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+        const int placedY = MulDiv(createInfo.y, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+        // A monitor unplugged since leaves the default place.
+        const RECT placed{.left = placedX, .top = placedY, .right = placedX + width, .bottom = placedY + height};
+        if (MonitorFromRect(&placed, MONITOR_DEFAULTTONULL)) {
+            x = placedX;
+            y = placedY;
+        }
     }
     if (createInfo.width >= 0 && createInfo.height >= 0) {
         RECT client{
@@ -983,6 +990,19 @@ void DialogError(Window window, std::string_view title, std::string_view instruc
     DialogTask(window, title, instruction, content, TD_ERROR_ICON, {}, TDCBF_OK_BUTTON);
 }
 
+Result<std::filesystem::path> PlatformUserSettingsPath() noexcept {
+    PWSTR raw = nullptr;
+    const HRESULT hr = SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, &raw);
+    if (FAILED(hr)) {
+        MIDORI_LOG_ERROR("SHGetKnownFolderPath failed: {:#010x}", static_cast<std::uint32_t>(hr));
+        CoTaskMemFree(raw);
+        return std::unexpected(Error::PreferencesFailed);
+    }
+    std::filesystem::path path(raw);
+    CoTaskMemFree(raw);
+    return path;
+}
+
 Result<std::filesystem::path> DialogFileOpen(const DialogFileInfo& info) noexcept {
     ZoneScopedN("DialogFileOpen");
     return DialogFile(info, false);
@@ -998,6 +1018,51 @@ Result<WindowState> WindowGetState(Window window) noexcept {
         return std::unexpected(Error::WindowInvalid);
     }
     return gPlatformState.windows[window].state;
+}
+
+Result<WindowCreateInfo> WindowGetPlacement(Window window) noexcept {
+    if (!WindowValid(window)) {
+        return std::unexpected(Error::WindowInvalid);
+    }
+    const Win32Window& slot = gPlatformState.windows[window];
+    // Fullscreen keeps the placement it left.
+    WINDOWPLACEMENT placement = slot.restore;
+    const bool fullscreen = slot.state.displayMode == WindowDisplayMode::Fullscreened;
+    if (!fullscreen) {
+        placement.length = sizeof(WINDOWPLACEMENT);
+        if (!GetWindowPlacement(slot.hwnd, &placement)) {
+            MIDORI_LOG_ERROR("GetWindowPlacement failed: {}", GetLastError());
+            return std::unexpected(Error::WindowInvalid);
+        }
+    }
+    WindowDisplayMode displayMode = WindowDisplayMode::Normal;
+    if (fullscreen) {
+        displayMode = WindowDisplayMode::Fullscreened;
+    } else if (placement.showCmd == SW_SHOWMAXIMIZED
+               || (placement.showCmd == SW_SHOWMINIMIZED && (placement.flags & WPF_RESTORETOMAXIMIZED) != 0)) {
+        displayMode = WindowDisplayMode::Maximized;
+    }
+    // In workspace coordinates, from the work area of its monitor, which a taskbar on the left or top moves.
+    RECT rect = placement.rcNormalPosition;
+    MONITORINFO monitor{.cbSize = sizeof(MONITORINFO)};
+    if (GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        OffsetRect(&rect, monitor.rcWork.left - monitor.rcMonitor.left, monitor.rcWork.top - monitor.rcMonitor.top);
+    }
+    // WindowCreate takes the frame's position but the client area's size.
+    const UINT dpi = GetDpiForWindow(slot.hwnd);
+    RECT frame{};
+    AdjustWindowRectExForDpi(&frame, kWindowedStyle, FALSE, 0, dpi);
+    const auto dips = [dpi](LONG pixels) {
+        return MulDiv(pixels, USER_DEFAULT_SCREEN_DPI, static_cast<int>(dpi));
+    };
+    return WindowCreateInfo{
+        .title = {},
+        .x = dips(rect.left),
+        .y = dips(rect.top),
+        .width = dips((rect.right - rect.left) - (frame.right - frame.left)),
+        .height = dips((rect.bottom - rect.top) - (frame.bottom - frame.top)),
+        .displayMode = displayMode,
+    };
 }
 
 Result<void> WindowSetCursor(Window window, WindowCursor cursor) noexcept {

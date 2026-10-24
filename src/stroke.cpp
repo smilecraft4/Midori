@@ -18,6 +18,8 @@ namespace {
 
 // Keeps a tiny brush from emitting thousands of dabs per canvas unit.
 constexpr float kDabSpacingMin = 0.25f;
+// One texel at level 0, the narrowest a dab's mask gets.
+constexpr float kDabRadiusSolid = 1.0f;
 
 [[nodiscard]] float DabSpacing(const BrushState& brush, float pressure) noexcept {
     return std::max(2.0f * DabRadius(brush, pressure) * brush.spacing, kDabSpacingMin);
@@ -100,13 +102,26 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
         return;
     }
     const BrushState& brush = stroke.brush;
+    const float radius = DabRadius(brush, point.pressure);
+    const float opacity =
+        brush.pressureOpacity
+            ? brush.opacity * std::lerp(brush.pressureOpacityMin, brush.pressureOpacityMax, point.pressure)
+            : brush.opacity;
+    // A dab's mask is at least a texel wide, so dabs pressure shrinks below one would each still pull the coverage up
+    // to the full opacity, packed at the minimum spacing: a hard hairline. Below a texel their cap shrinks with them
+    // instead. A brush set that small keeps its own opacity.
+    const float fade = std::min(radius / std::min(brush.radius, kDabRadiusSolid), 1.0f);
     const StrokeDab dab{
         .x = static_cast<float>(point.x - (static_cast<double>(stroke.origin.x) * kTileSize)),
         .y = static_cast<float>(point.y - (static_cast<double>(stroke.origin.y) * kTileSize)),
-        .radius = DabRadius(brush, point.pressure),
-        .hardness = brush.hardness,
-        .flow = brush.flow,
-        .opacity = brush.pressureOpacity ? brush.opacity * point.pressure : brush.opacity,
+        .radius = radius,
+        .hardness = brush.pressureHardness
+                      ? brush.hardness * std::lerp(brush.pressureHardnessMin, brush.pressureHardnessMax, point.pressure)
+                      : brush.hardness,
+        .flow = brush.pressureFlow
+                  ? brush.flow * std::lerp(brush.pressureFlowMin, brush.pressureFlowMax, point.pressure)
+                  : brush.flow,
+        .opacity = opacity * fade,
     };
     const auto index = static_cast<std::uint32_t>(stroke.dabs.size());
     stroke.dabs.push_back(dab);

@@ -44,14 +44,17 @@ using Window = std::uint8_t;
 constexpr Window kWindowMax = 8;
 constexpr Window kWindowInvalid = std::numeric_limits<Window>::max();
 
+// Any position is valid: a monitor left of or above the main one has negative coordinates.
+constexpr int kWindowPosDefault = std::numeric_limits<int>::min();
+
 // Position and size are in DIPs (96 DPI units), scaled to the monitor's DPI on creation so a window
-// looks the same size on every screen.
+// looks the same size on every screen. A position on no monitor falls back to the default.
 struct WindowCreateInfo {
-    std::string_view title; // UTF-8
-    int x{-1};              // `-1` for default x position
-    int y{-1};              // `-1` for default y position
-    int width{-1};          // `-1` for default width, otherwise the client area width
-    int height{-1};         // `-1` for default height, otherwise the client area height
+    std::string_view title;   // UTF-8
+    int x{kWindowPosDefault}; // of the window's frame
+    int y{kWindowPosDefault};
+    int width{-1};            // `-1` for default width, otherwise the client area width
+    int height{-1};           // `-1` for default height, otherwise the client area height
     WindowDisplayMode displayMode{};
 };
 
@@ -74,6 +77,9 @@ struct WindowState {
 [[nodiscard]] Result<void> WindowRender(Window window) noexcept;
 
 [[nodiscard]] Result<WindowState> WindowGetState(Window window) noexcept;
+// Where the window sits when restored, as WindowCreate takes it, and how it shows: maximized, fullscreen or else
+// normal. The title is left empty.
+[[nodiscard]] Result<WindowCreateInfo> WindowGetPlacement(Window window) noexcept;
 [[nodiscard]] Result<void> WindowSetTitle(Window window, std::string_view title) noexcept;
 // Fullscreened is borderless, covering the window's current monitor; leaving it restores the exact
 // previous placement, maximized included when leaving for Normal.
@@ -82,6 +88,9 @@ struct WindowState {
 [[nodiscard]] Result<void> WindowSetCursor(Window window, WindowCursor cursor) noexcept;
 
 [[nodiscard]] Result<void*> WindowGetNativeHandle(Window window) noexcept;
+
+// Where this user's settings of every app go, roaming with the user: %APPDATA% on Windows.
+[[nodiscard]] Result<std::filesystem::path> PlatformUserSettingsPath() noexcept;
 
 [[nodiscard]] inline std::string PathUtf8(const std::filesystem::path& path) noexcept {
     const std::u8string text = path.u8string();

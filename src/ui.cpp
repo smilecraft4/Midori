@@ -13,10 +13,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <numbers>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include <imgui.h>
 #include <tracy/Tracy.hpp>
@@ -192,6 +194,17 @@ constexpr std::array<const char*, std::to_underlying(BlendMode::Count_)> kBlendM
     return kWindowInvalid;
 }
 
+// Whether pressure drives a property, and its value at no pressure and at full pressure, as a share of the slider's.
+void PressureEdit(const char* label, bool& enabled, float& min, float& max) noexcept {
+    ImGui::PushID(label);
+    ImGui::Checkbox("##enabled", &enabled);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!enabled);
+    ImGui::DragFloatRange2(label, &min, &max, 0.005f, 0.0f, 1.0f, "Min %.2f", "Max %.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    ImGui::PopID();
+}
+
 void BrushEdit(BrushState& brush) noexcept {
     ZoneScopedN("BrushEdit");
     ImGui::SliderFloat("Radius (F)", &brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.1f",
@@ -200,8 +213,10 @@ void BrushEdit(BrushState& brush) noexcept {
     ImGui::SliderFloat("Flow", &brush.flow, 0.0f, 1.0f);
     ImGui::SliderFloat("Opacity (Shift+F)", &brush.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat("Spacing", &brush.spacing, 0.01f, 1.0f);
-    ImGui::Checkbox("Pressure radius", &brush.pressureRadius);
-    ImGui::Checkbox("Pressure opacity", &brush.pressureOpacity);
+    PressureEdit("Pressure radius", brush.pressureRadius, brush.pressureRadiusMin, brush.pressureRadiusMax);
+    PressureEdit("Pressure hardness", brush.pressureHardness, brush.pressureHardnessMin, brush.pressureHardnessMax);
+    PressureEdit("Pressure flow", brush.pressureFlow, brush.pressureFlowMin, brush.pressureFlowMax);
+    PressureEdit("Pressure opacity", brush.pressureOpacity, brush.pressureOpacityMin, brush.pressureOpacityMax);
 }
 
 void ToolWindow(Window window, ToolsState& tools) noexcept {
@@ -685,6 +700,27 @@ void LayersWindow(Window window) noexcept {
     ImGui::End();
 }
 
+// What applies to the whole app and is kept between runs, one section per topic.
+void SettingsWindow(Window window) noexcept {
+    ZoneScopedN("SettingsWindow");
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 200.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Settings", &gUiState.settingsShown[window])) {
+        ImGui::End();
+        return;
+    }
+    ImGui::SeparatorText("Display");
+    constexpr std::array<const char*, std::to_underlying(CanvasFilter::Count_)> kFilterNames = {
+        "Nearest", "Bilinear", "Bicubic (Catmull-Rom)", "Mitchell", "Lanczos 2", "Lanczos 3",
+    };
+    int filter = std::to_underlying(gAppState.canvasFilter);
+    if (ImGui::Combo("Canvas filter", &filter, kFilterNames.data(), static_cast<int>(kFilterNames.size()))) {
+        gAppState.canvasFilter = static_cast<CanvasFilter>(filter);
+    }
+    ImGui::SetItemTooltip("How the canvas is drawn between its pixels: wider filters stay sharp when rotated or zoomed "
+                          "between steps, Nearest keeps hard pixels.");
+    ImGui::End();
+}
+
 struct HelpEntry {
     const char* keys;
     const char* action;
@@ -748,6 +784,7 @@ constexpr std::array kHelpGeneral = {
     HelpEntry{.keys = "Ctrl+O", .action = "Open a canvas"},
     HelpEntry{.keys = "Ctrl+S", .action = "Save"},
     HelpEntry{.keys = "Ctrl+Shift+S", .action = "Save as"},
+    HelpEntry{.keys = "Ctrl+Q", .action = "Quit, closing every window"},
 };
 
 void HelpTable(const char* id, std::span<const HelpEntry> entries) noexcept {
@@ -830,6 +867,9 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     // Every context would write the same imgui.ini.
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
+    // Its windows open where the preferences keep them instead.
+    ImGui::LoadIniSettingsFromMemory(gUiState.preferences.imguiSettings.data(),
+                                     gUiState.preferences.imguiSettings.size());
     io.BackendPlatformName = "midori";
     io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;
     // No keyboard navigation: Space would press the focused widget instead of navigating the canvas.
@@ -843,10 +883,11 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.tileAtlasIndex[window] = 0;
     gUiState.tileCellsShown[window] = false;
     gUiState.hidden[window] = false;
-    gUiState.helpShown[window] = true;
-    gUiState.viewShown[window] = true;
-    gUiState.toolShown[window] = true;
-    gUiState.layersShown[window] = true;
+    gUiState.helpShown[window] = gUiState.preferences.helpShown;
+    gUiState.viewShown[window] = gUiState.preferences.viewShown;
+    gUiState.toolShown[window] = gUiState.preferences.toolShown;
+    gUiState.layersShown[window] = gUiState.preferences.layersShown;
+    gUiState.settingsShown[window] = false;
     gUiState.layerFoldersClosed[window].clear();
     gUiState.layerRenaming[window] = -1;
     return context;
@@ -997,8 +1038,26 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
             if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, viewport != nullptr)) {
                 command = UiCommand::CanvasSaveAs;
             }
+            // The file name, its folder on the right.
+            std::vector<std::filesystem::path>& recent = gAppState.recentFiles;
+            if (ImGui::BeginMenu("Open Recent", !recent.empty())) {
+                for (std::size_t i = 0; i < recent.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    if (ImGui::MenuItem(PathUtf8(recent[i].filename()).c_str(),
+                                        PathUtf8(recent[i].parent_path()).c_str())) {
+                        command = UiCommand::CanvasOpenRecent;
+                        gAppState.commandRecent = static_cast<std::uint8_t>(i);
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Clear")) {
+                    recent.clear();
+                }
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
-            if (ImGui::MenuItem("Exit", "Alt+F4")) {
+            if (ImGui::MenuItem("Exit", "Ctrl+Q")) {
                 command = UiCommand::Exit;
             }
             ImGui::EndMenu();
@@ -1010,6 +1069,8 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
             if (ImGui::MenuItem("Redo", "Ctrl+Shift+Z", false, viewport != nullptr)) {
                 command = UiCommand::Redo;
             }
+            ImGui::Separator();
+            ImGui::MenuItem("Settings...", nullptr, &gUiState.settingsShown[window]);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Window")) {
@@ -1066,6 +1127,9 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
     if (gUiState.layersShown[window]) {
         LayersWindow(window);
     }
+    if (gUiState.settingsShown[window]) {
+        SettingsWindow(window);
+    }
     if (gUiState.helpShown[window]) {
         HelpWindow(window, tools);
     }
@@ -1074,6 +1138,16 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
     }
     BrushAdjustOverlay(window, *state, tools);
     ImGui::Render();
+    UiPreferences& preferences = gUiState.preferences;
+    preferences.viewShown = gUiState.viewShown[window];
+    preferences.toolShown = gUiState.toolShown[window];
+    preferences.layersShown = gUiState.layersShown[window];
+    preferences.helpShown = gUiState.helpShown[window];
+    // With no ini file, ImGui only flags that its windows moved or resized.
+    if (io.WantSaveIniSettings) {
+        preferences.imguiSettings = ImGui::SaveIniSettingsToMemory();
+        io.WantSaveIniSettings = false;
+    }
     return command;
 }
 

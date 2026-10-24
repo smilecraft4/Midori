@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 struct ImGuiContext;
@@ -15,6 +16,15 @@ struct ImGuiContext;
 namespace Midori {
 
 struct ToolsState;
+
+// The panels a new window shows, kept between runs.
+struct UiPreferences {
+    std::string imguiSettings; // Dear ImGui's ini text: where its windows sit and how large they are
+    bool viewShown{true};
+    bool toolShown{true};
+    bool layersShown{true};
+    bool helpShown{true};
+};
 
 // One Dear ImGui context per window: its own input state, style, font atlas and draw data. Owned by
 // the platform thread. Every Ui call makes the context it works on current; none relies on the one
@@ -26,10 +36,13 @@ struct UiState {
     std::array<int, kWindowMax> tileAtlasIndex;      // the atlas it shows
     std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
     std::array<bool, kWindowMax> hidden;             // no menu, panel or debug overlay, only the brush adjust
-    std::array<bool, kWindowMax> helpShown;   // the help window, shown at first; its tips follow what the user does
-    std::array<bool, kWindowMax> viewShown;   // the view and tool windows, shown at first
+    // The panels each window shows, from `preferences` when it opens. The help window's tips follow what the user does.
+    std::array<bool, kWindowMax> helpShown;
+    std::array<bool, kWindowMax> viewShown;
     std::array<bool, kWindowMax> toolShown;
-    std::array<bool, kWindowMax> layersShown; // the layers window, shown at first
+    std::array<bool, kWindowMax> layersShown;
+    std::array<bool, kWindowMax> settingsShown; // closed at first, opened from Edit > Settings
+    UiPreferences preferences;                  // what a window opens with; the last window drawn sets it
     // While the opacity slider is held, where each selected layer started, top first.
     std::array<std::vector<float>, kWindowMax> layerOpacitiesBefore;
     std::array<std::vector<std::uint16_t>, kWindowMax> layerFoldersClosed; // folder layer ids
@@ -57,6 +70,7 @@ enum struct UiCommand : std::uint8_t {
     CanvasOpen,
     CanvasSave,
     CanvasSaveAs,
+    CanvasOpenRecent,
     Exit,
     Undo,
     Redo,

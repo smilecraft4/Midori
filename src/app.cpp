@@ -4,6 +4,7 @@
 #include "midori/job.hpp"
 #include "midori/layer.hpp"
 #include "midori/log.hpp"
+#include "midori/preferences.hpp"
 #include "midori/stroke.hpp"
 #include "midori/tile.hpp"
 #include "midori/ui.hpp"
@@ -186,6 +187,23 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
     return path;
 }
 
+// First in the recent files, once.
+void RecentFilesAdd(const std::filesystem::path& path) noexcept {
+    std::vector<std::filesystem::path>& recent = gAppState.recentFiles;
+    std::erase(recent, path);
+    recent.insert(recent.begin(), path);
+    if (recent.size() > kRecentFilesMax) {
+        recent.resize(kRecentFilesMax);
+    }
+}
+
+// Kept for the next run, which opens its first window there.
+void WindowPlacementKeep(Window window) noexcept {
+    if (const auto placement = WindowGetPlacement(window)) {
+        gAppState.windowPlacement = *placement;
+    }
+}
+
 // True once the canvas is on disk, false when the user canceled. Failures were shown to the user.
 [[nodiscard]] Result<bool> CanvasSaveWithDialogs(Window window, Canvas canvas, bool saveAs) noexcept {
     ZoneScopedN("CanvasSaveWithDialogs");
@@ -215,6 +233,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
         AppError(window, std::format("Could not save {}", PathUtf8(path->filename())), res.error());
         return std::unexpected(res.error());
     }
+    RecentFilesAdd(*path);
     CanvasTitlesUpdate(canvas);
     return true;
 }
@@ -261,6 +280,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
     for (const CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid && !canvas.path.empty() && std::filesystem::equivalent(canvas.path, path, ec)) {
             WindowShowCanvas(window, canvas.id);
+            RecentFilesAdd(path);
             return {};
         }
     }
@@ -270,14 +290,15 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
         return std::unexpected(canvas.error());
     }
     WindowShowCanvas(window, *canvas);
+    RecentFilesAdd(path);
     return {};
 }
 
-// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating
-// while held. B paints, E erases, F11 toggles fullscreen, Tab hides or shows the UI.
-// Layers: Ctrl+Shift+N new layer, Ctrl+G new folder, Ctrl+Delete delete, Ctrl+E merge down or flatten a folder, Ctrl+,
-// hide or show. Page Up and Page Down select above and below, with Ctrl move up and down, as in Krita: keys
-// at the same place on every layout, unlike Photoshop's brackets. With Alt they step the blend mode.
+// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Q quit (Alt+F4 still closes a window). Ctrl+Z
+// undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating while held. B paints, E erases, F11 toggles fullscreen, Tab hides or
+// shows the UI. Layers: Ctrl+Shift+N new layer, Ctrl+G new folder, Ctrl+Delete delete, Ctrl+E merge down or flatten a
+// folder, Ctrl+, hide or show. Page Up and Page Down select above and below, with Ctrl move up and down, as in Krita:
+// keys at the same place on every layout, unlike Photoshop's brackets. With Alt they step the blend mode.
 [[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
     ZoneScopedN("KeyShortcut");
     const bool repeats = key.key == Key::Z || key.key == Key::Y;
@@ -345,6 +366,8 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
             return HasAnyFlag(key.keyMods, KeyMod::Shift) ? AppRedo(key.window) : AppUndo(key.window);
         case Key::Y:
             return AppRedo(key.window);
+        case Key::Q:
+            return AppQuit();
         default:
             return {};
     }
@@ -1006,6 +1029,17 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     MIDORI_LOG_INFO("{} v{} {}-{} {}", MIDORI_NAME, MIDORI_VERSION_STRING, MIDORI_COMPILER, MIDORI_ARCHITECTURE,
                     MIDORI_PROFILE);
 
+    // Before any window opens: new windows show the panels the preferences keep.
+    if (const auto preferences = PreferencesLoad()) {
+        gAppState.tools = preferences->tools;
+        gUiState.preferences = preferences->ui;
+        gAppState.windowPlacement = preferences->window;
+        gAppState.canvasFilter = preferences->canvasFilter;
+        gAppState.recentFiles = preferences->recentFiles;
+    } else {
+        MIDORI_LOG_WARN("preferences not loaded, defaults used: {}", ErrorMessage(preferences.error()));
+    }
+
     // GraphicsInit created atlas 0. The clear page is held by no tile.
     gAppState.atlas.count = 1;
     gAppState.atlas.used[kTileAtlasPageClear] = ~std::uint64_t{0};
@@ -1020,7 +1054,10 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     // The platform owns the windows and destroys them in PlatformTerminate.
     const std::size_t windowCount = std::max<std::size_t>(initInfo.files.size(), 1);
     for (std::size_t i = 0; i < windowCount; ++i) {
-        const auto window = WindowCreate(WindowCreateInfo{.title = MIDORI_NAME});
+        // The first where the last one was left, the others where the system puts them.
+        WindowCreateInfo createInfo = i == 0 ? gAppState.windowPlacement : WindowCreateInfo{};
+        createInfo.title = MIDORI_NAME;
+        const auto window = WindowCreate(createInfo);
         if (!window) {
             MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(window.error()));
             // Files already shown keep the app running; without any window it cannot start.
@@ -1161,6 +1198,8 @@ Result<void> AppUpdate() noexcept {
             return AppCanvasSave(window);
         case UiCommand::CanvasSaveAs:
             return AppCanvasSaveAs(window);
+        case UiCommand::CanvasOpenRecent:
+            return AppCanvasOpenRecent(window, gAppState.commandRecent);
         case UiCommand::Undo:
             return AppUndo(window);
         case UiCommand::Redo:
@@ -1168,19 +1207,7 @@ Result<void> AppUpdate() noexcept {
         case UiCommand::ToggleFullscreen:
             return AppToggleFullscreen(window);
         case UiCommand::Exit:
-            // Closes every window, stopping at the first the user keeps open.
-            for (Window other = 0; other < kWindowMax; ++other) {
-                if (!WindowGetState(other)) {
-                    continue;
-                }
-                if (const auto res = AppWindowClose(other); !res) {
-                    return res;
-                }
-                if (WindowGetState(other)) {
-                    break;
-                }
-            }
-            return {};
+            return AppQuit();
         case UiCommand::None:
             break;
     }
@@ -1190,6 +1217,23 @@ Result<void> AppUpdate() noexcept {
 // The windows still open are destroyed after this, by PlatformTerminate.
 void AppTerminate() noexcept {
     ZoneScopedN("AppTerminate");
+    // A brush being adjusted is kept as it is.
+    for (Window window = 0; window < kWindowMax; ++window) {
+        if (WindowGetState(window)) {
+            WindowPlacementKeep(window);
+            break;
+        }
+    }
+    const Preferences preferences{
+        .tools = gAppState.tools,
+        .ui = gUiState.preferences,
+        .window = gAppState.windowPlacement,
+        .canvasFilter = gAppState.canvasFilter,
+        .recentFiles = gAppState.recentFiles,
+    };
+    if (const auto res = PreferencesSave(preferences); !res) {
+        MIDORI_LOG_ERROR("PreferencesSave failed: {}", ErrorMessage(res.error()));
+    }
     gAppState.canvasViews = {};
     for (const CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid) {
@@ -1212,6 +1256,24 @@ Result<void> AppCanvasNew(Window window) noexcept {
     }
     WindowShowCanvas(window, *canvas);
     return {};
+}
+
+Result<void> AppCanvasOpenRecent(Window window, std::size_t index) noexcept {
+    ZoneScopedN("AppCanvasOpenRecent");
+    if (index >= gAppState.recentFiles.size()) {
+        return {};
+    }
+    // Copied: opening reorders the list.
+    const std::filesystem::path path = gAppState.recentFiles[index];
+    if (const CanvasView view = WindowCanvasView(window);
+        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
+        return {};
+    }
+    const auto opened = WindowOpenFile(window, path);
+    if (!opened) {
+        std::erase(gAppState.recentFiles, path);
+    }
+    return opened;
 }
 
 Result<void> AppCanvasOpen(Window window) noexcept {
@@ -1436,12 +1498,30 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept {
     AppLayerBlendMode(window, static_cast<BlendMode>((current + (next ? 1 : kCount - 1)) % kCount));
 }
 
+Result<void> AppQuit() noexcept {
+    ZoneScopedN("AppQuit");
+    for (Window window = 0; window < kWindowMax; ++window) {
+        if (!WindowGetState(window)) {
+            continue;
+        }
+        if (const auto res = AppWindowClose(window); !res) {
+            return res;
+        }
+        if (WindowGetState(window)) {
+            break;
+        }
+    }
+    return {};
+}
+
 Result<void> AppWindowClose(Window window) noexcept {
     ZoneScopedN("AppWindowClose");
     if (const CanvasView view = WindowCanvasView(window);
         view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
         return {};
     }
+    // Closing the last window ends the app, with no window left to ask at exit.
+    WindowPlacementKeep(window);
     return WindowDestroy(window);
 }
 

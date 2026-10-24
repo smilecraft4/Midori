@@ -28,6 +28,7 @@ enum struct Error : std::uint8_t {
     DialogFailed,
     CanvasBusy,
     LayerOpInvalid,
+    PreferencesFailed,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -70,6 +71,8 @@ enum struct Error : std::uint8_t {
             return "canvas busy merging layers";
         case Error::LayerOpInvalid:
             return "layer operation not allowed";
+        case Error::PreferencesFailed:
+            return "preferences not read or written";
     }
     return "unknown error";
 }
