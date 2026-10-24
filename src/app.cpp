@@ -16,6 +16,7 @@
 #include <format>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <utility>
 #include <string_view>
@@ -381,6 +382,9 @@ void TilesMarkVisible() noexcept {
             }
             const TileMip mip = TileKeyMip(tile.key);
             const Layer layer = TileKeyLayer(tile.key);
+            if (layer == canvas.selection && mip == 0 && !SelectionEmpty(canvas.selectionBounds)) {
+                tile.visibleFrame = frame;
+            }
             if (layer != root) {
                 if (mip == 0 && !HasAnyFlag(tile.flags, TileFlags::Composite)
                     && canvas.layerHeights[layer] != kLayerInvalid) {
@@ -793,8 +797,9 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     }
 }
 
-// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, else none, the brush outline showing
-// where the paint or erase lands. Zoom drags right or up, like the NE-SW arrow; rotation has no system cursor.
+// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, the arrow with the Select tool, else
+// none, the brush outline showing where the paint or erase lands. Zoom drags right or up, like the NE-SW arrow;
+// rotation has no system cursor.
 [[nodiscard]] WindowCursor AppCursor(Window window) noexcept {
     ZoneScopedN("AppCursor");
     const AppState& app = gAppState;
@@ -821,7 +826,7 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
         case NavigateMode::None:
             break;
     }
-    return WindowCursor::None;
+    return app.tools.tool == Tool::Select ? WindowCursor::Arrow : WindowCursor::None;
 }
 
 // The current tool's brush under the pointer, over the canvas only: not over the UI, while navigating, or while
@@ -831,8 +836,11 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     const AppState& app = gAppState;
     const CanvasView view = WindowCanvasView(window);
     const auto windowState = WindowGetState(window);
+    // A selection has no brush.
     if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
-        || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None) {
+        || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None
+        || (app.tools.tool == Tool::Select && app.stroke.canvas == kCanvasInvalid)
+        || (app.stroke.canvas != kCanvasInvalid && app.stroke.shape == StrokeShape::Rect)) {
         return {};
     }
     const float scale = std::abs(app.canvasViews[view].viewport.zoomX) * windowState->dpiScale;
@@ -874,6 +882,117 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     };
 }
 
+// A rectangle into the canvas's selection by the tool's operation, or Shift's add, Alt's subtract, Shift+Alt's
+// intersect. Nothing when no layer id is left for the selection's mask.
+[[nodiscard]] std::optional<StrokeBeginInfo> SelectionBeginInfo(CanvasView view, StrokePoint point) noexcept {
+    CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
+    const Layer layer = LayerSelectionTake(canvas);
+    if (layer == kLayerInvalid) {
+        return std::nullopt;
+    }
+    constexpr std::array<StrokeMode, std::to_underlying(SelectionOp::Count_)> kModes = {
+        StrokeMode::Replace, StrokeMode::Paint, StrokeMode::Erase, StrokeMode::Intersect, StrokeMode::Exclude,
+    };
+    SelectionOp op = gAppState.tools.selectionOp;
+    const bool shift = HasAnyFlag(gAppState.keyMods, KeyMod::Shift);
+    const bool alt = HasAnyFlag(gAppState.keyMods, KeyMod::Alt);
+    if (shift && alt) {
+        op = SelectionOp::Intersect;
+    } else if (shift) {
+        op = SelectionOp::Add;
+    } else if (alt) {
+        op = SelectionOp::Subtract;
+    }
+    const StrokeMode mode = kModes[std::to_underlying(op)];
+    return StrokeBeginInfo{
+        .brush = {},
+        .color = Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f},
+        .point = point,
+        .layer = layer,
+        .view = view,
+        .mode = mode,
+        .blendMode = BlendMode::Normal,
+        .shape = StrokeShape::Rect,
+    };
+}
+
+// While a stroke of the selection goes on, its canvas's bounds follow the rectangle: they are it in place of the
+// selection, grow to it when adding or excluding, shrink to it when intersecting, and stay as they were when removing,
+// which may leave them too wide.
+void SelectionBoundsFollow() noexcept {
+    const StrokeState& stroke = gAppState.stroke;
+    CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    if (stroke.layer != canvas.selection) {
+        return;
+    }
+    const SelectionBounds rect{
+        .minX = std::min(stroke.first.x, stroke.last.x),
+        .minY = std::min(stroke.first.y, stroke.last.y),
+        .maxX = std::max(stroke.first.x, stroke.last.x),
+        .maxY = std::max(stroke.first.y, stroke.last.y),
+    };
+    const SelectionBounds& before = stroke.selectionBefore;
+    switch (stroke.mode) {
+        case StrokeMode::Replace:
+            canvas.selectionBounds = rect;
+            break;
+        case StrokeMode::Intersect:
+            canvas.selectionBounds = SelectionBounds{
+                .minX = std::max(before.minX, rect.minX),
+                .minY = std::max(before.minY, rect.minY),
+                .maxX = std::min(before.maxX, rect.maxX),
+                .maxY = std::min(before.maxY, rect.maxY),
+            };
+            if (SelectionEmpty(canvas.selectionBounds)) {
+                canvas.selectionBounds = {};
+            }
+            break;
+        case StrokeMode::Paint:
+        case StrokeMode::Exclude:
+            if (SelectionEmpty(before) || SelectionEmpty(rect)) {
+                canvas.selectionBounds = SelectionEmpty(rect) ? before : rect;
+            } else {
+                canvas.selectionBounds = SelectionBounds{
+                    .minX = std::min(before.minX, rect.minX),
+                    .minY = std::min(before.minY, rect.minY),
+                    .maxX = std::max(before.maxX, rect.maxX),
+                    .maxY = std::max(before.maxY, rect.maxY),
+                };
+            }
+            break;
+        case StrokeMode::Erase:
+            canvas.selectionBounds = before;
+            break;
+    }
+}
+
+// selection.clear: a Replace stroke with no dab clears every tile of the mask, as one undo step.
+void SelectionClear(Window window) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid || gAppState.stroke.canvas != kCanvasInvalid) {
+        return;
+    }
+    CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
+    if (canvas.selection == kLayerInvalid || SelectionEmpty(canvas.selectionBounds) || canvas.history.pending != 0
+        || canvas.merge.result != kLayerInvalid) {
+        return;
+    }
+    const bool wasModified = canvas.modified;
+    StrokeBegin(StrokeBeginInfo{
+        .brush = {},
+        .color = Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f},
+        .point = {},
+        .layer = canvas.selection,
+        .view = view,
+        .mode = StrokeMode::Replace,
+        .blendMode = BlendMode::Normal,
+        .shape = StrokeShape::Rect,
+    });
+    canvas.selectionBounds = {};
+    StrokeEnd();
+    CanvasEdited(canvas.id, wasModified);
+}
+
 // Left drag paints or erases the active layer, by the current tool. Releases and focus loss end the stroke even when
 // the UI wants them. Returns true when the event belongs to the stroke.
 [[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
@@ -898,9 +1017,10 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
                 || stroke.canvas != kCanvasInvalid) {
                 return false;
             }
+            const bool selecting = gAppState.tools.tool == Tool::Select;
             if (const CanvasState& target = gAppState.canvases[gAppState.canvasViews[view].canvas];
                 target.history.pending != 0 || target.merge.result != kLayerInvalid
-                || !LayerPaintable(target, target.activeLayer)) {
+                || (!selecting && !LayerPaintable(target, target.activeLayer))) {
                 return false;
             }
             // The mouse has no pressure: 1 while a button is held.
@@ -911,7 +1031,13 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
             }
             const Canvas canvas = gAppState.canvasViews[view].canvas;
             const bool wasModified = gAppState.canvases[canvas].modified;
-            StrokeBegin(StrokeBeginInfoFromTool(view, *point));
+            const std::optional<StrokeBeginInfo> beginInfo =
+                selecting ? SelectionBeginInfo(view, *point) : StrokeBeginInfoFromTool(view, *point);
+            if (!beginInfo) {
+                return false;
+            }
+            StrokeBegin(*beginInfo);
+            SelectionBoundsFollow();
             CanvasEdited(canvas, wasModified);
             return true;
         }
@@ -922,6 +1048,7 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
             if (const auto point = CanvasPointUnderPointer(stroke.view, event.pointer.pressure)) {
                 const bool wasModified = gAppState.canvases[stroke.canvas].modified;
                 StrokeTo(*point);
+                SelectionBoundsFollow();
                 CanvasEdited(stroke.canvas, wasModified);
             }
             return true;
@@ -1080,6 +1207,16 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
             if (arg < std::to_underlying(CanvasFilter::Count_)) {
                 app.canvasFilter = static_cast<CanvasFilter>(arg);
             }
+            return {};
+        case ActionId::ToolSelect:
+            return AppSelectMode();
+        case ActionId::SelectionOp:
+            if (arg < std::to_underlying(SelectionOp::Count_)) {
+                app.tools.selectionOp = static_cast<SelectionOp>(arg);
+            }
+            return {};
+        case ActionId::SelectionClear:
+            SelectionClear(window);
             return {};
         case ActionId::Count_:
             break;
@@ -1536,6 +1673,14 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
         }
         case ActionId::ViewNavigate:
             return Text::ReasonHold;
+        case ActionId::SelectionClear:
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            if (canvas->selection == kLayerInvalid || SelectionEmpty(canvas->selectionBounds)) {
+                return Text::ReasonNoSelection;
+            }
+            return painting ? Text::ReasonPainting : needsEdit();
         case ActionId::CanvasOpenRecent:
             return arg < app.recentFiles.size() ? Text::Count_ : Text::ReasonNoRecent;
         case ActionId::CanvasRecentClear:
@@ -1565,6 +1710,12 @@ Result<void> AppPaintMode() noexcept {
 Result<void> AppEraseMode() noexcept {
     ZoneScopedN("AppEraseMode");
     gAppState.tools.tool = Tool::Erase;
+    return {};
+}
+
+Result<void> AppSelectMode() noexcept {
+    ZoneScopedN("AppSelectMode");
+    gAppState.tools.tool = Tool::Select;
     return {};
 }
 

@@ -3,7 +3,7 @@
 
 // One UAV per atlas, volatile like the tile pipeline's SRVs.
 #define STROKE_ROOT_SIGNATURE                                                                          \
-    "RootConstants(num32BitConstants = 14, b0),"                                                       \
+    "RootConstants(num32BitConstants = 15, b0),"                                                       \
     "SRV(t0),"                                                                                         \
     "DescriptorTable(UAV(u0, numDescriptors = 16, flags = DESCRIPTORS_VOLATILE))"
 
@@ -11,6 +11,12 @@ static const uint kStrokeGroupSize = 8;
 // StrokeMode in stroke.hpp.
 static const uint kStrokePaint = 0;
 static const uint kStrokeErase = 1;
+static const uint kStrokeReplace = 2;
+static const uint kStrokeIntersect = 3;
+static const uint kStrokeExclude = 4;
+// maskPage: nothing selected anywhere, so nothing clips; or nothing selected in this tile.
+static const uint kStrokeMaskNone = 0xFFFFFFFF;
+static const uint kStrokeMaskEmpty = 0xFFFFFFFE;
 
 // StrokeDab in stroke.hpp.
 struct StrokeDab {
@@ -19,6 +25,8 @@ struct StrokeDab {
     float hardness;
     float flow;
     float opacity;
+    float width; // a rectangle from pos when above 0
+    float height;
 };
 
 cbuffer Stroke : register(b0) {
@@ -31,12 +39,19 @@ cbuffer Stroke : register(b0) {
     uint dabEnd;
     uint blendMode;
     uint mode;
+    uint maskPage; // the selection's mask at this tile, coverage in alpha
 };
 
 StructuredBuffer<StrokeDab> dabs : register(t0);
 RWTexture2DArray<float4> tilePools[kTileAtlasMax] : register(u0);
 
 float DabMask(StrokeDab dab, float2 pos) {
+    if (dab.width > 0.0) {
+        // How much of the texel around `pos` the rectangle covers, along each axis.
+        const float2 cover = saturate(min(pos + 0.5, dab.pos + float2(dab.width, dab.height))
+                                      - max(pos - 0.5, dab.pos));
+        return cover.x * cover.y;
+    }
     const float edge = max((1.0 - dab.hardness) * dab.radius, 1.0);
     return smoothstep(0.0, 1.0, (dab.radius - distance(pos, dab.pos)) / edge);
 }
@@ -64,8 +79,22 @@ void CSMain(uint2 id : SV_DispatchThreadID) {
             coverage = lerp(coverage, dab.opacity, DabMask(dab, pos) * dab.flow);
         }
     }
+    if (maskPage == kStrokeMaskEmpty) {
+        coverage = 0.0;
+    } else if (maskPage != kStrokeMaskNone) {
+        coverage *= tilePools[TileAtlasPageAtlas(maskPage)][uint3(texel, TileAtlasPageSlice(maskPage))].a;
+    }
     const float4 below = tilePools[TileAtlasPageAtlas(srcPage)][uint3(texel, TileAtlasPageSlice(srcPage))];
     const float4 src = color * coverage;
-    tilePools[TileAtlasPageAtlas(dstPage)][uint3(texel, TileAtlasPageSlice(dstPage))] =
-        mode == kStrokeErase ? Erase(below, src.rgb) : Blend(below, src, blendMode);
+    float4 result = Blend(below, src, blendMode);
+    if (mode == kStrokeErase) {
+        result = Erase(below, src.rgb);
+    } else if (mode == kStrokeReplace) {
+        result = src;
+    } else if (mode == kStrokeIntersect) {
+        result = below * coverage;
+    } else if (mode == kStrokeExclude) {
+        result = below + src - 2.0 * below * src;
+    }
+    tilePools[TileAtlasPageAtlas(dstPage)][uint3(texel, TileAtlasPageSlice(dstPage))] = result;
 }

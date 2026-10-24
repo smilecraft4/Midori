@@ -288,11 +288,25 @@ struct HistoryLayer {
     Layer id;
 };
 
+// Around everything selected, in canvas units; empty when min >= max: nothing is, and nothing clips edits.
+struct SelectionBounds {
+    double minX{};
+    double minY{};
+    double maxX{};
+    double maxY{};
+};
+
+[[nodiscard]] constexpr bool SelectionEmpty(const SelectionBounds& bounds) noexcept {
+    return bounds.minX >= bounds.maxX || bounds.minY >= bounds.maxY;
+}
+
 // One edit: HistoryState::blocks[firstBlock, firstBlock + blockCount) and tiles[firstTile, firstTile + tileCount) for a
 // stroke; layers[firstLayer, firstLayer + layerCount) and the layersOrder before then after it, from
 // orders[firstOrder], for a layer op.
 struct HistoryRecord {
-    std::uint64_t sequence; // orders records across canvases, the oldest goes first when the store is full
+    SelectionBounds selectionBefore; // `selection`: a stroke of the selection's mask
+    SelectionBounds selectionAfter;
+    std::uint64_t sequence;          // orders records across canvases, the oldest goes first when the store is full
     std::uint32_t firstBlock;
     std::uint32_t blockCount;
     std::uint32_t firstTile;
@@ -302,6 +316,7 @@ struct HistoryRecord {
     std::uint32_t firstOrder;
     std::uint32_t orderBeforeCount;
     std::uint32_t orderAfterCount;
+    bool selection;
 };
 
 // records[0, current) can be undone, the rest redone. Undo and redo swap each block with its tile's on the GPU, and
@@ -354,15 +369,19 @@ struct CanvasState {
     std::array<Layer, kLayerMax> layerHeights;
     std::array<Layer, kLayerMax> layerParents;
     LayerMergeState merge;
+    SelectionBounds selectionBounds;
     Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}; // under every layer, not saved yet
     CanvasFile file;
     CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
     HistoryState history;
     Layer largestLayer{};
     Layer activeLayer{kLayerInvalid}; // strokes paint into it; kLayerInvalid when none
-    Canvas id{kCanvasInvalid};        // kCanvasInvalid marks the slot free
+    // A Mask layer out of the order: coverage in its alpha clips every other stroke while `selectionBounds` is not
+    // empty. Made with the first selection, never saved; kLayerInvalid before.
+    Layer selection{kLayerInvalid};
+    Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
-    bool modified{};                  // changed since the last save, or since created
+    bool modified{};           // changed since the last save, or since created
 };
 
 // These never ask the user anything; the App* calls wrap them with dialogs.

@@ -203,7 +203,12 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
         .firstOrder = static_cast<std::uint32_t>(history.orders.size()),
         .orderBeforeCount = 0,
         .orderAfterCount = 0,
+        .selection = stroke.layer == canvas.selection,
     };
+    if (record.selection) {
+        record.selectionBefore = stroke.selectionBefore;
+        record.selectionAfter = canvas.selectionBounds;
+    }
     for (const StrokeTile& tile : stroke.tiles) {
         if (tile.backupCell == kTileAtlasCellClear) {
             history.tiles.push_back(HistoryTile{.key = tile.key, .cell = kTileAtlasCellInvalid});
@@ -371,6 +376,9 @@ void HistoryUpdate(Canvas canvas) noexcept {
         LayerCompositesTouch(state, blocks[i].key);
     }
     std::ranges::sort(pool.ops, {}, &HistoryOp::cell);
+    if (record.selection) {
+        state.selectionBounds = undo ? record.selectionBefore : record.selectionAfter;
+    }
     state.modified = true;
     history.current = undo ? history.current - 1 : history.current + 1;
     history.pending += undo ? 1 : -1;

@@ -25,6 +25,9 @@ struct LayerProperties {
 void LayersIndex(CanvasState& canvas) noexcept;
 // A new canvas's layers: the root folder holding one layer, made active. No history.
 void LayersInit(CanvasState& canvas) noexcept;
+// The canvas's selection mask, made the first time: a Mask layer out of the order, never saved. kLayerInvalid when
+// every layer id is taken.
+[[nodiscard]] Layer LayerSelectionTake(CanvasState& canvas) noexcept;
 // `folder` and every folder around it are composited again at every grid position; every folder with kLayerInvalid.
 void LayerCompositesDirty(CanvasState& canvas, Layer folder) noexcept;
 // The folders around the layer of the tile `key` are composited again at its grid position.

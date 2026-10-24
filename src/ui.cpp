@@ -40,6 +40,10 @@ constexpr float kFontSize = 15.0f; // DIPs
 constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
     Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab,
 };
+constexpr std::array<Text, std::to_underlying(SelectionOp::Count_)> kSelectionOpTexts = {
+    Text::SelectionReplace,   Text::SelectionAdd,     Text::SelectionSubtract,
+    Text::SelectionIntersect, Text::SelectionExclude,
+};
 constexpr std::array<Text, std::to_underlying(CanvasFilter::Count_)> kFilterTexts = {
     Text::FilterNearest,  Text::FilterBilinear, Text::FilterBicubic,
     Text::FilterMitchell, Text::FilterLanczos2, Text::FilterLanczos3,
@@ -284,6 +288,9 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
         ImGui::SameLine();
         ImGui::RadioButton(ShortcutLabel(Text::Erase, ActionId::ToolErase).c_str(), &tool,
                            std::to_underlying(Tool::Erase));
+        ImGui::SameLine();
+        ImGui::RadioButton(ShortcutLabel(Text::Select, ActionId::ToolSelect).c_str(), &tool,
+                           std::to_underlying(Tool::Select));
         tools.tool = static_cast<Tool>(tool);
         ImGui::Separator();
         if (tools.tool == Tool::Paint) {
@@ -295,9 +302,16 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
                 tools.paint.blendMode = static_cast<BlendMode>(blendMode);
             }
             BrushEdit(tools.paint.brush);
-        } else {
+        } else if (tools.tool == Tool::Erase) {
             ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.erase.color.r);
             BrushEdit(tools.erase.brush);
+        } else if (tools.tool == Tool::Select) {
+            const auto opNames = TextsGet(kSelectionOpTexts);
+            int op = std::to_underlying(tools.selectionOp);
+            if (ImGui::Combo(TextLabel(Text::SelectionOpLabel), &op, opNames.data(),
+                             static_cast<int>(opNames.size()))) {
+                ActionRequestPush(window, ActionId::SelectionOp, static_cast<std::uint32_t>(op));
+            }
         }
     }
     ImGui::End();
@@ -805,6 +819,12 @@ struct HelpEntry {
 
 constexpr std::array kHelpPaint = {HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePaint}};
 constexpr std::array kHelpErase = {HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureErase}};
+constexpr std::array kHelpSelect = {
+    HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureSelect},
+    HelpEntry{.keys = Text::GestureShiftDragOnly, .action = Text::GestureShiftSelect},
+    HelpEntry{.keys = Text::GestureAltDrag, .action = Text::GestureAltSelect},
+    HelpEntry{.keys = Text::GestureShiftAltDrag, .action = Text::GestureShiftAltSelect},
+};
 constexpr std::array kHelpStroke = {HelpEntry{.keys = Text::GestureRelease, .action = Text::GestureFinishStroke}};
 constexpr std::array kHelpNavigate = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePan},
@@ -880,14 +900,24 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
         ImGui::TextUnformatted(TextGet(Text::HelpNavigating));
         HelpTable("navigate", kHelpNavigate, ActionContext::Navigate, HelpBindings::All);
     } else if (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended) {
-        ImGui::TextUnformatted(TextGet(app.stroke.mode == StrokeMode::Erase ? Text::HelpErasing : Text::HelpPainting));
+        Text title = app.stroke.mode == StrokeMode::Erase ? Text::HelpErasing : Text::HelpPainting;
+        if (app.stroke.shape == StrokeShape::Rect) {
+            title = Text::HelpSelecting;
+        }
+        ImGui::TextUnformatted(TextGet(title));
         HelpTable("stroke", kHelpStroke, ActionContext::Global, HelpBindings::None);
     } else {
-        ImGui::TextUnformatted(TextGet(tools.tool == Tool::Erase ? Text::HelpEraser : Text::HelpPaintBrush));
-        HelpTable("tool",
-                  tools.tool == Tool::Erase ? std::span<const HelpEntry>(kHelpErase)
-                                            : std::span<const HelpEntry>(kHelpPaint),
-                  ActionContext::Canvas, HelpBindings::NotLayers);
+        Text title = Text::HelpPaintBrush;
+        std::span<const HelpEntry> gestures = kHelpPaint;
+        if (tools.tool == Tool::Erase) {
+            title = Text::HelpEraser;
+            gestures = kHelpErase;
+        } else if (tools.tool == Tool::Select) {
+            title = Text::HelpSelect;
+            gestures = kHelpSelect;
+        }
+        ImGui::TextUnformatted(TextGet(title));
+        HelpTable("tool", gestures, ActionContext::Canvas, HelpBindings::NotLayers);
     }
     ImGui::Spacing();
     if (ImGui::CollapsingHeader(TextLabel(Text::HelpGeneral))) {
@@ -943,6 +973,9 @@ void SearchEntriesBuild(Window window) noexcept {
     add(ActionId::SettingsLanguage, 0, TextGet(Text::LanguageSystem));
     for (std::size_t i = 0; i < kLanguages.size(); ++i) {
         add(ActionId::SettingsLanguage, static_cast<std::uint32_t>(i + 1), kLanguages[i].name);
+    }
+    for (std::size_t i = 0; i < kSelectionOpTexts.size(); ++i) {
+        add(ActionId::SelectionOp, static_cast<std::uint32_t>(i), TextGet(kSelectionOpTexts[i]));
     }
     for (std::size_t i = 0; i < kFilterTexts.size(); ++i) {
         add(ActionId::SettingsCanvasFilter, static_cast<std::uint32_t>(i), TextGet(kFilterTexts[i]));

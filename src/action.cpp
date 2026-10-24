@@ -99,46 +99,28 @@ constexpr std::array kModNames = {
     return true;
 }
 
-[[nodiscard]] Json DefaultBindingsJson() noexcept {
-    Json bindings = Json::array();
-    for (const KeyBindingText& text : kDefaultBindings) {
-        const ActionInfo& action = kActions[std::to_underlying(text.action)];
-        Json entry{{"keys", text.keys}, {"action", action.name}};
-        if (action.argName) {
-            entry["arg"] = text.arg;
-        }
-        if (text.context != ActionContext::Global) {
-            entry["context"] = kContextNames[std::to_underlying(text.context)];
-        }
-        bindings.push_back(std::move(entry));
-    }
-    return bindings;
-}
-
-// keybinds.json's entries. When it is missing the defaults are written there, so the user has a file to edit.
+// keybinds.json's entries. When it is missing an empty array is written there, so the user has a file to edit.
 [[nodiscard]] Json BindingsRead() noexcept {
-    Json defaults = DefaultBindingsJson();
     const auto settings = PlatformUserSettingsPath();
     if (!settings) {
-        return defaults;
+        return Json::array();
     }
     const std::filesystem::path path = *settings / MIDORI_NAME / "keybinds.json";
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
-        const std::string text = defaults.dump(4);
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out << "[]\n";
         if (!out) {
             MIDORI_LOG_WARN("writing {} failed", PathUtf8(path));
         }
-        return defaults;
+        return Json::array();
     }
     Json root = Json::parse(file, nullptr, false);
     if (root.is_discarded() || !root.is_array()) {
-        MIDORI_LOG_WARN("{} is not a JSON array, the default bindings are used", PathUtf8(path));
-        return defaults;
+        MIDORI_LOG_WARN("{} is not a JSON array, only the default bindings are used", PathUtf8(path));
+        return Json::array();
     }
     return root;
 }
@@ -219,6 +201,20 @@ Result<KeyBinding> KeyBindingParse(std::string_view keys) noexcept {
 void KeymapLoad(KeymapState& keymap) noexcept {
     ZoneScopedN("KeymapLoad");
     keymap = KeymapState{};
+    for (const KeyBindingText& text : kDefaultBindings) {
+        auto binding = KeyBindingParse(text.keys);
+        if (!binding) {
+            MIDORI_LOG_ERROR("default binding \"{}\": {}", text.keys, ErrorMessage(binding.error()));
+            continue;
+        }
+        binding->arg = text.arg;
+        binding->action = text.action;
+        binding->context = text.context;
+        keymap.bindings.push_back(*binding);
+    }
+
+    // Each entry takes the place of the bindings it conflicts with, the defaults' or an earlier entry's; "none" only
+    // unbinds them.
     const Json root = BindingsRead();
     for (const Json& entry : root) {
         const auto keys = entry.is_object() ? entry.find("keys") : entry.end();
@@ -227,14 +223,15 @@ void KeymapLoad(KeymapState& keymap) noexcept {
             MIDORI_LOG_WARN("keybinds.json: {} needs a \"keys\" and an \"action\" string, skipped", entry.dump());
             continue;
         }
+        const bool none = action->get_ref<const std::string&>() == "none";
         const auto info = std::ranges::find(kActions, action->get_ref<const std::string&>(), &ActionInfo::name);
         auto binding = KeyBindingParse(keys->get_ref<const std::string&>());
-        if (info == kActions.end() || !binding) {
+        if ((info == kActions.end() && !none) || !binding) {
             MIDORI_LOG_WARN("keybinds.json: {}: {}, skipped", entry.dump(),
                             info == kActions.end() ? "no such action" : ErrorMessage(binding.error()));
             continue;
         }
-        binding->action = static_cast<ActionId>(info - kActions.begin());
+        binding->action = none ? ActionId::Count_ : static_cast<ActionId>(info - kActions.begin());
         if (const auto arg = entry.find("arg"); arg != entry.end() && arg->is_number_unsigned()) {
             binding->arg = arg->get<std::uint32_t>();
         }
@@ -248,14 +245,10 @@ void KeymapLoad(KeymapState& keymap) noexcept {
             }
             binding->context = static_cast<ActionContext>(name - kContextNames.begin());
         }
-        const auto other =
-            std::ranges::find_if(keymap.bindings, [&](const KeyBinding& b) { return BindingsConflict(b, *binding); });
-        if (other != keymap.bindings.end()) {
-            MIDORI_LOG_WARN("keybinds.json: {} conflicts with {} bound before, skipped", entry.dump(),
-                            kActions[std::to_underlying(other->action)].name);
-            continue;
+        std::erase_if(keymap.bindings, [&](const KeyBinding& b) { return BindingsConflict(b, *binding); });
+        if (!none) {
+            keymap.bindings.push_back(*binding);
         }
-        keymap.bindings.push_back(*binding);
     }
 
     // A Navigate binding only works while view.navigate is held, so it shows with its keys first: "Space+R".

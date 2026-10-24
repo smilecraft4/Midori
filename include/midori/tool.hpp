@@ -36,6 +36,17 @@ struct BrushState {
 enum struct Tool : std::uint8_t {
     Paint,
     Erase,
+    Select, // a rectangle combined with the selection by ToolsState::selectionOp, or Shift, Alt, Shift+Alt
+};
+
+// How a new selection combines with the one before it.
+enum struct SelectionOp : std::uint8_t {
+    Replace,
+    Add,
+    Subtract,
+    Intersect,
+    Exclude, // selected where exactly one of them is
+    Count_,
 };
 
 struct PaintToolState {
@@ -64,6 +75,7 @@ struct ToolsState {
     PaintToolState paint;
     EraseToolState erase;
     Tool tool{};
+    SelectionOp selectionOp{};
 };
 
 [[nodiscard]] inline BrushState& ToolBrush(ToolsState& tools, Tool tool) noexcept {

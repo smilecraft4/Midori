@@ -311,7 +311,9 @@ void CacheClose(CanvasFile& cache) noexcept {
     std::vector<TileKey> cachedKeys;
     std::vector<TileKey> savedKeys;
     for (const TileState& tile : canvas.tiles) {
-        if ((!all && !HasAnyFlag(tile.flags, TileFlags::Modified)) || HasAnyFlag(tile.flags, TileFlags::Composite)) {
+        // The selection is not saved.
+        if ((!all && !HasAnyFlag(tile.flags, TileFlags::Modified)) || HasAnyFlag(tile.flags, TileFlags::Composite)
+            || HasAnyFlag(canvas.layers[TileKeyLayer(tile.key)].flags, LayerFlags::Mask)) {
             continue;
         }
         if (tile.cell != kTileAtlasCellInvalid) {
@@ -504,7 +506,8 @@ void CanvasEmptiesDelete(CanvasState& canvas, std::span<const TileKey> empties) 
 void CanvasMarkSaved(CanvasState& canvas) noexcept {
     ZoneScopedN("CanvasMarkSaved");
     for (TileState& tile : canvas.tiles) {
-        if (!HasAnyFlag(tile.flags, TileFlags::Composite)) {
+        if (!HasAnyFlag(tile.flags, TileFlags::Composite)
+            && !HasAnyFlag(canvas.layers[TileKeyLayer(tile.key)].flags, LayerFlags::Mask)) {
             tile.flags = (tile.flags | TileFlags::Saved) & ~TileFlags::Modified;
         }
     }

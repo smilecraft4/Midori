@@ -76,7 +76,8 @@ struct CanvasViewConstants {
     std::uint32_t regionWidth;
     std::uint32_t regionHeight;
     std::uint32_t level;
-    std::uint32_t filter; // CanvasFilter
+    std::uint32_t filter;    // CanvasFilter
+    std::uint32_t selection; // 1: the page table goes on with the selection's mask cells
 };
 constexpr UINT kCanvasViewRootParameter = 0;
 constexpr UINT kPageTableRootParameter = 1;
@@ -87,7 +88,7 @@ constexpr UINT kTilePoolFirstUav = kTilePoolFirstView + kTileAtlasMax;
 constexpr UINT kTileAtlasDebugView = kTilePoolFirstUav + kTileAtlasMax;
 constexpr UINT kUiTextureFirstView = kTileAtlasDebugView + 1;
 constexpr UINT kCanvasViewConstantCount = sizeof(CanvasViewConstants) / sizeof(std::uint32_t);
-static_assert(kCanvasViewConstantCount == 12, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
+static_assert(kCanvasViewConstantCount == 13, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
 // One window's brush outline. Mirrors the BrushOutline cbuffer in brush_outline.hlsli.
 struct BrushOutlineConstants {
     float centerX;
@@ -111,12 +112,16 @@ struct StrokeConstants {
     std::uint32_t dabEnd;
     std::uint32_t blendMode;
     std::uint32_t mode;
+    std::uint32_t maskPage; // the selection's mask tile, or kStrokeMask*
 };
 constexpr UINT kStrokeConstantsRootParameter = 0;
 constexpr UINT kStrokeDabsRootParameter = 1;
 constexpr UINT kStrokeTilePoolRootParameter = 2;
 constexpr UINT kStrokeConstantCount = sizeof(StrokeConstants) / sizeof(std::uint32_t);
-static_assert(kStrokeConstantCount == 14, "must match num32BitConstants in STROKE_ROOT_SIGNATURE");
+static_assert(kStrokeConstantCount == 15, "must match num32BitConstants in STROKE_ROOT_SIGNATURE");
+// Mirror kStrokeMask* in stroke.cs.hlsl: nothing is selected, so nothing clips; nothing is selected in this tile.
+constexpr std::uint32_t kStrokeMaskNone = 0xFFFFFFFF;
+constexpr std::uint32_t kStrokeMaskEmpty = 0xFFFFFFFE;
 constexpr UINT kStrokeGroupSize = 8;
 // One level build. Mirrors the TileMip cbuffer in tile_mip.cs.hlsl.
 struct TileMipConstants {
@@ -357,26 +362,35 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
         .regionHeight = static_cast<std::uint32_t>(tileOf(maxY) + 2 - regionOrigin.y),
         .level = TileLevelForZoom(viewport.zoomX),
         .filter = std::to_underlying(gAppState.canvasFilter),
+        .selection = 0,
     };
 }
 
 // Fills `table`, row by row over the region, with the cell each tile position shows: its tile at the view's level, else
-// its level-0 tile while that one loads (TileDrawn). Only the root folder's tiles, the composite of every layer.
+// its level-0 tile while that one loads (TileDrawn). Only the root folder's tiles, the composite of every layer. With
+// `constants.selection`, the region's second half holds the selection's loaded level-0 mask tiles.
 void PageTableFill(const CanvasState& canvas, const CanvasViewConstants& constants, TileGridPos origin,
                    std::span<std::uint32_t> table) noexcept {
     ZoneScopedN("PageTableFill");
     std::ranges::fill(table, kTileAtlasCellInvalid);
     const auto level = static_cast<TileMip>(constants.level);
     const Layer root = canvas.layersOrder.back();
+    const std::size_t regionCount = std::size_t{constants.regionWidth} * constants.regionHeight;
     for (const TileState& tile : canvas.tiles) {
-        if (TileKeyLayer(tile.key) != root || !TileDrawn(canvas, tile, level)) {
+        const Layer layer = TileKeyLayer(tile.key);
+        const bool drawn = layer == root && TileDrawn(canvas, tile, level);
+        const bool selected = constants.selection != 0 && layer == canvas.selection && TileKeyMip(tile.key) == 0
+                           && HasAnyFlag(tile.flags, TileFlags::Loaded);
+        if (!drawn && !selected) {
             continue;
         }
+        const std::size_t first = drawn ? 0 : regionCount;
         const TileGridPos gridPos = TileKeyGridPos(tile.key);
         const std::int64_t x = std::int64_t{gridPos.x} - origin.x - constants.regionOrigin.x;
         const std::int64_t y = std::int64_t{gridPos.y} - origin.y - constants.regionOrigin.y;
         if (x >= 0 && y >= 0 && x < constants.regionWidth && y < constants.regionHeight) {
-            table[(static_cast<std::size_t>(y) * constants.regionWidth) + static_cast<std::size_t>(x)] = tile.cell;
+            table[first + (static_cast<std::size_t>(y) * constants.regionWidth) + static_cast<std::size_t>(x)] =
+                tile.cell;
         }
     }
 }
@@ -496,6 +510,7 @@ void RecordStroke() noexcept {
         .dabEnd = 0,
         .blendMode = std::to_underlying(BlendMode::Normal),
         .mode = std::to_underlying(StrokeMode::Paint),
+        .maskPage = kStrokeMaskNone,
     };
     // Without dabs a normal paint copies the source.
     bool backedUp = false;
@@ -518,10 +533,31 @@ void RecordStroke() noexcept {
     constants.dabEnd = static_cast<std::uint32_t>(stroke.dabs.size());
     constants.blendMode = std::to_underlying(stroke.blendMode);
     constants.mode = std::to_underlying(stroke.mode);
+    // Every stroke but the selection's own paints only where it is selected. A tile whose mask is still streaming in
+    // keeps its dirty texels for a later frame.
+    const CanvasState& strokeCanvas = gAppState.canvases[stroke.canvas];
+    const bool clipped = strokeCanvas.selection != kLayerInvalid && stroke.layer != strokeCanvas.selection
+                      && !SelectionEmpty(strokeCanvas.selectionBounds);
+    std::vector<bool> held(stroke.tiles.size());
     bool painted = false;
-    for (const StrokeTile& tile : stroke.tiles) {
+    for (std::size_t i = 0; i < stroke.tiles.size(); ++i) {
+        const StrokeTile& tile = stroke.tiles[i];
         if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
             continue;
+        }
+        constants.maskPage = kStrokeMaskNone;
+        if (clipped) {
+            const auto mask =
+                strokeCanvas.tileIndices.find(TileKeyMake(strokeCanvas.selection, 0, TileKeyGridPos(tile.key)));
+            if (mask == strokeCanvas.tileIndices.end()) {
+                constants.maskPage = kStrokeMaskEmpty;
+            } else if (const TileState& maskTile = strokeCanvas.tiles[mask->second];
+                       HasAnyFlag(maskTile.flags, TileFlags::Loaded)) {
+                constants.maskPage = TileAtlasCellPage(maskTile.cell);
+            } else {
+                held[i] = true;
+                continue;
+            }
         }
         painted = true;
         // Relative like the dabs.
@@ -546,8 +582,9 @@ void RecordStroke() noexcept {
         state.list->SetPipelineState(state.mipPipeline);
         state.list->SetComputeRootDescriptorTable(kTileMipTilePoolRootParameter, ViewGpu(kTilePoolFirstUav));
         const CanvasState& canvas = gAppState.canvases[stroke.canvas];
-        for (StrokeTile& tile : stroke.tiles) {
-            if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
+        for (std::size_t i = 0; i < stroke.tiles.size(); ++i) {
+            StrokeTile& tile = stroke.tiles[i];
+            if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX || held[i]) {
                 continue;
             }
             for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
@@ -1026,12 +1063,16 @@ void RecordTileDownloads() noexcept {
                     TracyD3D12NamedZone(state.gpuProfiler, gpuCanvasZone, state.list, "GpuCanvas", true);
                     const float dpiScale = gPlatformState.windows[windows[i]].state.dpiScale;
                     const TileGridPos origin = ViewportOriginTile(view.viewport);
-                    const CanvasViewConstants constants =
+                    CanvasViewConstants constants =
                         CanvasViewConstantsMake(view.viewport, origin, slot.width, slot.height, dpiScale);
-                    const Color::Srgb bg = gAppState.canvases[view.canvas].backgroundColor;
+                    const CanvasState& viewCanvas = gAppState.canvases[view.canvas];
+                    constants.selection =
+                        viewCanvas.selection != kLayerInvalid && !SelectionEmpty(viewCanvas.selectionBounds) ? 1 : 0;
+                    const Color::Srgb bg = viewCanvas.backgroundColor;
                     const float background[4] = {bg.r * bg.a, bg.g * bg.a, bg.b * bg.a, bg.a};
                     state.list->ClearRenderTargetView(rtvs[i], background, 1, &rect);
-                    const std::size_t entries = std::size_t{constants.regionWidth} * constants.regionHeight;
+                    const std::size_t entries =
+                        std::size_t{constants.regionWidth} * constants.regionHeight * (constants.selection + 1);
                     const bool overflow = pageTableUsed + entries > kPageTableEntriesMax;
                     if (overflow && !std::exchange(state.pageTableOverflow[view.id], true)) {
                         MIDORI_LOG_WARN("canvas view {}: {} tiles in view, past the page table's room", view.id,

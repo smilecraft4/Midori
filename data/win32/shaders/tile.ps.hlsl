@@ -86,11 +86,27 @@ float FilterWeight(float x) {
     }
 }
 
+// The selection's coverage at a canvas point, from its level-0 mask tile; 0 where it has none.
+float SelectionAt(float2 canvas) {
+    const int2 texel = int2(floor(canvas));
+    const int2 local = (texel >> 8) - regionOrigin;
+    if (any(local < 0) || any(local >= int2(regionSize))) {
+        return 0.0;
+    }
+    const uint cell = pageTable[regionSize.x * regionSize.y + local.y * regionSize.x + local.x];
+    if (cell == kTileAtlasCellInvalid) {
+        return 0.0;
+    }
+    const uint page = TileAtlasCellPage(cell);
+    const uint2 origin = TileAtlasCellOrigin(cell) + uint2(texel & 255);
+    return tilePools[NonUniformResourceIndex(TileAtlasPageAtlas(page))]
+        .Load(int4(origin, TileAtlasPageSlice(page), 0))
+        .a;
+}
+
 // Filtered by hand over the premultiplied texels: nearest, bilinear over 2x2, or a separable kernel over 4x4 (cubics,
 // Lanczos-2) or 6x6 (Lanczos-3), which keep edges sharp where bilinear blurs them, rotated or between zoom steps.
-float4 PSMain(float4 position : SV_Position) : SV_Target {
-    const float2 canvas =
-        float2(dot(pixelToCanvasX, position.xy), dot(pixelToCanvasY, position.xy)) + canvasOffset;
+float4 CanvasColor(float2 canvas) {
     const float2 pos = canvas / float(1u << level) - 0.5;
     const int2 base = int2(floor(pos));
     const float2 f = pos - float2(base);
@@ -130,4 +146,23 @@ float4 PSMain(float4 position : SV_Position) : SV_Target {
     color.a = saturate(color.a);
     color.rgb = clamp(color.rgb, 0.0, color.a);
     return color;
+}
+
+// The selection's outline as Photoshop draws it: one pixel wide on its inner side, still dashes of 4 black and 4 white
+// pixels running along the edge.
+float4 PSMain(float4 position : SV_Position) : SV_Target {
+    const float2 canvas =
+        float2(dot(pixelToCanvasX, position.xy), dot(pixelToCanvasY, position.xy)) + canvasOffset;
+    if (selection != 0 && SelectionAt(canvas) >= 0.5) {
+        const float2 right = float2(pixelToCanvasX.x, pixelToCanvasY.x);
+        const float2 down = float2(pixelToCanvasX.y, pixelToCanvasY.y);
+        const bool across = SelectionAt(canvas + down) < 0.5 || SelectionAt(canvas - down) < 0.5;
+        const bool along = SelectionAt(canvas + right) < 0.5 || SelectionAt(canvas - right) < 0.5;
+        if (across || along) {
+            // A horizontal edge dashes along x, a vertical one along y.
+            const uint dash = uint(across ? position.x : position.y) / 4;
+            return (dash & 1) != 0 ? float4(1.0, 1.0, 1.0, 1.0) : float4(0.0, 0.0, 0.0, 1.0);
+        }
+    }
+    return CanvasColor(canvas);
 }

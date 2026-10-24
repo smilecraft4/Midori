@@ -17,9 +17,17 @@ constexpr std::uint32_t kStrokeDabMax = 1 << 16;
 enum struct StrokeMode : std::uint8_t {
     Paint,
     Erase,
+    Replace,   // the color times the coverage, whatever was below: a selection that replaces the last one
+    Intersect, // what was below times the coverage
+    Exclude,   // what was below where nothing covers, its opposite where the color does
 };
 
-// Mirrors StrokeDab in stroke.cs.hlsl.
+enum struct StrokeShape : std::uint8_t {
+    Brush, // dabs along the path
+    Rect,  // one dab, the rectangle from the first point to the last
+};
+
+// Mirrors StrokeDab in stroke.cs.hlsl. A rectangle when `width` is above 0, from (x, y), its edge antialiased.
 struct StrokeDab {
     float x; // canvas units from the stroke's origin tile, small enough for float wherever the stroke is
     float y;
@@ -27,6 +35,8 @@ struct StrokeDab {
     float hardness;
     float flow;
     float opacity;
+    float width;
+    float height;
 };
 
 struct StrokePoint {
@@ -43,6 +53,7 @@ struct StrokeBeginInfo {
     CanvasView view;
     StrokeMode mode;
     BlendMode blendMode; // Paint only
+    StrokeShape shape;
 };
 
 struct StrokeTile {
@@ -64,16 +75,19 @@ struct StrokeTile {
 struct StrokeState {
     std::vector<StrokeDab> dabs;
     std::vector<StrokeTile> tiles;
-    BrushState brush;              // as the stroke began
+    BrushState brush;                // as the stroke began
     Color::Srgb color;
-    StrokePoint last;              // the last input point
-    float toNextDab{};             // canvas units along the path
-    TileGridPos origin;            // the tile of the first point, the dabs and the GPU work relative to it
+    StrokePoint first;               // the first input point
+    StrokePoint last;                // the last input point
+    SelectionBounds selectionBefore; // a stroke of the selection's mask: its canvas's bounds before it
+    float toNextDab{};               // canvas units along the path
+    TileGridPos origin;              // the tile of the first point, the dabs and the GPU work relative to it
     Layer layer{};
-    Canvas canvas{kCanvasInvalid}; // kCanvasInvalid: no stroke
+    Canvas canvas{kCanvasInvalid};   // kCanvasInvalid: no stroke
     CanvasView view{kCanvasViewInvalid};
     StrokeMode mode{};
     BlendMode blendMode{};
+    StrokeShape shape{};
     std::uint32_t endFrame{}; // gAppState.frame when it ended
     bool ended{};             // the GPU records what is left, then StrokeUpdate frees the backups
 };
@@ -94,8 +108,9 @@ struct StrokeState {
         && std::ranges::find(stroke.tiles, TileKeyWithMip(key, 0), &StrokeTile::key) != stroke.tiles.end();
 }
 
-// Edits the tiles of `layer` and deletes their level 1-3 tiles. Paint creates the tiles missing under the stroke
-// while atlas cells can be taken; erase skips them. A tile not streamed in waits for it and joins late.
+// Edits the tiles of `layer` and deletes their level 1-3 tiles. Paint, Replace and Exclude create the tiles missing
+// under the stroke while atlas cells can be taken; Erase and Intersect skip them. Replace and Intersect also take in
+// every tile the layer has, so what no dab covers is cleared. A tile not streamed in waits for it and joins late. A Rect stroke has no dab until StrokeTo.
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
 void StrokeTo(StrokePoint point) noexcept;
 void StrokeEnd() noexcept;

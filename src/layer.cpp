@@ -102,6 +102,20 @@ std::array<char, kLayerNameLenMax> LayerName(std::string_view text) noexcept {
     return name;
 }
 
+Layer LayerSelectionTake(CanvasState& canvas) noexcept {
+    if (canvas.selection != kLayerInvalid) {
+        return canvas.selection;
+    }
+    const Layer id = LayerIdTake(canvas, kLayerInvalid);
+    if (id == kLayerInvalid) {
+        return id;
+    }
+    canvas.layers[id] = LayerState{.flags = LayerFlags::Mask};
+    canvas.layerNames[id] = LayerName("Selection");
+    canvas.selection = id;
+    return id;
+}
+
 void LayersIndex(CanvasState& canvas) noexcept {
     ZoneScopedN("LayersIndex");
     canvas.layerHeights.fill(kLayerInvalid);

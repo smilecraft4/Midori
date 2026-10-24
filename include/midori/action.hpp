@@ -59,6 +59,9 @@ enum struct ActionId : std::uint8_t {
     DebugTileCells,
     SettingsLanguage,
     SettingsCanvasFilter,
+    ToolSelect,
+    SelectionClear,
+    SelectionOp,
     Count_,
 };
 
@@ -127,6 +130,11 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "settings.canvasFilter",
      .description = "Change how the canvas is drawn between its pixels",
      .argName = "filter"},
+    {.name = "tool.select", .description = "Switch to the rectangle selection"},
+    {.name = "selection.clear", .description = "Select nothing"},
+    {.name = "selection.op",
+     .description = "Change how a new selection combines with the last one",
+     .argName = "operation"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -183,6 +191,8 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "Tab", .action = ActionId::UiToggle},
     KeyBindingText{.keys = "B", .action = ActionId::ToolPaint, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "E", .action = ActionId::ToolErase, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "M", .action = ActionId::ToolSelect, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Ctrl+D", .action = ActionId::SelectionClear, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+B, 1", .action = ActionId::BrushPreset, .arg = 1, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+B, 2", .action = ActionId::BrushPreset, .arg = 2, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+B, 3", .action = ActionId::BrushPreset, .arg = 3, .context = ActionContext::Canvas},
@@ -235,9 +245,10 @@ constexpr std::size_t kRecentActionsMax = 32;
 // Chords split by commas, each its modifiers (Ctrl, Shift, Alt, Super) then its key, joined by +; names as kKeyNames
 // writes them, case ignored. Only the chords and length are set.
 [[nodiscard]] Result<KeyBinding> KeyBindingParse(std::string_view keys) noexcept;
-// From keybinds.json in the settings folder, written from kDefaultBindings when missing. Entries not understood, or
-// conflicting with an earlier one (the same chords, or a prefix of them, in the same context), are logged and skipped.
-// Each binding's keys are shown as the current keyboard layout names them.
+// kDefaultBindings, then keybinds.json in the settings folder over them, an empty array written there when missing.
+// Each entry replaces the bindings it conflicts with (the same chords, or a prefix of them, in the same context);
+// "action": "none" only unbinds them. Entries not understood are logged and skipped. Each binding's keys are shown as
+// the current keyboard layout names them.
 void KeymapLoad(KeymapState& keymap) noexcept;
 // The keys of the first binding of `action`, "" when it has none.
 [[nodiscard]] const char* KeymapKeys(const KeymapState& keymap, ActionId action) noexcept;

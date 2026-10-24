@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <vector>
 
 #include <tracy/Tracy.hpp>
 
@@ -96,6 +97,82 @@ void StrokeTileAttach(StrokeTile& tile, TileState& tileState, bool created) noex
     ++tileState.edits;
 }
 
+// The tile at `gridPos` takes in the texels [minX, maxX) x [minY, maxY): they are recomputed from the dabs since
+// `firstDab` from its backup. A missing tile is created when `create`.
+void TileTouch(StrokeState& stroke, TileGridPos gridPos, std::uint16_t minX, std::uint16_t minY, std::uint16_t maxX,
+               std::uint16_t maxY, std::uint32_t firstDab, bool create) noexcept {
+    CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
+    auto found = canvas.tileIndices.find(key);
+    const bool created = found == canvas.tileIndices.end();
+    if (created) {
+        const Tile tile{.canvas = stroke.canvas, .mip = 0, .layer = stroke.layer, .gridPos = gridPos};
+        if (!create || !TileNew(tile)) {
+            return;
+        }
+        found = canvas.tileIndices.find(key);
+    }
+    auto tile = std::ranges::find(stroke.tiles, key, &StrokeTile::key);
+    if (tile == stroke.tiles.end()) {
+        StrokeMipsPrepare(stroke.canvas, key);
+        found = canvas.tileIndices.find(key);
+        stroke.tiles.push_back(StrokeTile{
+            .key = key,
+            .touched = 0,
+            .firstDab = firstDab,
+            .cell = kTileAtlasCellInvalid,
+            .backupCell = kTileAtlasCellInvalid,
+            .dirtyMinX = kTileSize,
+            .dirtyMinY = kTileSize,
+            .dirtyMaxX = 0,
+            .dirtyMaxY = 0,
+            .backedUp = false,
+        });
+        tile = std::prev(stroke.tiles.end());
+        // A tile not streamed in yet waits, see StrokeUpdate: the GPU recomputes every dab since firstDab
+        // from its backup, so it joins late without losing any.
+        TileState& tileState = canvas.tiles[found->second];
+        if (tileState.cell != kTileAtlasCellInvalid) {
+            // A dab can reach past the view; taking the backup cell must not evict the tile itself.
+            tileState.visibleFrame = gAppState.frame;
+            StrokeTileAttach(*tile, tileState, created);
+        }
+    }
+    TileState& tileState = canvas.tiles[found->second];
+    tileState.visibleFrame = gAppState.frame;
+    if (tile->cell != kTileAtlasCellInvalid && tile->backupCell == kTileAtlasCellInvalid) {
+        return;
+    }
+    tile->dirtyMinX = std::min(tile->dirtyMinX, minX);
+    tile->dirtyMinY = std::min(tile->dirtyMinY, minY);
+    tile->dirtyMaxX = std::max(tile->dirtyMaxX, maxX);
+    tile->dirtyMaxY = std::max(tile->dirtyMaxY, maxY);
+    tile->touched |= TileBlocksMask(minX, minY, maxX, maxY);
+    if (tile->cell != kTileAtlasCellInvalid) {
+        ++tileState.edits;
+        LayerCompositesTouch(canvas, key);
+    }
+    canvas.modified = true;
+}
+
+// Every tile the box [minX, maxX] x [minY, maxY] overlaps, in canvas units from the stroke's origin tile, takes in its
+// texels there. Erasing nothing leaves nothing, so only the other modes create tiles.
+void BoxTouch(StrokeState& stroke, float minX, float minY, float maxX, float maxY, std::uint32_t firstDab) noexcept {
+    const auto tileOf = [](float pos) {
+        return static_cast<TileAxis>(std::floor(pos / static_cast<float>(kTileSize)));
+    };
+    for (TileAxis y = tileOf(minY); y <= tileOf(maxY); ++y) {
+        for (TileAxis x = tileOf(minX); x <= tileOf(maxX); ++x) {
+            const TileAxis originX = x * kTileSize;
+            const TileAxis originY = y * kTileSize;
+            TileTouch(stroke, TileGridPos{.x = stroke.origin.x + x, .y = stroke.origin.y + y},
+                      TileTexel(std::floor(minX), originX), TileTexel(std::floor(minY), originY),
+                      TileTexel(std::ceil(maxX), originX), TileTexel(std::ceil(maxY), originY), firstDab,
+                      stroke.mode != StrokeMode::Erase && stroke.mode != StrokeMode::Intersect);
+        }
+    }
+}
+
 void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
     ZoneScopedN("DabAdd");
     if (stroke.dabs.size() >= kStrokeDabMax) {
@@ -122,81 +199,41 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
                   ? brush.flow * std::lerp(brush.pressureFlowMin, brush.pressureFlowMax, point.pressure)
                   : brush.flow,
         .opacity = opacity * fade,
+        .width = 0.0f,
+        .height = 0.0f,
     };
     const auto index = static_cast<std::uint32_t>(stroke.dabs.size());
     stroke.dabs.push_back(dab);
-
-    CanvasState& canvas = gAppState.canvases[stroke.canvas];
     const float reach = dab.radius + 1.0f;
-    const auto tileOf = [](float pos) {
-        return static_cast<TileAxis>(std::floor(pos / static_cast<float>(kTileSize)));
+    BoxTouch(stroke, dab.x - reach, dab.y - reach, dab.x + reach, dab.y + reach, index);
+}
+
+// The rectangle from the first point to `point` replaces the stroke's one dab. Where the last one was is recomputed
+// too, so shrinking it puts back what it had covered.
+void RectSet(StrokeState& stroke, StrokePoint point) noexcept {
+    ZoneScopedN("RectSet");
+    const auto local = [](double pos, TileAxis origin) {
+        return static_cast<float>(pos - (static_cast<double>(origin) * kTileSize));
     };
-    for (TileAxis y = tileOf(dab.y - reach); y <= tileOf(dab.y + reach); ++y) {
-        for (TileAxis x = tileOf(dab.x - reach); x <= tileOf(dab.x + reach); ++x) {
-            const TileGridPos gridPos{.x = stroke.origin.x + x, .y = stroke.origin.y + y};
-            const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
-            auto found = canvas.tileIndices.find(key);
-            const bool created = found == canvas.tileIndices.end();
-            if (created) {
-                // Erasing nothing leaves nothing.
-                if (stroke.mode == StrokeMode::Erase) {
-                    continue;
-                }
-                const Tile tile{.canvas = stroke.canvas, .mip = 0, .layer = stroke.layer, .gridPos = gridPos};
-                if (!TileNew(tile)) {
-                    continue;
-                }
-                found = canvas.tileIndices.find(key);
-            }
-            auto tile = std::ranges::find(stroke.tiles, key, &StrokeTile::key);
-            if (tile == stroke.tiles.end()) {
-                StrokeMipsPrepare(stroke.canvas, key);
-                found = canvas.tileIndices.find(key);
-                stroke.tiles.push_back(StrokeTile{
-                    .key = key,
-                    .touched = 0,
-                    .firstDab = index,
-                    .cell = kTileAtlasCellInvalid,
-                    .backupCell = kTileAtlasCellInvalid,
-                    .dirtyMinX = kTileSize,
-                    .dirtyMinY = kTileSize,
-                    .dirtyMaxX = 0,
-                    .dirtyMaxY = 0,
-                    .backedUp = false,
-                });
-                tile = std::prev(stroke.tiles.end());
-                // A tile not streamed in yet waits, see StrokeUpdate: the GPU recomputes every dab since firstDab
-                // from its backup, so it joins late without losing any.
-                TileState& tileState = canvas.tiles[found->second];
-                if (tileState.cell != kTileAtlasCellInvalid) {
-                    // A dab can reach past the view; taking the backup cell must not evict the tile itself.
-                    tileState.visibleFrame = gAppState.frame;
-                    StrokeTileAttach(*tile, tileState, created);
-                }
-            }
-            TileState& tileState = canvas.tiles[found->second];
-            tileState.visibleFrame = gAppState.frame;
-            if (tile->cell != kTileAtlasCellInvalid && tile->backupCell == kTileAtlasCellInvalid) {
-                continue;
-            }
-            const TileAxis originX = x * kTileSize;
-            const TileAxis originY = y * kTileSize;
-            const std::uint16_t minX = TileTexel(std::floor(dab.x - reach), originX);
-            const std::uint16_t minY = TileTexel(std::floor(dab.y - reach), originY);
-            const std::uint16_t maxX = TileTexel(std::ceil(dab.x + reach), originX);
-            const std::uint16_t maxY = TileTexel(std::ceil(dab.y + reach), originY);
-            tile->dirtyMinX = std::min(tile->dirtyMinX, minX);
-            tile->dirtyMinY = std::min(tile->dirtyMinY, minY);
-            tile->dirtyMaxX = std::max(tile->dirtyMaxX, maxX);
-            tile->dirtyMaxY = std::max(tile->dirtyMaxY, maxY);
-            tile->touched |= TileBlocksMask(minX, minY, maxX, maxY);
-            if (tile->cell != kTileAtlasCellInvalid) {
-                ++tileState.edits;
-                LayerCompositesTouch(canvas, key);
-            }
-            canvas.modified = true;
-        }
+    const StrokeDab dab{
+        .x = local(std::min(stroke.first.x, point.x), stroke.origin.x),
+        .y = local(std::min(stroke.first.y, point.y), stroke.origin.y),
+        .radius = 0.0f,
+        .hardness = 1.0f,
+        .flow = 1.0f,
+        .opacity = 1.0f,
+        .width = static_cast<float>(std::abs(point.x - stroke.first.x)),
+        .height = static_cast<float>(std::abs(point.y - stroke.first.y)),
+    };
+    // The edge is antialiased over a texel each side.
+    if (!stroke.dabs.empty()) {
+        const StrokeDab last = stroke.dabs.front();
+        stroke.dabs.front() = dab;
+        BoxTouch(stroke, last.x - 1.0f, last.y - 1.0f, last.x + last.width + 1.0f, last.y + last.height + 1.0f, 0);
+    } else {
+        stroke.dabs.push_back(dab);
     }
+    BoxTouch(stroke, dab.x - 1.0f, dab.y - 1.0f, dab.x + dab.width + 1.0f, dab.y + dab.height + 1.0f, 0);
 }
 
 } // namespace
@@ -207,6 +244,7 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     MIDORI_ASSERT(stroke.canvas == kCanvasInvalid, "stroke began over another");
     stroke.brush = beginInfo.brush;
     stroke.color = beginInfo.color;
+    stroke.first = beginInfo.point;
     stroke.last = beginInfo.point;
     stroke.toNextDab = DabSpacing(beginInfo.brush, beginInfo.point.pressure);
     stroke.origin = TileGridPos{.x = static_cast<TileAxis>(std::floor(beginInfo.point.x / kTileSize)),
@@ -216,14 +254,36 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     stroke.view = beginInfo.view;
     stroke.mode = beginInfo.mode;
     stroke.blendMode = beginInfo.blendMode;
+    stroke.shape = beginInfo.shape;
     stroke.ended = false;
-    DabAdd(stroke, beginInfo.point);
+    const CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    stroke.selectionBefore = canvas.selectionBounds;
+    if (stroke.mode == StrokeMode::Replace || stroke.mode == StrokeMode::Intersect) {
+        std::vector<TileGridPos> existing;
+        for (const TileState& tile : canvas.tiles) {
+            if (TileKeyLayer(tile.key) == stroke.layer && TileKeyMip(tile.key) == 0) {
+                existing.push_back(TileKeyGridPos(tile.key));
+            }
+        }
+        // Touching may create tiles, which moves `canvas.tiles`.
+        for (const TileGridPos gridPos : existing) {
+            TileTouch(stroke, gridPos, 0, 0, kTileSize, kTileSize, 0, false);
+        }
+    }
+    if (stroke.shape == StrokeShape::Brush) {
+        DabAdd(stroke, beginInfo.point);
+    }
 }
 
 void StrokeTo(StrokePoint point) noexcept {
     ZoneScopedN("StrokeTo");
     StrokeState& stroke = gAppState.stroke;
     MIDORI_ASSERT(stroke.canvas != kCanvasInvalid && !stroke.ended, "no stroke to extend");
+    if (stroke.shape == StrokeShape::Rect) {
+        RectSet(stroke, point);
+        stroke.last = point;
+        return;
+    }
     const StrokePoint from = stroke.last;
     const double length = std::hypot(point.x - from.x, point.y - from.y);
     double along = stroke.toNextDab;
@@ -270,6 +330,15 @@ void StrokeUpdate() noexcept {
             StrokeTileAttach(tile, tileState, false);
         } else {
             waiting = true;
+        }
+    }
+    // A stroke the selection clips needs its mask tiles too, see RecordStroke.
+    if (canvas.selection != kLayerInvalid && stroke.layer != canvas.selection) {
+        for (const StrokeTile& tile : stroke.tiles) {
+            if (const auto mask = canvas.tileIndices.find(TileKeyMake(canvas.selection, 0, TileKeyGridPos(tile.key)));
+                mask != canvas.tileIndices.end()) {
+                canvas.tiles[mask->second].visibleFrame = gAppState.frame;
+            }
         }
     }
     if (!stroke.ended || std::ranges::any_of(stroke.tiles, StrokeTilePending)) {
