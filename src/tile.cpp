@@ -2,6 +2,7 @@
 
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
+#include "midori/layer.hpp"
 #include "midori/log.hpp"
 
 #include <bit>
@@ -149,11 +150,12 @@ namespace {
 
 } // namespace
 
-// A level-0 tile queued to build its level 1-3 tiles, or to swap blocks with history, stays until the submit records it.
+// A level-0 tile queued to build its level 1-3 tiles, or to swap blocks with history, stays until the submit records
+// it. A composite tile is composited again when needed.
 bool TileEvictable(Canvas canvas, const TileState& tile) noexcept {
     return HasAnyFlag(tile.flags, TileFlags::Loaded) && tile.visibleFrame != gAppState.frame
-        && TilePersisted(tile.flags) && tile.transfer == TileTransfer::None
-        && !StrokeHasTile(gAppState.stroke, canvas, tile.key)
+        && (TilePersisted(tile.flags) || HasAnyFlag(tile.flags, TileFlags::Composite))
+        && tile.transfer == TileTransfer::None && !StrokeHasTile(gAppState.stroke, canvas, tile.key)
         && std::ranges::find(gAppState.canvases[canvas].mipBuilds, tile.key)
                == gAppState.canvases[canvas].mipBuilds.end()
         && !std::ranges::binary_search(gAppState.historyPool.ops, tile.cell, {}, &HistoryOp::cell);
@@ -223,6 +225,9 @@ Result<void> TileNew(Tile tile) noexcept {
     TileInsert(canvas, key, cell);
     canvas.creates.push_back(key);
     canvas.modified = true;
+    if (tile.mip == 0) {
+        LayerCompositesTouch(canvas, key);
+    }
     return {};
 }
 
@@ -280,6 +285,7 @@ Result<void> TileDelete(Tile tile) noexcept {
     if (tile.mip == 0) {
         TileMipsDelete(tile.canvas, key);
         std::erase(canvas.mipBuilds, key);
+        LayerCompositesTouch(canvas, key);
     }
     const auto it = canvas.tileIndices.find(key);
     const std::uint32_t index = it->second;

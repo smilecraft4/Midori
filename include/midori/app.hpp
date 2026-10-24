@@ -28,9 +28,9 @@ enum struct NavigateMode : std::uint8_t {
 
 // The one navigation drag in progress, on `view`. Every pointer move recomputes from the start.
 struct NavigateState {
-    Viewport viewportStart;  // where the current mode started from
-    Viewport gestureStart;   // where Space + drag started, whatever modes it went through: one history step
-    float pointerStartX; // client-area physical pixels
+    Viewport viewportStart; // where the current mode started from
+    Viewport gestureStart;  // where Space + drag started, whatever modes it went through: one history step
+    float pointerStartX;    // client-area physical pixels
     float pointerStartY;
     CanvasView view{kCanvasViewInvalid};
     NavigateMode mode{}; // None while not navigating
@@ -44,16 +44,18 @@ enum struct BrushAdjustMode : std::uint8_t {
     Radius,
     Opacity,
     Hardness,
+    LayerOpacity, // of `layer`, not the brush
 };
 
-// The one brush value being set by the pointer's distance from a fixed center, on `view`. The brush holds the
-// value live; canceling puts `startValue` back.
+// The one brush value, or layer opacity, being set by the pointer's distance from a fixed center, on `view`. The brush
+// or layer holds the value live; canceling puts `startValue` back, keeping a layer opacity records one undo step.
 struct BrushAdjustState {
-    float centerX;  // client-area physical pixels
+    float centerX;              // client-area physical pixels
     float centerY;
-    float distance; // from the center at the last pointer move
-    float value;    // before clamping and snapping
+    float distance;             // from the center at the last pointer move
+    float value;                // before clamping and snapping
     float startValue;
+    Layer layer{kLayerInvalid}; // LayerOpacity: the canvas's active layer when it started
     CanvasView view{kCanvasViewInvalid};
     Tool tool{};
     BrushAdjustMode mode{}; // None while not adjusting
@@ -120,6 +122,23 @@ void AppTerminate() noexcept;
 // The window's canvas undoes or redoes one more stroke, once no stroke is on it and the tiles are loaded.
 [[nodiscard]] Result<void> AppUndo(Window window) noexcept;
 [[nodiscard]] Result<void> AppRedo(Window window) noexcept;
+
+// On the window's canvas, each one undo step: deleting, hiding and blend mode act on the selected layers
+// (LayersSelected), the others on the active one. What the canvas refuses (a merge, a stroke or undo steps in progress,
+// or an op the layer does not allow) does nothing.
+// A new layer, or folder, right above the active layer, which it becomes.
+void AppLayerNew(Window window, bool folder) noexcept;
+void AppLayerDelete(Window window) noexcept;
+// Merges the active layer down, or the active folder into one layer; the result becomes active once done.
+void AppLayerMerge(Window window) noexcept;
+// Past the next layer or folder above, or below: into and out of folders one step at a time.
+void AppLayerMove(Window window, bool up) noexcept;
+// The next layer or folder above, or below, becomes active and the only one selected. No undo step.
+void AppLayerSelect(Window window, bool up) noexcept;
+void AppLayerToggleHidden(Window window) noexcept;
+void AppLayerBlendMode(Window window, BlendMode blendMode) noexcept;
+// The blend mode after the active layer's, or before it, wrapping around.
+void AppLayerBlendModeCycle(Window window, bool next) noexcept;
 
 // Borderless over the window's monitor, or back to how it was.
 [[nodiscard]] Result<void> AppToggleFullscreen(Window window) noexcept;

@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 struct ImGuiContext;
 
@@ -25,7 +26,15 @@ struct UiState {
     std::array<int, kWindowMax> tileAtlasIndex;      // the atlas it shows
     std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
     std::array<bool, kWindowMax> hidden;             // no menu, panel or debug overlay, only the brush adjust
-    std::array<bool, kWindowMax> helpShown;          // the help window, shown at first; its tips follow what the user does
+    std::array<bool, kWindowMax> helpShown;   // the help window, shown at first; its tips follow what the user does
+    std::array<bool, kWindowMax> viewShown;   // the view and tool windows, shown at first
+    std::array<bool, kWindowMax> toolShown;
+    std::array<bool, kWindowMax> layersShown; // the layers window, shown at first
+    // While the opacity slider is held, where each selected layer started, top first.
+    std::array<std::vector<float>, kWindowMax> layerOpacitiesBefore;
+    std::array<std::vector<std::uint16_t>, kWindowMax> layerFoldersClosed; // folder layer ids
+    std::array<int, kWindowMax> layerRenaming; // the layer whose name is being edited, -1 for none
+    std::array<std::array<char, 64>, kWindowMax> layerRename;
 };
 
 extern UiState gUiState;

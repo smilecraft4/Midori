@@ -80,6 +80,10 @@ constexpr TileKey TileGridPosLayerKey(TileKey gridPosKey, Layer layer) noexcept 
     return gridPosKey | (static_cast<TileKey>(layer) << kTileLayerBitOffset);
 }
 
+constexpr Layer TileKeyLayer(TileKey key) noexcept {
+    return static_cast<Layer>(key >> kTileLayerBitOffset);
+}
+
 constexpr TileMip TileKeyMip(TileKey key) noexcept {
     return static_cast<TileMip>((key >> kTileMipBitOffset) & ((TileKey{1} << kTileMipBitSize) - 1));
 }
@@ -109,33 +113,6 @@ constexpr TileKey TileKeyWithMip(TileKey key, TileMip mip) noexcept {
 void TileAtlasCellFree(TileAtlasCell cell) noexcept;
 // Hands a taken cell to the tile `key` of `canvas`, or to no tile with kCanvasInvalid.
 void TileAtlasCellOwn(TileAtlasCell cell, Canvas canvas, TileKey key) noexcept;
-
-struct TileDuplicateInfo {
-    Tile srcTile;
-    Tile dstTile;
-    BlendMode blendMode;
-    float opacity;
-};
-[[nodiscard]] Result<void> TileDuplicate(TileDuplicateInfo duplicateInfo) noexcept;
-
-struct TileMergeInfo {
-    Tile belowTile;
-    Tile overTile;
-    BlendMode blendMode;
-    float opacity;
-};
-[[nodiscard]] Result<void> TileMerge(TileMergeInfo mergeInfo) noexcept;
-
-struct TileMoveInfo {
-    Tile srcTile;
-    Tile dstTile;
-    BlendMode blendMode;
-    float opacity;
-};
-
-[[nodiscard]] Result<void> TileMove(TileMoveInfo moveInfo) noexcept;
-
-[[nodiscard]] Result<void> TileUnload(Tile tile) noexcept;
 
 // A new tile takes an atlas cell, evicting one if needed, and starts transparent. Creating a tile
 // that exists or deleting one that does not does nothing. Deleting a level-0 tile deletes its level 1-3 tiles.

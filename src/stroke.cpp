@@ -2,6 +2,7 @@
 
 #include "midori/app.hpp"
 #include "midori/history.hpp"
+#include "midori/layer.hpp"
 #include "midori/log.hpp"
 #include "midori/tile.hpp"
 
@@ -176,6 +177,7 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
             tile->touched |= TileBlocksMask(minX, minY, maxX, maxY);
             if (tile->cell != kTileAtlasCellInvalid) {
                 ++tileState.edits;
+                LayerCompositesTouch(canvas, key);
             }
             canvas.modified = true;
         }

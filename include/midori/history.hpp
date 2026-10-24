@@ -2,6 +2,7 @@
 
 #include "midori/canvas.hpp"
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace Midori {
@@ -33,9 +34,12 @@ struct HistoryPoolState {
 // its canvas after dropping what could be redone. The oldest records of any canvas go while the store has too few
 // free slots. The stroke must have no op waiting.
 void HistoryPushStroke(StrokeState& stroke) noexcept;
+// A layer op done on `canvas`, as one record after dropping what could be redone. `orderBefore` is the order before
+// it, empty when the op kept the order; `layers` holds every layer it changed, with `before` set and `after` taken now.
+void HistoryPushLayers(Canvas canvas, std::span<const Layer> orderBefore, std::span<HistoryLayer> layers) noexcept;
 // Once per update, after the frame's visible tiles are marked: applies the canvas's next pending step once no stroke
-// is on it, no op is waiting and the step's tiles are loaded, keeping them wanted meanwhile. Steps waiting too long
-// are dropped.
+// or merge is on it, no op is waiting and the step's tiles are loaded, keeping them wanted meanwhile. Steps waiting
+// too long are dropped. A layer step applies at once.
 void HistoryUpdate(Canvas canvas) noexcept;
 
 } // namespace Midori

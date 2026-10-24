@@ -3,6 +3,7 @@
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
 #include "midori/job.hpp"
+#include "midori/layer.hpp"
 #include "midori/log.hpp"
 #include "midori/tile.hpp"
 
@@ -310,7 +311,7 @@ void CacheClose(CanvasFile& cache) noexcept {
     std::vector<TileKey> cachedKeys;
     std::vector<TileKey> savedKeys;
     for (const TileState& tile : canvas.tiles) {
-        if (!all && !HasAnyFlag(tile.flags, TileFlags::Modified)) {
+        if ((!all && !HasAnyFlag(tile.flags, TileFlags::Modified)) || HasAnyFlag(tile.flags, TileFlags::Composite)) {
             continue;
         }
         if (tile.cell != kTileAtlasCellInvalid) {
@@ -354,7 +355,7 @@ void CacheClose(CanvasFile& cache) noexcept {
 
     if (!all) {
         for (Layer id = 0; id < canvas.largestLayer; ++id) {
-            if (!HasAnyFlag(canvas.layers[id].flags, LayerFlags::Deleted)) {
+            if (!HasAnyFlag(canvas.layers[id].flags, LayerFlags::Purged)) {
                 continue;
             }
             const std::uint32_t layerKey = id;
@@ -417,9 +418,13 @@ void CacheClose(CanvasFile& cache) noexcept {
         return fail("mdbx_put layers order", rc);
     }
 
-    for (const Layer id : canvas.layersOrder) {
+    // The layers in the order, and the Deleted ones history can still bring back, with their tiles.
+    for (Layer id = 0; id < canvas.largestLayer; ++id) {
         const LayerState& layer = canvas.layers[id];
-        if (!all && !HasAnyFlag(layer.flags, LayerFlags::Dirty)) {
+        const bool kept =
+            canvas.layerHeights[id] != kLayerInvalid
+            || (HasAnyFlag(layer.flags, LayerFlags::Deleted) && !HasAnyFlag(layer.flags, LayerFlags::Purged));
+        if (!kept || (!all && !HasAnyFlag(layer.flags, LayerFlags::Dirty))) {
             continue;
         }
         const std::uint32_t layerKey = id;
@@ -430,7 +435,7 @@ void CacheClose(CanvasFile& cache) noexcept {
             .tileCount = layer.tileCount,
             .descendants = layer.descendants,
             .blendMode = layer.blendMode,
-            .flags = layer.flags & ~(LayerFlags::Deleted | LayerFlags::Dirty),
+            .flags = layer.flags & ~LayerFlags::Dirty,
         };
         if (const int rc = put(file.layersDbi, Val(layerKey), Val(entry)); rc != MDBX_SUCCESS) {
             return fail("mdbx_put layer", rc);
@@ -499,14 +504,14 @@ void CanvasEmptiesDelete(CanvasState& canvas, std::span<const TileKey> empties) 
 void CanvasMarkSaved(CanvasState& canvas) noexcept {
     ZoneScopedN("CanvasMarkSaved");
     for (TileState& tile : canvas.tiles) {
-        tile.flags = (tile.flags | TileFlags::Saved) & ~TileFlags::Modified;
+        if (!HasAnyFlag(tile.flags, TileFlags::Composite)) {
+            tile.flags = (tile.flags | TileFlags::Saved) & ~TileFlags::Modified;
+        }
     }
     canvas.tileDeletes.clear();
-    for (const Layer id : canvas.layersOrder) {
-        canvas.layers[id].flags &= ~LayerFlags::Dirty;
-    }
     for (Layer id = 0; id < canvas.largestLayer; ++id) {
-        if (HasAnyFlag(canvas.layers[id].flags, LayerFlags::Deleted)) {
+        canvas.layers[id].flags &= ~LayerFlags::Dirty;
+        if (HasAnyFlag(canvas.layers[id].flags, LayerFlags::Purged)) {
             canvas.layers[id] = {};
             canvas.layerNames[id] = {};
             canvas.freeLayers.insert(std::ranges::upper_bound(canvas.freeLayers, id, std::greater{}), id);
@@ -534,6 +539,11 @@ constexpr std::uint32_t kAtlasEvictHigh = kAtlasBlockMax / 8 * 7;
 constexpr std::uint32_t kAtlasEvictLow = kAtlasBlockMax / 4 * 3;
 // Level-0 tiles whose level 1-3 tiles one update queues, to keep each submit's dispatches small.
 constexpr std::uint32_t kMipBuildsPerUpdate = 16;
+// Grid positions whose composites one update queues, for the same reason.
+constexpr std::uint32_t kCompositesPerUpdate = 64;
+// Grid positions of a merge one update queues, and how many ahead of them stream their sources in.
+constexpr std::uint32_t kMergesPerUpdate = 16;
+constexpr std::size_t kMergeWindow = 32;
 
 // Null once the tile was deleted, its slot orphaned or its canvas destroyed.
 [[nodiscard]] TileState* TileFind(Canvas canvas, TileKey key) noexcept {
@@ -663,8 +673,8 @@ void TileCachesSchedule(CanvasState& canvas) noexcept {
     auto& slots = gAppState.transfers.downloads;
     for (TileState& tile : canvas.tiles) {
         if (!HasAnyFlag(tile.flags, TileFlags::Loaded) || tile.visibleFrame == gAppState.frame
-            || TilePersisted(tile.flags) || tile.transfer != TileTransfer::None
-            || StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
+            || TilePersisted(tile.flags) || HasAnyFlag(tile.flags, TileFlags::Composite)
+            || tile.transfer != TileTransfer::None || StrokeHasTile(gAppState.stroke, canvas.id, tile.key)) {
             continue;
         }
         const TileTransferSlot i = TileSlotFind(slots, TileSlotState::Free);
@@ -683,13 +693,14 @@ void TileCachesSchedule(CanvasState& canvas) noexcept {
     }
 }
 
-// The cache holds the latest content of a tile edited since the save, so it goes first.
+// The cache holds the latest content of a tile edited since the save, so it goes first. Composite tiles are composited
+// instead.
 void TileLoadsSchedule(CanvasState& canvas) noexcept {
     ZoneScopedN("TileLoadsSchedule");
     auto& slots = gAppState.transfers.uploads;
     for (TileState& tile : canvas.tiles) {
         if (tile.visibleFrame != gAppState.frame || tile.cell != kTileAtlasCellInvalid
-            || tile.transfer != TileTransfer::None) {
+            || tile.transfer != TileTransfer::None || HasAnyFlag(tile.flags, TileFlags::Composite)) {
             continue;
         }
         MIDORI_ASSERT(TilePersisted(tile.flags), "tile {:#018x} evicted unsaved", tile.key);
@@ -719,25 +730,25 @@ void TileLoadsSchedule(CanvasState& canvas) noexcept {
     }
 }
 
-// Loaded level-0 tiles outside the stroke get their missing level 1-3 tiles, built by the next submit. They start
-// Modified, so streaming caches them once off screen and a save writes them, while views zoomed out draw them
-// instead of level 0. Up to `budget` level-0 tiles per update, shared by every canvas.
+// Loaded, current level-0 root tiles get their missing level 1-3 tiles, built by the next submit, which views zoomed
+// out draw instead of level 0. Composites like their source, an evicted one is built again. Up to `budget` level-0
+// tiles per update, shared by every canvas.
 void TileMipsSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept {
     ZoneScopedN("TileMipsSchedule");
+    const Layer root = canvas.layersOrder.back();
     for (std::uint32_t i = 0; i < canvas.tiles.size() && budget > 0; ++i) {
         // Copied: TileInsert grows `tiles`.
         const TileKey key = canvas.tiles[i].key;
-        if (TileKeyMip(key) != 0 || !HasAnyFlag(canvas.tiles[i].flags, TileFlags::Loaded)
-            || StrokeHasTile(gAppState.stroke, canvas.id, key) || std::ranges::contains(canvas.mipBuilds, key)) {
+        if (TileKeyMip(key) != 0 || TileKeyLayer(key) != root || !HasAnyFlag(canvas.tiles[i].flags, TileFlags::Loaded)
+            || HasAnyFlag(canvas.tiles[i].flags, TileFlags::Dirty) || std::ranges::contains(canvas.mipBuilds, key)) {
             continue;
         }
-        // Missing, or inserted by a queue the submit dropped.
+        // Missing, evicted, or inserted by a queue the submit dropped.
         bool missing = false;
         for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
             const auto found = canvas.tileIndices.find(TileKeyWithMip(key, mip));
             missing = missing || found == canvas.tileIndices.end()
-                   || (!HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)
-                       && canvas.tiles[found->second].cell != kTileAtlasCellInvalid);
+                   || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded);
         }
         if (!missing) {
             continue;
@@ -747,15 +758,216 @@ void TileMipsSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept {
         --budget;
         for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
             const TileKey mipKey = TileKeyWithMip(key, mip);
-            if (canvas.tileIndices.contains(mipKey)) {
+            const auto found = canvas.tileIndices.find(mipKey);
+            if (found != canvas.tileIndices.end() && canvas.tiles[found->second].cell != kTileAtlasCellInvalid) {
                 continue;
             }
             const TileAtlasCell cell = TileAtlasCellTake(mip, canvas.id, mipKey);
             if (cell == kTileAtlasCellInvalid) {
                 return;
             }
-            TileInsert(canvas, mipKey, cell);
+            if (found != canvas.tileIndices.end()) {
+                canvas.tiles[found->second].cell = cell;
+                continue;
+            }
+            TileInsert(canvas, mipKey, cell).flags = TileFlags::Composite;
         }
+    }
+}
+
+// The composite tile `key`, with a cell, made if missing; null when no cell can be taken. Kept from eviction until the
+// submit records it.
+[[nodiscard]] TileState* CompositeTileTake(CanvasState& canvas, TileKey key) noexcept {
+    auto found = canvas.tileIndices.find(key);
+    if (found == canvas.tileIndices.end()) {
+        const TileAtlasCell cell = TileAtlasCellTake(0, canvas.id, key);
+        if (cell == kTileAtlasCellInvalid) {
+            return nullptr;
+        }
+        TileState& tile = TileInsert(canvas, key, cell);
+        tile.flags = TileFlags::Composite | TileFlags::Dirty;
+        return &tile;
+    }
+    TileState& tile = canvas.tiles[found->second];
+    tile.visibleFrame = gAppState.frame;
+    if (tile.cell == kTileAtlasCellInvalid) {
+        tile.cell = TileAtlasCellTake(0, canvas.id, key);
+        if (tile.cell == kTileAtlasCellInvalid) {
+            return nullptr;
+        }
+        tile.flags |= TileFlags::Dirty;
+    }
+    return &tile;
+}
+
+// Readies `folder`'s composite at `gridPos` (level-0 key, layer bits zero): wants the tiles of its shown children
+// there, readies its children folders not current, and takes its tile, queued in `queue` after theirs. False when
+// nothing it shows has a tile there: its tile is deleted then. `ready` turns false while a source still streams in or
+// a cell cannot be taken.
+bool CompositePrepare(CanvasState& canvas, Layer folder, TileKey gridPos, bool& ready,
+                      std::vector<TileKey>& queue) noexcept {
+    const Layer top = canvas.layerHeights[folder];
+    const auto bottom = static_cast<int>(top) - canvas.layers[folder].descendants;
+    bool content = false;
+    // Its children, top first: past each one, the layers inside it.
+    for (int h = static_cast<int>(top) - 1; h >= bottom;
+         h -= canvas.layers[canvas.layersOrder[static_cast<std::size_t>(h)]].descendants + 1) {
+        const Layer child = canvas.layersOrder[static_cast<std::size_t>(h)];
+        const LayerState& layer = canvas.layers[child];
+        if (HasAnyFlag(layer.flags, LayerFlags::Hidden) || layer.opacity <= 0.0f) {
+            continue;
+        }
+        const auto found = canvas.tileIndices.find(TileGridPosLayerKey(gridPos, child));
+        if (HasAnyFlag(layer.flags, LayerFlags::Folder)) {
+            if (found != canvas.tileIndices.end()) {
+                TileState& tile = canvas.tiles[found->second];
+                if (HasAnyFlag(tile.flags, TileFlags::Loaded) && !HasAnyFlag(tile.flags, TileFlags::Dirty)) {
+                    tile.visibleFrame = gAppState.frame;
+                    content = true;
+                    continue;
+                }
+            }
+            content = CompositePrepare(canvas, child, gridPos, ready, queue) || content;
+            continue;
+        }
+        if (found == canvas.tileIndices.end()) {
+            continue;
+        }
+        TileState& tile = canvas.tiles[found->second];
+        tile.visibleFrame = gAppState.frame;
+        ready = ready && HasAnyFlag(tile.flags, TileFlags::Loaded) && !HasAnyFlag(tile.transfer, TileTransfer::Load);
+        content = true;
+    }
+    const TileKey key = TileGridPosLayerKey(gridPos, folder);
+    if (!content) {
+        const Tile tile{.canvas = canvas.id, .mip = 0, .layer = folder, .gridPos = TileKeyGridPos(gridPos)};
+        if (!TileDelete(tile)) {
+            MIDORI_LOG_WARN("composite tile {:#018x} not deleted", key);
+        }
+        return false;
+    }
+    if (!CompositeTileTake(canvas, key)) {
+        ready = false;
+        return true;
+    }
+    queue.push_back(key);
+    return true;
+}
+
+// The root composites of the grid positions shown whose content changed, or that a view needs while they have no cell:
+// at level 0, or at a level whose tile is not loaded. The stroke's positions go first, so painting shows every frame.
+// Up to `budget` positions per update, shared by every canvas.
+void TileCompositesSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept {
+    ZoneScopedN("TileCompositesSchedule");
+    const Layer root = canvas.layersOrder.back();
+    const StrokeState& stroke = gAppState.stroke;
+    std::ranges::stable_partition(canvas.compositeWants, [&](const CompositeWant& want) {
+        return stroke.canvas == canvas.id && std::ranges::any_of(stroke.tiles, [&](const StrokeTile& tile) {
+                   return TileGridPosKey(tile.key) == want.gridPos;
+               });
+    });
+    std::vector<TileKey> queue;
+    for (const CompositeWant& want : canvas.compositeWants) {
+        if (budget == 0) {
+            return;
+        }
+        const TileKey key = TileGridPosLayerKey(want.gridPos, root);
+        if (std::ranges::contains(canvas.composites, key)) {
+            continue;
+        }
+        const auto found = canvas.tileIndices.find(key);
+        if (found != canvas.tileIndices.end()) {
+            const TileState& tile = canvas.tiles[found->second];
+            const auto level = canvas.tileIndices.find(TileKeyWithMip(key, want.level));
+            const bool levelShown = want.level != 0 && level != canvas.tileIndices.end()
+                                 && HasAnyFlag(canvas.tiles[level->second].flags, TileFlags::Loaded);
+            if (!HasAnyFlag(tile.flags, TileFlags::Dirty) && (tile.cell != kTileAtlasCellInvalid || levelShown)) {
+                continue;
+            }
+        }
+        bool ready = true;
+        queue.clear();
+        // A position whose layers are all hidden lost its tile and queues nothing.
+        CompositePrepare(canvas, root, want.gridPos, ready, queue);
+        if (ready && !queue.empty()) {
+            canvas.composites.insert(canvas.composites.end(), queue.begin(), queue.end());
+            --budget;
+        }
+    }
+}
+
+// The grid positions of the canvas's merge whose sources are loaded get their result tile and go to the next submit,
+// up to `budget` per update; the next ones up to kMergeWindow want their sources meanwhile. A folder flattened is
+// composited there first. Positions where nothing shows are dropped. Once every result tile is composited, the result
+// takes the sources' place.
+void TileMergesSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept {
+    LayerMergeState& merge = canvas.merge;
+    if (merge.result == kLayerInvalid) {
+        return;
+    }
+    ZoneScopedN("TileMergesSchedule");
+    if (merge.remaining.empty() && merge.queued.empty()) {
+        LayerMergeFinish(canvas);
+        return;
+    }
+    std::vector<TileKey> queue;
+    std::size_t looked = 0;
+    for (auto it = merge.remaining.begin(); it != merge.remaining.end() && looked < kMergeWindow && budget > 0;) {
+        ++looked;
+        const TileKey gridPos = *it;
+        bool ready = true;
+        if (merge.lower == kLayerInvalid) {
+            const auto found = canvas.tileIndices.find(TileGridPosLayerKey(gridPos, merge.upper));
+            if (found == canvas.tileIndices.end() || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)
+                || HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Dirty)) {
+                queue.clear();
+                if (!CompositePrepare(canvas, merge.upper, gridPos, ready, queue)) {
+                    it = merge.remaining.erase(it);
+                    continue;
+                }
+                for (const TileKey key : queue) {
+                    if (ready && !std::ranges::contains(canvas.composites, key)) {
+                        canvas.composites.push_back(key);
+                    }
+                }
+                ++it;
+                continue;
+            }
+            canvas.tiles[found->second].visibleFrame = gAppState.frame;
+        } else {
+            bool any = false;
+            for (const Layer layer : {merge.lower, merge.upper}) {
+                const auto found = canvas.tileIndices.find(TileGridPosLayerKey(gridPos, layer));
+                if (found == canvas.tileIndices.end()) {
+                    continue;
+                }
+                TileState& tile = canvas.tiles[found->second];
+                tile.visibleFrame = gAppState.frame;
+                ready = ready && HasAnyFlag(tile.flags, TileFlags::Loaded)
+                     && !HasAnyFlag(tile.transfer, TileTransfer::Load);
+                any = true;
+            }
+            if (!any) {
+                it = merge.remaining.erase(it);
+                continue;
+            }
+        }
+        if (!ready) {
+            ++it;
+            continue;
+        }
+        // Left by a submit that found a source gone, it keeps its cell.
+        const TileKey key = TileGridPosLayerKey(gridPos, merge.result);
+        if (!canvas.tileIndices.contains(key)) {
+            const TileAtlasCell cell = TileAtlasCellTake(0, canvas.id, key);
+            if (cell == kTileAtlasCellInvalid) {
+                return;
+            }
+            TileInsert(canvas, key, cell);
+        }
+        merge.queued.push_back(gridPos);
+        it = merge.remaining.erase(it);
+        --budget;
     }
 }
 
@@ -800,7 +1012,11 @@ void TileAtlasRelieve() noexcept {
 
 Result<Canvas> CanvasNew() noexcept {
     ZoneScopedN("CanvasNew");
-    return CanvasSlotTake();
+    const auto canvas = CanvasSlotTake();
+    if (canvas) {
+        LayersInit(gAppState.canvases[*canvas]);
+    }
+    return canvas;
 }
 
 Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
@@ -863,19 +1079,16 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
     if (value.iov_len != 0) {
         std::memcpy(canvas.layersOrder.data(), value.iov_base, value.iov_len);
     }
-    std::vector<bool> used(canvas.largestLayer);
+    std::vector<bool> inOrder(canvas.largestLayer);
     for (const Layer id : canvas.layersOrder) {
-        if (id >= canvas.largestLayer || used[id]) {
+        if (id >= canvas.largestLayer || inOrder[id]) {
             return fail("layers order", MDBX_SUCCESS);
         }
-        used[id] = true;
-    }
-    for (Layer id = canvas.largestLayer; id-- > 0;) {
-        if (!used[id]) {
-            canvas.freeLayers.push_back(id);
-        }
+        inOrder[id] = true;
     }
 
+    // Out of the order, only Deleted layers have an entry; with no history left to bring them back, they are purged.
+    std::vector<bool> stored(canvas.largestLayer);
     MDBX_cursor* cursor = nullptr;
     if (const int rc = mdbx_cursor_open(txn, canvas.file.layersDbi, &cursor); rc != MDBX_SUCCESS) {
         return fail("layers", rc);
@@ -884,12 +1097,14 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
     for (; rc == MDBX_SUCCESS; rc = mdbx_cursor_get(cursor, &key, &value, MDBX_NEXT)) {
         std::uint32_t id{};
         std::memcpy(&id, key.iov_base, sizeof(id));
-        if (key.iov_len != sizeof(id) || id >= canvas.largestLayer || !used[id]
-            || value.iov_len != sizeof(LayerFileEntry)) {
+        if (key.iov_len != sizeof(id) || id >= canvas.largestLayer || value.iov_len != sizeof(LayerFileEntry)) {
             break;
         }
         LayerFileEntry entry{};
         std::memcpy(&entry, value.iov_base, sizeof(entry));
+        if (inOrder[id] == HasAnyFlag(entry.flags, LayerFlags::Deleted)) {
+            break;
+        }
         // tileCount is recounted from the tiles below.
         canvas.layers[id] = LayerState{
             .opacity = entry.opacity,
@@ -897,14 +1112,76 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
             .tileCount = 0,
             .descendants = entry.descendants,
             .blendMode = entry.blendMode,
-            .flags = entry.flags,
+            .flags = inOrder[id] ? entry.flags : entry.flags | LayerFlags::Purged,
         };
         canvas.layerNames[id] = entry.name;
+        canvas.layerNames[id].back() = '\0';
+        stored[id] = true;
     }
     mdbx_cursor_close(cursor);
     if (rc != MDBX_NOTFOUND) {
         return fail("layers", rc);
     }
+    for (const Layer id : canvas.layersOrder) {
+        if (!stored[id]) {
+            return fail("layers", MDBX_SUCCESS);
+        }
+    }
+
+    // Version 2 has no root folder; canvases made new never had a layer, their tiles are layer 0's.
+    if (header.version < 3 && canvas.layersOrder.empty()) {
+        if (canvas.largestLayer != 0) {
+            return fail("layers order", MDBX_SUCCESS);
+        }
+        LayersInit(canvas);
+        inOrder.assign(canvas.largestLayer, true);
+        stored.assign(canvas.largestLayer, true);
+    } else if (header.version < 3) {
+        if (canvas.largestLayer == kLayerMax) {
+            return fail("layers order", MDBX_SUCCESS);
+        }
+        const Layer root = canvas.largestLayer++;
+        canvas.layers[root] = LayerState{
+            .descendants = static_cast<Layer>(canvas.layersOrder.size()),
+            .flags = LayerFlags::Folder | LayerFlags::Internal | LayerFlags::Dirty,
+        };
+        canvas.layerNames[root] = LayerName("Canvas");
+        canvas.layersOrder.push_back(root);
+        inOrder.push_back(true);
+        stored.push_back(true);
+    }
+    // The root tops the order around everything else; every folder sits inside the one around it.
+    if (canvas.layersOrder.empty()) {
+        return fail("layers order", MDBX_SUCCESS);
+    }
+    std::vector<std::size_t> bottoms; // of the folders around the height, innermost last
+    for (std::size_t h = canvas.layersOrder.size(); h-- > 0;) {
+        const LayerState& layer = canvas.layers[canvas.layersOrder[h]];
+        const bool top = h == canvas.layersOrder.size() - 1;
+        if (top != HasAnyFlag(layer.flags, LayerFlags::Internal)
+            || (top && (!HasAnyFlag(layer.flags, LayerFlags::Folder) || layer.descendants != h))) {
+            return fail("layers order", MDBX_SUCCESS);
+        }
+        while (!bottoms.empty() && bottoms.back() > h) {
+            bottoms.pop_back();
+        }
+        if (!HasAnyFlag(layer.flags, LayerFlags::Folder)) {
+            continue;
+        }
+        if (layer.descendants > h || (!bottoms.empty() && h - layer.descendants < bottoms.back())) {
+            return fail("layers order", MDBX_SUCCESS);
+        }
+        bottoms.push_back(h - layer.descendants);
+    }
+    // Purged ids stay taken until the next save deletes them.
+    for (Layer id = canvas.largestLayer; id-- > 0;) {
+        if (!inOrder[id] && !stored[id]) {
+            canvas.freeLayers.push_back(id);
+        }
+    }
+    LayersIndex(canvas);
+    canvas.activeLayer =
+        canvas.layersOrder.size() > 1 ? canvas.layersOrder[canvas.layersOrder.size() - 2] : kLayerInvalid;
 
     if (rc = mdbx_cursor_open(txn, canvas.file.tilesDbi, &cursor); rc != MDBX_SUCCESS) {
         return fail("tiles", rc);
@@ -920,6 +1197,10 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
         if (value.iov_len == 0) {
             break;
         }
+        // A purged layer's tiles stay in the file until the next save deletes its range.
+        if (TileKeyLayer(tileKey) >= canvas.largestLayer || !inOrder[TileKeyLayer(tileKey)]) {
+            continue;
+        }
         canvas.tileIndices.emplace(tileKey, static_cast<std::uint32_t>(canvas.tiles.size()));
         canvas.tiles.push_back(TileState{
             .key = tileKey,
@@ -931,7 +1212,7 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
             .flags = TileFlags::Saved,
             .transfer = TileTransfer::None,
         });
-        ++canvas.layers[tileKey >> kTileLayerBitOffset].tileCount;
+        ++canvas.layers[TileKeyLayer(tileKey)].tileCount;
     }
     mdbx_cursor_close(cursor);
     if (rc != MDBX_NOTFOUND) {
@@ -946,6 +1227,10 @@ Result<void> CanvasSave(Canvas canvas) noexcept {
     ZoneScopedN("CanvasSave");
     CanvasState& state = gAppState.canvases[canvas];
     MIDORI_ASSERT(state.id == canvas && state.file.env, "canvas {} has no file", canvas);
+    // The result's tiles would be written without its layer.
+    if (state.merge.result != kLayerInvalid) {
+        return std::unexpected(Error::CanvasBusy);
+    }
     std::vector<TileKey> empties;
     if (const auto res = CanvasFileWrite(state, state.file, false, empties); !res) {
         return res;
@@ -959,6 +1244,9 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
     ZoneScopedN("CanvasSaveAs");
     CanvasState& state = gAppState.canvases[canvas];
     MIDORI_ASSERT(state.id == canvas, "invalid canvas {}", canvas);
+    if (state.merge.result != kLayerInvalid) {
+        return std::unexpected(Error::CanvasBusy);
+    }
     std::error_code ec;
     if (state.file.env && std::filesystem::equivalent(path, state.path, ec)) {
         if (const auto res = CanvasSave(canvas); !res) {
@@ -1048,8 +1336,13 @@ void CanvasTilesStream() noexcept {
     TileSlotsAdvance();
     TileUploadsPlace();
     std::uint32_t mipBudget = kMipBuildsPerUpdate;
+    std::uint32_t compositeBudget = kCompositesPerUpdate;
+    std::uint32_t mergeBudget = kMergesPerUpdate;
     for (CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid) {
+            // First: they want the layer tiles they need, which the loads then stream in.
+            TileCompositesSchedule(canvas, compositeBudget);
+            TileMergesSchedule(canvas, mergeBudget);
             TileCachesSchedule(canvas);
             TileLoadsSchedule(canvas);
             TileMipsSchedule(canvas, mipBudget);

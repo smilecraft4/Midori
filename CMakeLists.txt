@@ -76,6 +76,7 @@ set(MIDORI_SOURCES
     src/color.cpp
     src/history.cpp
     src/job.cpp
+    src/layer.cpp
     src/stroke.cpp
     src/tile.cpp
     src/ui.cpp
@@ -92,7 +93,6 @@ set(MIDORI_SHADERS_WIN32
     data/win32/shaders/atlas.hlsli
     data/win32/shaders/blend.hlsli
     data/win32/shaders/common.hlsli
-    data/win32/shaders/tile_ops.hlsli
     data/win32/shaders/tile.vs.hlsl
     data/win32/shaders/tile.ps.hlsl
     data/win32/shaders/brush_outline.hlsli

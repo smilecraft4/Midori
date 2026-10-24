@@ -26,6 +26,8 @@ enum struct Error : std::uint8_t {
     TileReadFailed,
     TileCacheFailed,
     DialogFailed,
+    CanvasBusy,
+    LayerOpInvalid,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -64,6 +66,10 @@ enum struct Error : std::uint8_t {
             return "tile cache failed";
         case Error::DialogFailed:
             return "dialog failed";
+        case Error::CanvasBusy:
+            return "canvas busy merging layers";
+        case Error::LayerOpInvalid:
+            return "layer operation not allowed";
     }
     return "unknown error";
 }

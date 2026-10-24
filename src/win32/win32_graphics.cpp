@@ -27,6 +27,7 @@
 #include "midori/shaders/brush_outline_vs.h"
 #include "midori/shaders/history_cs.h"
 #include "midori/shaders/stroke_cs.h"
+#include "midori/shaders/tile_blend_cs.h"
 #include "midori/shaders/tile_mip_cs.h"
 #include "midori/shaders/tile_ps.h"
 #include "midori/shaders/tile_vs.h"
@@ -130,6 +131,20 @@ constexpr UINT kTileMipTilePoolRootParameter = 1;
 constexpr UINT kTileMipConstantCount = sizeof(TileMipConstants) / sizeof(std::uint32_t);
 static_assert(kTileMipConstantCount == 6, "must match num32BitConstants in TILE_MIP_ROOT_SIGNATURE");
 constexpr UINT kTileMipGroupSize = 8;
+// One folder tile's composite. Mirrors the Composite cbuffer in tile_blend.cs.hlsl.
+struct CompositeConstants {
+    std::uint32_t dstCell;
+    std::uint32_t firstSource;
+    std::uint32_t sourceCount;
+};
+constexpr UINT kCompositeConstantsRootParameter = 0;
+constexpr UINT kCompositeSourcesRootParameter = 1;
+constexpr UINT kCompositeTilePoolRootParameter = 2;
+constexpr UINT kCompositeConstantCount = sizeof(CompositeConstants) / sizeof(std::uint32_t);
+static_assert(kCompositeConstantCount == 3, "must match num32BitConstants in TILE_BLEND_ROOT_SIGNATURE");
+constexpr UINT kCompositeGroupSize = 8;
+// Sources the composites of one frame read, every canvas together.
+constexpr std::size_t kCompositeSourcesMax = std::size_t{1} << 16;
 constexpr UINT kHistoryOpsRootParameter = 0;
 constexpr UINT kHistoryStoreRootParameter = 1;
 constexpr UINT kHistoryTilePoolRootParameter = 2;
@@ -344,14 +359,15 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
 }
 
 // Fills `table`, row by row over the region, with the cell each tile position shows: its tile at the view's level, else
-// its level-0 tile while that one loads (TileDrawn). Layer 0 only until layers composite.
+// its level-0 tile while that one loads (TileDrawn). Only the root folder's tiles, the composite of every layer.
 void PageTableFill(const CanvasState& canvas, const CanvasViewConstants& constants, TileGridPos origin,
                    std::span<std::uint32_t> table) noexcept {
     ZoneScopedN("PageTableFill");
     std::ranges::fill(table, kTileAtlasCellInvalid);
     const auto level = static_cast<TileMip>(constants.level);
+    const Layer root = canvas.layersOrder.back();
     for (const TileState& tile : canvas.tiles) {
-        if ((tile.key & kTileLayerMask) != 0 || !TileDrawn(canvas, tile, level)) {
+        if (TileKeyLayer(tile.key) != root || !TileDrawn(canvas, tile, level)) {
             continue;
         }
         const TileGridPos gridPos = TileKeyGridPos(tile.key);
@@ -736,6 +752,182 @@ void RecordTileMips() noexcept {
     TilePoolsTransition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
+// Each queued folder tile from its shown children's level-0 tiles, bottom first, after everything that edits them, its
+// children folders before it. One whose source is not loaded, or is a folder tile still stale, waits for the next
+// update, stale. Then the merges' result tiles, and the root's loaded level 1-3 tiles follow their composited level 0.
+void RecordComposites() noexcept {
+    GraphicsState& state = gGraphicsState;
+    if (std::ranges::all_of(gAppState.canvases, [](const CanvasState& canvas) {
+            return canvas.composites.empty() && canvas.merge.queued.empty();
+        })) {
+        return;
+    }
+    ZoneScopedN("RecordComposites");
+    TracyD3D12NamedZone(state.gpuProfiler, gpuCompositesZone, state.list, "GpuComposites", true);
+    state.list->SetComputeRootSignature(state.compositeRootSignature);
+    state.list->SetPipelineState(state.compositePipeline);
+    const std::size_t frameSources = std::size_t{state.allocatorIndex} * kCompositeSourcesMax;
+    state.list->SetComputeRootShaderResourceView(kCompositeSourcesRootParameter,
+                                                 state.compositeSources->GetGPUVirtualAddress()
+                                                     + (frameSources * sizeof(CompositeGpuSource)));
+    state.list->SetComputeRootDescriptorTable(kCompositeTilePoolRootParameter, ViewGpu(kTilePoolFirstUav));
+    TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    struct RootComposite {
+        Canvas canvas;
+        TileKey key;
+    };
+    std::vector<RootComposite> roots;
+    std::vector<Layer> children;
+    std::size_t used = 0;
+    for (CanvasState& canvas : gAppState.canvases) {
+        const Layer root = canvas.id == kCanvasInvalid ? kLayerInvalid : canvas.layersOrder.back();
+        for (const TileKey key : canvas.composites) {
+            const auto found = canvas.tileIndices.find(key);
+            const Layer folder = TileKeyLayer(key);
+            if (found == canvas.tileIndices.end() || canvas.tiles[found->second].cell == kTileAtlasCellInvalid
+                || canvas.layerHeights[folder] == kLayerInvalid) {
+                continue;
+            }
+            // Its children, top first: past each one, the layers inside it.
+            children.clear();
+            const int bottom = canvas.layerHeights[folder] - canvas.layers[folder].descendants;
+            for (int h = canvas.layerHeights[folder] - 1; h >= bottom;
+                 h -= canvas.layers[canvas.layersOrder[static_cast<std::size_t>(h)]].descendants + 1) {
+                children.push_back(canvas.layersOrder[static_cast<std::size_t>(h)]);
+            }
+            const std::size_t first = used;
+            bool ready = true;
+            for (auto child = children.rbegin(); child != children.rend() && ready; ++child) {
+                const LayerState& layer = canvas.layers[*child];
+                if (HasAnyFlag(layer.flags, LayerFlags::Hidden) || layer.opacity <= 0.0f) {
+                    continue;
+                }
+                const auto source = canvas.tileIndices.find(TileGridPosLayerKey(TileGridPosKey(key), *child));
+                if (source == canvas.tileIndices.end()) {
+                    continue;
+                }
+                const TileState& tile = canvas.tiles[source->second];
+                ready = HasAnyFlag(tile.flags, TileFlags::Loaded) && !HasAnyFlag(tile.flags, TileFlags::Dirty)
+                     && used < kCompositeSourcesMax;
+                if (ready) {
+                    state.compositeSourcesMapped[frameSources + used++] = CompositeGpuSource{
+                        .cell = tile.cell,
+                        .opacity = layer.opacity,
+                        .blendMode = std::to_underlying(layer.blendMode),
+                    };
+                }
+            }
+            if (!ready) {
+                used = first;
+                continue;
+            }
+            TileState& tile = canvas.tiles[found->second];
+            const CompositeConstants constants{
+                .dstCell = tile.cell,
+                .firstSource = static_cast<std::uint32_t>(first),
+                .sourceCount = static_cast<std::uint32_t>(used - first),
+            };
+            // A folder composited before may be a source.
+            const CD3DX12_RESOURCE_BARRIER before = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+            state.list->ResourceBarrier(1, &before);
+            state.list->SetComputeRoot32BitConstants(kCompositeConstantsRootParameter, kCompositeConstantCount,
+                                                     &constants, 0);
+            constexpr UINT kGroups = kTileTexels / kCompositeGroupSize;
+            state.list->Dispatch(kGroups, kGroups, 1);
+            tile.flags = (tile.flags | TileFlags::Loaded | TileFlags::Editable) & ~TileFlags::Dirty;
+            if (folder == root) {
+                roots.push_back(RootComposite{.canvas = canvas.id, .key = key});
+            }
+        }
+        canvas.composites.clear();
+    }
+
+    // A merge's result tiles: the lower layer's tile under the upper one's, or the folder's composite alone, after the
+    // folders composited above. A position whose source went meanwhile goes back to the merge.
+    for (CanvasState& canvas : gAppState.canvases) {
+        LayerMergeState& merge = canvas.merge;
+        for (const TileKey gridPos : merge.queued) {
+            const auto found = canvas.tileIndices.find(TileGridPosLayerKey(gridPos, merge.result));
+            if (found == canvas.tileIndices.end() || canvas.tiles[found->second].cell == kTileAtlasCellInvalid) {
+                merge.remaining.push_back(gridPos);
+                continue;
+            }
+            const std::size_t first = used;
+            bool ready = used + 2 <= kCompositeSourcesMax;
+            for (const Layer layer : {merge.lower, merge.upper}) {
+                const auto source = layer == kLayerInvalid
+                                      ? canvas.tileIndices.end()
+                                      : canvas.tileIndices.find(TileGridPosLayerKey(gridPos, layer));
+                if (!ready || source == canvas.tileIndices.end()) {
+                    continue;
+                }
+                const TileState& tile = canvas.tiles[source->second];
+                ready = HasAnyFlag(tile.flags, TileFlags::Loaded) && !HasAnyFlag(tile.flags, TileFlags::Dirty);
+                // Merged down, the upper layer blends as it shows; the lower one and a folder are taken as they are.
+                const bool upper = layer == merge.upper && merge.lower != kLayerInvalid;
+                state.compositeSourcesMapped[frameSources + used++] = CompositeGpuSource{
+                    .cell = tile.cell,
+                    .opacity = upper ? canvas.layers[layer].opacity : 1.0f,
+                    .blendMode = std::to_underlying(upper ? canvas.layers[layer].blendMode : BlendMode::Normal),
+                };
+            }
+            if (!ready) {
+                used = first;
+                merge.remaining.push_back(gridPos);
+                continue;
+            }
+            TileState& tile = canvas.tiles[found->second];
+            const CompositeConstants constants{
+                .dstCell = tile.cell,
+                .firstSource = static_cast<std::uint32_t>(first),
+                .sourceCount = static_cast<std::uint32_t>(used - first),
+            };
+            const CD3DX12_RESOURCE_BARRIER before = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+            state.list->ResourceBarrier(1, &before);
+            state.list->SetComputeRoot32BitConstants(kCompositeConstantsRootParameter, kCompositeConstantCount,
+                                                     &constants, 0);
+            constexpr UINT kGroups = kTileTexels / kCompositeGroupSize;
+            state.list->Dispatch(kGroups, kGroups, 1);
+            tile.flags |= TileFlags::Loaded | TileFlags::Editable;
+        }
+        merge.queued.clear();
+    }
+
+    if (!roots.empty()) {
+        const CD3DX12_RESOURCE_BARRIER composited = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+        state.list->ResourceBarrier(1, &composited);
+        state.list->SetComputeRootSignature(state.mipRootSignature);
+        state.list->SetPipelineState(state.mipPipeline);
+        state.list->SetComputeRootDescriptorTable(kTileMipTilePoolRootParameter, ViewGpu(kTilePoolFirstUav));
+        for (const RootComposite& composite : roots) {
+            const CanvasState& canvas = gAppState.canvases[composite.canvas];
+            const TileAtlasCell srcCell = canvas.tiles[canvas.tileIndices.find(composite.key)->second].cell;
+            for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
+                const auto found = canvas.tileIndices.find(TileKeyWithMip(composite.key, mip));
+                if (found == canvas.tileIndices.end()
+                    || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)) {
+                    continue;
+                }
+                const std::uint32_t size = TileLevelSize(mip);
+                const TileMipConstants constants{
+                    .srcCell = srcCell,
+                    .dstCell = canvas.tiles[found->second].cell,
+                    .rectX = 0,
+                    .rectY = 0,
+                    .rectWidth = size,
+                    .rectHeight = size,
+                };
+                state.list->SetComputeRoot32BitConstants(kTileMipConstantsRootParameter, kTileMipConstantCount,
+                                                         &constants, 0);
+                const UINT groups = (size + kTileMipGroupSize - 1) / kTileMipGroupSize;
+                state.list->Dispatch(groups, groups, 1);
+            }
+        }
+    }
+    TilePoolsTransition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
 // After the stroke and the mips, so a download holds what was recorded so far.
 void RecordTileDownloads() noexcept {
     GraphicsState& state = gGraphicsState;
@@ -787,6 +979,7 @@ void RecordTileDownloads() noexcept {
             RecordTileUploads();
             RecordStroke();
             RecordTileMips();
+            RecordComposites();
             RecordTileDownloads();
             RecordTileAtlasDebug();
 
@@ -1202,6 +1395,39 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
     }
 
     {
+        ZoneScopedN("CreateCompositePipeline");
+        if (const HRESULT hr = state.device->CreateRootSignature(0, tile_blend_cs, sizeof(tile_blend_cs),
+                                                                 IID_PPV_ARGS(&state.compositeRootSignature));
+            FAILED(hr)) {
+            return fail("ID3D12Device::CreateRootSignature", hr);
+        }
+        const D3D12_COMPUTE_PIPELINE_STATE_DESC desc{
+            .pRootSignature = state.compositeRootSignature,
+            .CS = {.pShaderBytecode = tile_blend_cs, .BytecodeLength = sizeof(tile_blend_cs)},
+        };
+        if (const HRESULT hr = state.device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&state.compositePipeline));
+            FAILED(hr)) {
+            return fail("ID3D12Device::CreateComputePipelineState", hr);
+        }
+
+        const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
+            std::size_t{kGraphicsFramesInFlight} * kCompositeSourcesMax * sizeof(CompositeGpuSource));
+        if (const HRESULT hr = state.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                                                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                                     IID_PPV_ARGS(&state.compositeSources));
+            FAILED(hr)) {
+            return fail("ID3D12Device::CreateCommittedResource", hr);
+        }
+        void* mapped = nullptr;
+        const D3D12_RANGE noRead{.Begin = 0, .End = 0};
+        if (const HRESULT hr = state.compositeSources->Map(0, &noRead, &mapped); FAILED(hr)) {
+            return fail("ID3D12Resource::Map", hr);
+        }
+        state.compositeSourcesMapped = static_cast<CompositeGpuSource*>(mapped);
+    }
+
+    {
         ZoneScopedN("CreateStrokePipeline");
         if (const HRESULT hr = state.device->CreateRootSignature(0, stroke_cs, sizeof(stroke_cs),
                                                                  IID_PPV_ARGS(&state.strokeRootSignature));
@@ -1328,6 +1554,9 @@ void GraphicsTerminate() noexcept {
     Release(state.historyStore);
     Release(state.historyPipeline);
     Release(state.historyRootSignature);
+    Release(state.compositeSources);
+    Release(state.compositePipeline);
+    Release(state.compositeRootSignature);
     Release(state.strokeDabs);
     Release(state.strokePipeline);
     Release(state.strokeRootSignature);
@@ -1564,6 +1793,7 @@ Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells, std::sp
         RecordTileUploads();
         RecordStroke();
         RecordTileMips();
+        RecordComposites();
         TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
         for (std::size_t i = 0; i < cells.size(); ++i) {
             TileCopyFromCell(cells[i], *readback, i * TileBytes(kTilePixelFormat));

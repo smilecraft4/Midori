@@ -2,6 +2,7 @@
 #include "midori/graphics.hpp"
 #include "midori/history.hpp"
 #include "midori/job.hpp"
+#include "midori/layer.hpp"
 #include "midori/log.hpp"
 #include "midori/stroke.hpp"
 #include "midori/tile.hpp"
@@ -92,6 +93,35 @@ void CanvasTitlesUpdate(Canvas canvas) noexcept {
             }
         }
     }
+}
+
+// The titles show the * once an edit modified the canvas.
+void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
+    if (!wasModified && gAppState.canvases[canvas].modified) {
+        CanvasTitlesUpdate(canvas);
+    }
+}
+
+// Null when the window shows no canvas.
+[[nodiscard]] CanvasState* WindowCanvas(Window window) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    return view == kCanvasViewInvalid ? nullptr : &gAppState.canvases[gAppState.canvasViews[view].canvas];
+}
+
+// Gives each of `layers` its `after`, as one undo step; stops at the first the canvas refuses.
+void LayersPropertiesEdit(CanvasState& canvas, std::span<const Layer> layers,
+                          std::span<const LayerProperties> after) noexcept {
+    const bool wasModified = canvas.modified;
+    std::vector<LayerProperties> before;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const LayerProperties previous = LayerPropertiesGet(canvas, layers[i]);
+        if (!LayerPropertiesSet(canvas.id, layers[i], after[i])) {
+            break;
+        }
+        before.push_back(previous);
+    }
+    LayerPropertiesCommit(canvas.id, layers.first(before.size()), before);
+    CanvasEdited(canvas.id, wasModified);
 }
 
 // The window's view shows `canvas` from now on, with a fresh viewport.
@@ -245,6 +275,9 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
 
 // Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as. Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating
 // while held. B paints, E erases, F11 toggles fullscreen, Tab hides or shows the UI.
+// Layers: Ctrl+Shift+N new layer, Ctrl+G new folder, Ctrl+Delete delete, Ctrl+E merge down or flatten a folder, Ctrl+,
+// hide or show. Page Up and Page Down select above and below, with Ctrl move up and down, as in Krita: keys
+// at the same place on every layout, unlike Photoshop's brackets. With Alt they step the blend mode.
 [[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
     ZoneScopedN("KeyShortcut");
     const bool repeats = key.key == Key::Z || key.key == Key::Y;
@@ -259,6 +292,10 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
                 return AppEraseMode();
             case Key::F11:
                 return AppToggleFullscreen(key.window);
+            case Key::PageUp:
+            case Key::PageDown:
+                AppLayerSelect(key.window, key.key == Key::PageUp);
+                return {};
             case Key::Tab:
                 if (key.window < kWindowMax) {
                     gUiState.hidden[key.window] = !gUiState.hidden[key.window];
@@ -268,12 +305,38 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
                 return {};
         }
     }
+    // Not with Ctrl: AltGr comes as Ctrl+Alt.
+    if (HasAnyFlag(key.keyMods, KeyMod::Alt) && !HasAnyFlag(key.keyMods, KeyMod::Ctrl | KeyMod::Shift)
+        && key.inputState == InputState::Press && (key.key == Key::PageUp || key.key == Key::PageDown)) {
+        AppLayerBlendModeCycle(key.window, key.key == Key::PageUp);
+        return {};
+    }
     if (!HasAnyFlag(key.keyMods, KeyMod::Ctrl)) {
         return {};
     }
     switch (key.key) {
         case Key::N:
+            if (HasAnyFlag(key.keyMods, KeyMod::Shift)) {
+                AppLayerNew(key.window, false);
+                return {};
+            }
             return AppCanvasNew(key.window);
+        case Key::G:
+            AppLayerNew(key.window, true);
+            return {};
+        case Key::E:
+            AppLayerMerge(key.window);
+            return {};
+        case Key::Delete:
+            AppLayerDelete(key.window);
+            return {};
+        case Key::PageUp:
+        case Key::PageDown:
+            AppLayerMove(key.window, key.key == Key::PageUp);
+            return {};
+        case Key::Comma:
+            AppLayerToggleHidden(key.window);
+            return {};
         case Key::O:
             return AppCanvasOpen(key.window);
         case Key::S:
@@ -324,11 +387,15 @@ struct ViewPoint {
     return StrokePoint{.x = under.posX, .y = under.posY, .pressure = pressure};
 }
 
-// Starts a frame: the tiles any view's client area overlaps get the new frame as `visibleFrame`. A rotated view
-// marks the tiles of its bounding box.
+// Starts a frame: the root folder tiles any view's client area overlaps get the new frame as `visibleFrame`, and the
+// grid positions there where a layer has a tile become the canvas's composite wants. Layer tiles are wanted by the
+// composites that need them. A rotated view marks the tiles of its bounding box.
 void TilesMarkVisible() noexcept {
     ZoneScopedN("TilesMarkVisible");
     const std::uint32_t frame = ++gAppState.frame;
+    for (CanvasState& canvas : gAppState.canvases) {
+        canvas.compositeWants.clear();
+    }
     for (const CanvasViewState& view : gAppState.canvasViews) {
         if (view.id == kCanvasViewInvalid) {
             continue;
@@ -361,12 +428,25 @@ void TilesMarkVisible() noexcept {
         // still loading, a loaded level 0 keeps showing meanwhile.
         CanvasState& canvas = gAppState.canvases[view.canvas];
         const TileMip level = TileLevelForZoom(view.viewport.zoomX);
+        const Layer root = canvas.layersOrder.back();
         for (TileState& tile : canvas.tiles) {
             const TileGridPos gridPos = TileKeyGridPos(tile.key);
             if (gridPos.x < min.x || gridPos.x > max.x || gridPos.y < min.y || gridPos.y > max.y) {
                 continue;
             }
             const TileMip mip = TileKeyMip(tile.key);
+            const Layer layer = TileKeyLayer(tile.key);
+            if (layer != root) {
+                if (mip == 0 && !HasAnyFlag(tile.flags, TileFlags::Composite)
+                    && canvas.layerHeights[layer] != kLayerInvalid) {
+                    canvas.compositeWants.push_back(CompositeWant{.gridPos = TileGridPosKey(tile.key), .level = level});
+                }
+                continue;
+            }
+            // Composited again where its layers changed, or deleted where none is left.
+            if (mip == 0) {
+                canvas.compositeWants.push_back(CompositeWant{.gridPos = TileGridPosKey(tile.key), .level = level});
+            }
             if (mip == level) {
                 tile.visibleFrame = frame;
             } else if (mip == 0) {
@@ -378,6 +458,15 @@ void TilesMarkVisible() noexcept {
                 }
             }
         }
+    }
+    // One want per grid position, at the finest level shown.
+    for (CanvasState& canvas : gAppState.canvases) {
+        std::vector<CompositeWant>& wants = canvas.compositeWants;
+        std::ranges::sort(wants, [](const CompositeWant& a, const CompositeWant& b) {
+            return a.gridPos < b.gridPos || (a.gridPos == b.gridPos && a.level < b.level);
+        });
+        const auto [first, last] = std::ranges::unique(wants, {}, &CompositeWant::gridPos);
+        wants.erase(first, last);
     }
 }
 
@@ -604,10 +693,44 @@ void NavigateEnd() noexcept {
         case BrushAdjustMode::Opacity:
             return brush.opacity;
         case BrushAdjustMode::Hardness:
+        case BrushAdjustMode::LayerOpacity:
         case BrushAdjustMode::None:
             break;
     }
     return brush.hardness;
+}
+
+[[nodiscard]] float BrushAdjustValue(const BrushAdjustState& adjust) noexcept {
+    if (adjust.mode == BrushAdjustMode::LayerOpacity) {
+        return gAppState.canvases[gAppState.canvasViews[adjust.view].canvas].layers[adjust.layer].opacity;
+    }
+    return BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode);
+}
+
+void BrushAdjustValueSet(const BrushAdjustState& adjust, float value) noexcept {
+    if (adjust.mode != BrushAdjustMode::LayerOpacity) {
+        BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = value;
+        return;
+    }
+    const Canvas canvas = gAppState.canvasViews[adjust.view].canvas;
+    const bool wasModified = gAppState.canvases[canvas].modified;
+    LayerProperties properties = LayerPropertiesGet(gAppState.canvases[canvas], adjust.layer);
+    properties.opacity = value;
+    if (LayerPropertiesSet(canvas, adjust.layer, properties)) {
+        CanvasEdited(canvas, wasModified);
+    }
+}
+
+// A layer opacity kept is one undo step from where it started.
+void BrushAdjustKeep() noexcept {
+    BrushAdjustState& adjust = gAppState.brushAdjust;
+    if (adjust.mode == BrushAdjustMode::LayerOpacity) {
+        const Canvas canvas = gAppState.canvasViews[adjust.view].canvas;
+        LayerProperties before = LayerPropertiesGet(gAppState.canvases[canvas], adjust.layer);
+        before.opacity = adjust.startValue;
+        LayerPropertiesCommit(canvas, std::span(&adjust.layer, 1), std::span(&before, 1));
+    }
+    adjust = {};
 }
 
 [[nodiscard]] float BrushAdjustPixelsPerUnit(const BrushAdjustState& adjust, float dpiScale) noexcept {
@@ -617,12 +740,14 @@ void NavigateEnd() noexcept {
     return kBrushAdjustRangeDips * dpiScale;
 }
 
-// Alt snaps to a power of two, as it snaps navigation.
+// Alt snaps to a power of two, as it snaps navigation; a layer opacity to a multiple of 5%.
 void BrushAdjustApply() noexcept {
     ZoneScopedN("BrushAdjustApply");
     const BrushAdjustState& adjust = gAppState.brushAdjust;
     float value = adjust.value;
-    if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && value > 0.0f) {
+    if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && adjust.mode == BrushAdjustMode::LayerOpacity) {
+        value = std::round(value * 20.0f) / 20.0f;
+    } else if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && value > 0.0f) {
         value = std::exp2(std::round(std::log2(value)));
     }
     value = adjust.mode == BrushAdjustMode::Radius ? std::clamp(value, kBrushRadiusMin, kBrushRadiusMax)
@@ -632,32 +757,35 @@ void BrushAdjustApply() noexcept {
     if (adjust.mode == BrushAdjustMode::Radius && value >= 1.0f) {
         value = std::round(value);
     }
-    BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = value;
+    BrushAdjustValueSet(adjust, value);
 }
 
 void BrushAdjustCancel() noexcept {
     ZoneScopedN("BrushAdjustCancel");
     BrushAdjustState& adjust = gAppState.brushAdjust;
-    BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = adjust.startValue;
+    BrushAdjustValueSet(adjust, adjust.startValue);
     adjust = {};
 }
 
-// F sets the current tool's brush radius, Shift+F its opacity and Ctrl+F its hardness, from the pointer's distance
-// to a center placed so the current value starts under the pointer. Holding Shift moves it 10 times slower and
-// Alt snaps it to powers of two, together or not. Left click or Enter keeps the value, right click or Escape restores
-// it. While adjusting, every input event belongs to it.
+// F sets the current tool's brush radius, Shift+F its opacity and Ctrl+F its hardness, and O the active layer's
+// opacity, from the pointer's distance to a center placed so the current value starts under the pointer. Holding
+// Shift moves it 10 times slower and Alt snaps it to powers of two, a layer opacity to multiples of 5%, together or
+// not. Left click or Enter keeps the value, right click or Escape restores it. While adjusting, every input event
+// belongs to it.
 [[nodiscard]] bool BrushAdjust(const Event& event, bool uiWants) noexcept {
     ZoneScopedN("BrushAdjust");
     AppState& app = gAppState;
     BrushAdjustState& adjust = app.brushAdjust;
     if (adjust.mode == BrushAdjustMode::None) {
-        if (event.type != EventType::Key || event.key.key != Key::F || event.key.inputState != InputState::Press
-            || uiWants || app.spaceDown || app.navigate.mode != NavigateMode::None
-            || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
+        if (event.type != EventType::Key || (event.key.key != Key::F && event.key.key != Key::O)
+            || event.key.inputState != InputState::Press || uiWants || app.spaceDown
+            || app.navigate.mode != NavigateMode::None || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
             return false;
         }
         BrushAdjustMode mode = BrushAdjustMode::None;
-        if (event.key.keyMods == KeyMod::None) {
+        if (event.key.key == Key::O) {
+            mode = event.key.keyMods == KeyMod::None ? BrushAdjustMode::LayerOpacity : BrushAdjustMode::None;
+        } else if (event.key.keyMods == KeyMod::None) {
             mode = BrushAdjustMode::Radius;
         } else if (HasAnyFlag(event.key.keyMods, KeyMod::Shift) && !HasAnyFlag(event.key.keyMods, ~KeyMod::Shift)) {
             mode = BrushAdjustMode::Opacity;
@@ -669,8 +797,13 @@ void BrushAdjustCancel() noexcept {
         if (mode == BrushAdjustMode::None || view == kCanvasViewInvalid || !windowState) {
             return false;
         }
-        adjust = BrushAdjustState{.view = view, .tool = app.tools.tool, .mode = mode};
-        adjust.startValue = BrushAdjustTarget(ToolBrush(app.tools, adjust.tool), mode);
+        const CanvasState& canvas = app.canvases[app.canvasViews[view].canvas];
+        if (mode == BrushAdjustMode::LayerOpacity
+            && (canvas.activeLayer == kLayerInvalid || canvas.merge.result != kLayerInvalid)) {
+            return false;
+        }
+        adjust = BrushAdjustState{.layer = canvas.activeLayer, .view = view, .tool = app.tools.tool, .mode = mode};
+        adjust.startValue = BrushAdjustValue(adjust);
         adjust.value = adjust.startValue;
         adjust.distance = adjust.value * BrushAdjustPixelsPerUnit(adjust, windowState->dpiScale);
         adjust.centerX = app.pointerX - adjust.distance;
@@ -682,7 +815,7 @@ void BrushAdjustCancel() noexcept {
         case EventType::Key:
             if (event.key.inputState == InputState::Press
                 && (event.key.key == Key::Enter || event.key.key == Key::NumPadEnter)) {
-                adjust = {};
+                BrushAdjustKeep();
             } else if (event.key.inputState == InputState::Press && event.key.key == Key::Escape) {
                 BrushAdjustCancel();
             } else {
@@ -691,7 +824,7 @@ void BrushAdjustCancel() noexcept {
             return true;
         case EventType::Button:
             if (event.button.inputState == InputState::Press && event.button.button == Button::Left) {
-                adjust = {};
+                BrushAdjustKeep();
             } else if (event.button.inputState == InputState::Press && event.button.button == Button::Right) {
                 BrushAdjustCancel();
             }
@@ -715,7 +848,7 @@ void BrushAdjustCancel() noexcept {
             return true;
         case EventType::WindowFocus:
             if (!event.windowFocus.focused) {
-                adjust = {};
+                BrushAdjustKeep();
             }
             return false;
         default:
@@ -779,21 +912,15 @@ void BrushAdjustCancel() noexcept {
     };
 }
 
-// The titles show the * once an edit modified the canvas.
-void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
-    if (!wasModified && gAppState.canvases[canvas].modified) {
-        CanvasTitlesUpdate(canvas);
-    }
-}
-
 [[nodiscard]] StrokeBeginInfo StrokeBeginInfoFromTool(CanvasView view, StrokePoint point) noexcept {
     const ToolsState& tools = gAppState.tools;
+    const Layer layer = gAppState.canvases[gAppState.canvasViews[view].canvas].activeLayer;
     if (tools.tool == Tool::Erase) {
         return StrokeBeginInfo{
             .brush = tools.erase.brush,
             .color = tools.erase.color,
             .point = point,
-            .layer = 0,
+            .layer = layer,
             .view = view,
             .mode = StrokeMode::Erase,
             .blendMode = BlendMode::Normal,
@@ -803,15 +930,15 @@ void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
         .brush = tools.paint.brush,
         .color = tools.paint.color,
         .point = point,
-        .layer = 0,
+        .layer = layer,
         .view = view,
         .mode = StrokeMode::Paint,
         .blendMode = tools.paint.blendMode,
     };
 }
 
-// Left drag paints or erases layer 0, by the current tool. Releases and focus loss end the stroke even when the UI
-// wants them. Returns true when the event belongs to the stroke.
+// Left drag paints or erases the active layer, by the current tool. Releases and focus loss end the stroke even when
+// the UI wants them. Returns true when the event belongs to the stroke.
 [[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
     ZoneScopedN("Paint");
     StrokeState& stroke = gAppState.stroke;
@@ -829,10 +956,14 @@ void CanvasEdited(Canvas canvas, bool wasModified) noexcept {
             }
             const CanvasView view = WindowCanvasView(event.button.window);
             // An ended stroke the GPU has not finished yet blocks the next one for a frame at most, and so do undo
-            // and redo steps waiting for their tiles.
+            // and redo steps waiting for their tiles. A merge blocks it until done.
             if (event.button.inputState != InputState::Press || uiWants || view == kCanvasViewInvalid
-                || stroke.canvas != kCanvasInvalid
-                || gAppState.canvases[gAppState.canvasViews[view].canvas].history.pending != 0) {
+                || stroke.canvas != kCanvasInvalid) {
+                return false;
+            }
+            if (const CanvasState& target = gAppState.canvases[gAppState.canvasViews[view].canvas];
+                target.history.pending != 0 || target.merge.result != kLayerInvalid
+                || !LayerPaintable(target, target.activeLayer)) {
                 return false;
             }
             // The mouse has no pressure: 1 while a button is held.
@@ -981,10 +1112,16 @@ void AppWindowFrame(Window window) noexcept {
         backgroundColor = &gAppState.canvases[viewState.canvas].backgroundColor;
     }
     const Viewport before = viewport ? *viewport : Viewport{};
+    const bool wasModified =
+        view != kCanvasViewInvalid && gAppState.canvases[gAppState.canvasViews[view].canvas].modified;
     if (const UiCommand command = UiWindowFrame(window, viewport, backgroundColor, gAppState.tools);
         command != UiCommand::None) {
         gAppState.command = command;
         gAppState.commandWindow = window;
+    }
+    // The layers window edits the canvas.
+    if (view != kCanvasViewInvalid) {
+        CanvasEdited(gAppState.canvasViews[view].canvas, wasModified);
     }
     // The view panel's flips and reset.
     if (viewport && !ViewportEqual(before, *viewport)) {
@@ -1157,6 +1294,146 @@ Result<void> AppEraseMode() noexcept {
     ZoneScopedN("AppEraseMode");
     gAppState.tools.tool = Tool::Erase;
     return {};
+}
+
+void AppLayerNew(Window window, bool folder) noexcept {
+    ZoneScopedN("AppLayerNew");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas) {
+        return;
+    }
+    // Numbered after the layers, or folders, already there.
+    int number = 1;
+    for (const Layer id : canvas->layersOrder) {
+        const LayerFlags flags = canvas->layers[id].flags;
+        number += !HasAnyFlag(flags, LayerFlags::Internal) && HasAnyFlag(flags, LayerFlags::Folder) == folder ? 1 : 0;
+    }
+    std::array<char, kLayerNameLenMax> name{};
+    std::format_to_n(name.data(), name.size() - 1, "{} {}", folder ? "Folder" : "Layer", number);
+    const Layer root = static_cast<Layer>(canvas->layersOrder.size() - 1);
+    const LayerCreateInfo createInfo{
+        .height = canvas->activeLayer == kLayerInvalid
+                    ? root
+                    : static_cast<Layer>(canvas->layerHeights[canvas->activeLayer] + 1),
+        .name = name,
+        .flags = folder ? LayerFlags::Folder : LayerFlags::None,
+    };
+    const bool wasModified = canvas->modified;
+    if (const auto layer = LayerNew(canvas->id, createInfo)) {
+        canvas->activeLayer = *layer;
+        canvas->selectedLayers.assign(1, *layer);
+    }
+    CanvasEdited(canvas->id, wasModified);
+}
+
+void AppLayerDelete(Window window) noexcept {
+    ZoneScopedN("AppLayerDelete");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas) {
+        return;
+    }
+    const bool wasModified = canvas->modified;
+    if (const auto res = LayerDelete(canvas->id, LayersSelected(*canvas)); !res) {
+        MIDORI_LOG_TRACE("AppLayerDelete: {}", ErrorMessage(res.error()));
+    }
+    CanvasEdited(canvas->id, wasModified);
+}
+
+void AppLayerMerge(Window window) noexcept {
+    ZoneScopedN("AppLayerMerge");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas || canvas->activeLayer == kLayerInvalid) {
+        return;
+    }
+    const bool wasModified = canvas->modified;
+    if (const auto res = LayerMerge(canvas->id, canvas->activeLayer); !res) {
+        MIDORI_LOG_TRACE("AppLayerMerge: {}", ErrorMessage(res.error()));
+    }
+    CanvasEdited(canvas->id, wasModified);
+}
+
+void AppLayerMove(Window window, bool up) noexcept {
+    ZoneScopedN("AppLayerMove");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas || canvas->activeLayer == kLayerInvalid) {
+        return;
+    }
+    const Layer layer = canvas->activeLayer;
+    // In the order without the layer and what it holds, `bottom` is what was right above it.
+    const auto bottom = static_cast<Layer>(canvas->layerHeights[layer] - canvas->layers[layer].descendants);
+    if (!up && bottom == 0) {
+        return;
+    }
+    const bool wasModified = canvas->modified;
+    if (const auto res = LayerMove(canvas->id, layer, static_cast<Layer>(up ? bottom + 1 : bottom - 1)); !res) {
+        MIDORI_LOG_TRACE("AppLayerMove: {}", ErrorMessage(res.error()));
+    }
+    CanvasEdited(canvas->id, wasModified);
+}
+
+void AppLayerSelect(Window window, bool up) noexcept {
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas || canvas->layersOrder.size() < 2) {
+        return;
+    }
+    const auto root = static_cast<Layer>(canvas->layersOrder.size() - 1);
+    if (canvas->activeLayer == kLayerInvalid) {
+        canvas->activeLayer = canvas->layersOrder[root - 1];
+        canvas->selectedLayers.assign(1, canvas->activeLayer);
+        return;
+    }
+    const Layer height = canvas->layerHeights[canvas->activeLayer];
+    if (up && height + 1 < root) {
+        canvas->activeLayer = canvas->layersOrder[height + 1];
+    } else if (!up && height > 0) {
+        canvas->activeLayer = canvas->layersOrder[height - 1];
+    }
+    canvas->selectedLayers.assign(1, canvas->activeLayer);
+}
+
+void AppLayerToggleHidden(Window window) noexcept {
+    ZoneScopedN("AppLayerToggleHidden");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas) {
+        return;
+    }
+    const std::vector<Layer> layers = LayersSelected(*canvas);
+    if (layers.empty()) {
+        return;
+    }
+    // All the same way, the opposite of the top one.
+    const bool hidden = !LayerPropertiesGet(*canvas, layers.front()).hidden;
+    std::vector<LayerProperties> after;
+    for (const Layer layer : layers) {
+        after.push_back(LayerPropertiesGet(*canvas, layer));
+        after.back().hidden = hidden;
+    }
+    LayersPropertiesEdit(*canvas, layers, after);
+}
+
+void AppLayerBlendMode(Window window, BlendMode blendMode) noexcept {
+    ZoneScopedN("AppLayerBlendMode");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas) {
+        return;
+    }
+    const std::vector<Layer> layers = LayersSelected(*canvas);
+    std::vector<LayerProperties> after;
+    for (const Layer layer : layers) {
+        after.push_back(LayerPropertiesGet(*canvas, layer));
+        after.back().blendMode = blendMode;
+    }
+    LayersPropertiesEdit(*canvas, layers, after);
+}
+
+void AppLayerBlendModeCycle(Window window, bool next) noexcept {
+    const CanvasState* canvas = WindowCanvas(window);
+    if (!canvas || canvas->activeLayer == kLayerInvalid) {
+        return;
+    }
+    constexpr int kCount = std::to_underlying(BlendMode::Count_);
+    const int current = std::to_underlying(canvas->layers[canvas->activeLayer].blendMode);
+    AppLayerBlendMode(window, static_cast<BlendMode>((current + (next ? 1 : kCount - 1)) % kCount));
 }
 
 Result<void> AppWindowClose(Window window) noexcept {

@@ -1,6 +1,7 @@
 #include "midori/ui.hpp"
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
+#include "midori/layer.hpp"
 #include "midori/log.hpp"
 #include "midori/tile.hpp"
 #include "midori/tool.hpp"
@@ -11,6 +12,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <numbers>
 #include <span>
@@ -202,6 +204,30 @@ void BrushEdit(BrushState& brush) noexcept {
     ImGui::Checkbox("Pressure opacity", &brush.pressureOpacity);
 }
 
+void ToolWindow(Window window, ToolsState& tools) noexcept {
+    ZoneScopedN("ToolWindow");
+    if (ImGui::Begin("Tool", &gUiState.toolShown[window])) {
+        int tool = std::to_underlying(tools.tool);
+        ImGui::RadioButton("Paint (B)", &tool, std::to_underlying(Tool::Paint));
+        ImGui::SameLine();
+        ImGui::RadioButton("Erase (E)", &tool, std::to_underlying(Tool::Erase));
+        tools.tool = static_cast<Tool>(tool);
+        ImGui::Separator();
+        if (tools.tool == Tool::Paint) {
+            ImGui::ColorEdit4("Color", &tools.paint.color.r);
+            int blendMode = std::to_underlying(tools.paint.blendMode);
+            if (ImGui::Combo("Blend", &blendMode, kBlendModeNames.data(), static_cast<int>(kBlendModeNames.size()))) {
+                tools.paint.blendMode = static_cast<BlendMode>(blendMode);
+            }
+            BrushEdit(tools.paint.brush);
+        } else {
+            ImGui::ColorEdit4("Removes", &tools.erase.color.r);
+            BrushEdit(tools.erase.brush);
+        }
+    }
+    ImGui::End();
+}
+
 // Outlines every tile of the window's canvas view on screen, labeled with its atlas cell and grid position. Drawn
 // behind the UI windows, over the canvas.
 void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
@@ -251,11 +277,12 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
     }
 }
 
-// The view's position, zoom and rotation in the bottom right corner, small and faint so it never draws the eye, behind
-// the UI windows and shown with them hidden too.
-void ViewInfoOverlay(const WindowState& windowState, const Viewport& viewport) noexcept {
+// The view's position, zoom and rotation in the bottom right corner, and above it the active layer's name, blend mode
+// and opacity, with how many more are selected. Small and faint so it never draws the eye, behind the UI windows and
+// shown with them hidden too.
+void ViewInfoOverlay(const WindowState& windowState, const Viewport& viewport, const CanvasState& canvas) noexcept {
     ZoneScopedN("ViewInfoOverlay");
-    std::array<char, 128> text{};
+    std::array<char, 128> viewText{};
     const char* flip = "";
     if (viewport.zoomX < 0.0f && viewport.zoomY < 0.0f) {
         flip = " flip XY";
@@ -265,19 +292,38 @@ void ViewInfoOverlay(const WindowState& windowState, const Viewport& viewport) n
         flip = " flip Y";
     }
     // The texel under the view center.
-    std::format_to_n(text.data(), text.size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
+    std::format_to_n(viewText.data(), viewText.size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
                      static_cast<std::int64_t>(std::floor(viewport.posX)),
                      static_cast<std::int64_t>(std::floor(viewport.posY)), std::abs(viewport.zoomX) * 100.0f,
                      viewport.rot * 180.0f / std::numbers::pi_v<float>, flip);
+    std::array<char, 128> layerText{};
+    if (const Layer active = canvas.activeLayer; active != kLayerInvalid) {
+        const LayerState& layer = canvas.layers[active];
+        const std::size_t selected = LayersSelected(canvas).size();
+        const char* name = canvas.layerNames[active].data();
+        const char* blendMode = kBlendModeNames[std::to_underlying(layer.blendMode)];
+        const float opacity = layer.opacity * 100.0f;
+        if (selected > 1) {
+            std::format_to_n(layerText.data(), layerText.size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1,
+                             blendMode, opacity);
+        } else {
+            std::format_to_n(layerText.data(), layerText.size() - 1, "{} {} {:.0f}%", name, blendMode, opacity);
+        }
+    }
+
     ImFont* font = ImGui::GetFont();
     const float size = ImGui::GetFontSize() * 0.85f;
-    const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.data());
     const float margin = 8.0f * windowState.dpiScale;
-    const ImVec2 pos(static_cast<float>(windowState.width) - extent.x - margin,
-                     static_cast<float>(windowState.height) - extent.y - margin);
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    drawList->AddText(font, size, ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 90), text.data());
-    drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 150), text.data());
+    // Right aligned, from the bottom line up.
+    float bottom = static_cast<float>(windowState.height) - margin;
+    for (const char* text : {viewText.data(), layerText.data()}) {
+        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+        const ImVec2 pos(static_cast<float>(windowState.width) - extent.x - margin, bottom - extent.y);
+        drawList->AddText(font, size, ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 90), text);
+        drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 150), text);
+        bottom = pos.y;
+    }
 }
 
 // The brush value being adjusted, around its center. Radius shows the brush outline. Opacity and
@@ -303,6 +349,9 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     } else {
         const float range = kBrushAdjustRangeDips * scale;
         value = adjust.mode == BrushAdjustMode::Opacity ? brush.opacity : brush.hardness;
+        if (adjust.mode == BrushAdjustMode::LayerOpacity) {
+            value = gAppState.canvases[gAppState.canvasViews[adjust.view].canvas].layers[adjust.layer].opacity;
+        }
         drawList->AddCircle(center, range, kFaint, 0, scale);
         drawList->AddCircle(center, value * range, kStrong, 0, 2.0f * scale);
     }
@@ -313,7 +362,7 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
         drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text);
         drawList->AddText(pos, IM_COL32_WHITE, text);
     };
-    constexpr std::array kNames = {"", "Radius", "Opacity", "Hardness"};
+    constexpr std::array kNames = {"", "Radius", "Opacity", "Hardness", "Layer opacity"};
     std::array<char, 16> text{};
     // A radius is whole from 1 up, see BrushAdjustApply.
     int decimals = 3;
@@ -379,6 +428,263 @@ void TileAtlasWindow(Window window) noexcept {
     ImGui::End();
 }
 
+constexpr const char* kLayerDragPayload = "MIDORI_LAYER";
+
+// Where `layer` lands when dropped on `target`, as a LayerMove height: right above a layer, inside a folder on top.
+// kLayerInvalid when `target` is the layer or inside it.
+[[nodiscard]] Layer LayerDropHeight(const CanvasState& canvas, Layer layer, Layer target) noexcept {
+    const Layer top = canvas.layerHeights[layer];
+    const auto count = static_cast<Layer>(canvas.layers[layer].descendants + 1);
+    Layer height = canvas.layerHeights[target];
+    if (height + count > top && height <= top) {
+        return kLayerInvalid;
+    }
+    if (height > top) {
+        height = static_cast<Layer>(height - count);
+    }
+    return HasAnyFlag(canvas.layers[target].flags, LayerFlags::Folder) ? height : static_cast<Layer>(height + 1);
+}
+
+void LayerPropertiesEdit(const CanvasState& canvas, Layer layer, const LayerProperties& before,
+                         const LayerProperties& after) noexcept {
+    if (LayerPropertiesSet(canvas.id, layer, after)) {
+        LayerPropertiesCommit(canvas.id, std::span(&layer, 1), std::span(&before, 1));
+    }
+}
+
+// The multi-select scope's requests on the rows shown, by index. Clearing clears the layers of closed folders too.
+void LayerSelectionApply(CanvasState& canvas, std::span<const Layer> rows, const ImGuiMultiSelectIO& io) noexcept {
+    std::vector<Layer>& selected = canvas.selectedLayers;
+    for (const ImGuiSelectionRequest& request : io.Requests) {
+        if (request.Type == ImGuiSelectionRequestType_SetAll) {
+            selected.clear();
+            if (request.Selected) {
+                selected.assign(rows.begin(), rows.end());
+            }
+            continue;
+        }
+        if (request.Type != ImGuiSelectionRequestType_SetRange) {
+            continue;
+        }
+        for (auto i = request.RangeFirstItem; i <= request.RangeLastItem; ++i) {
+            const Layer layer = rows[static_cast<std::size_t>(i)];
+            std::erase(selected, layer);
+            if (request.Selected) {
+                selected.push_back(layer);
+            }
+        }
+    }
+}
+
+// The window's canvas layers, top first, one line each as in Photoshop, folders indented under theirs. Click picks the
+// active layer, Ctrl+click and Shift+click select more, the blend mode and opacity then set all of them. Double click
+// renames, drag moves one layer: onto a layer right above it, onto a folder inside it on top.
+void LayersWindow(Window window) noexcept {
+    ZoneScopedN("LayersWindow");
+    ImGui::SetNextWindowSize(ImVec2(300.0f, 420.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Layers", &gUiState.layersShown[window])) {
+        ImGui::End();
+        return;
+    }
+    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
+    if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
+        ImGui::TextUnformatted("No canvas");
+        ImGui::End();
+        return;
+    }
+    CanvasState& canvas = gAppState.canvases[view->canvas];
+
+    // The blend mode and opacity over the list: the active layer's shown, every selected one's set.
+    const Layer active = canvas.activeLayer;
+    const std::vector<Layer> selected = LayersSelected(canvas);
+    // As shown, so Ctrl+click adds to the active layer selected alone, and layers gone leave it.
+    canvas.selectedLayers = selected;
+    if (active != kLayerInvalid && !selected.empty()) {
+        const LayerProperties shown = LayerPropertiesGet(canvas, active);
+        int blendMode = std::to_underlying(shown.blendMode);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
+        if (ImGui::Combo("##blend", &blendMode, kBlendModeNames.data(), static_cast<int>(kBlendModeNames.size()))) {
+            AppLayerBlendMode(window, static_cast<BlendMode>(blendMode));
+        }
+        ImGui::SameLine();
+        float percent = shown.opacity * 100.0f;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const bool changed =
+            ImGui::SliderFloat("##opacity", &percent, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+        // One undo step per drag, from where each layer started.
+        std::vector<float>& before = gUiState.layerOpacitiesBefore[window];
+        if (ImGui::IsItemActivated()) {
+            before.clear();
+            for (const Layer layer : selected) {
+                before.push_back(canvas.layers[layer].opacity);
+            }
+        }
+        if (changed) {
+            for (const Layer layer : selected) {
+                LayerProperties properties = LayerPropertiesGet(canvas, layer);
+                properties.opacity = percent / 100.0f;
+                if (!LayerPropertiesSet(canvas.id, layer, properties)) {
+                    break;
+                }
+            }
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && before.size() == selected.size()) {
+            std::vector<LayerProperties> start;
+            for (std::size_t i = 0; i < selected.size(); ++i) {
+                start.push_back(LayerPropertiesGet(canvas, selected[i]));
+                start.back().opacity = before[i];
+            }
+            LayerPropertiesCommit(canvas.id, selected, start);
+        }
+    }
+
+    if (canvas.merge.result != kLayerInvalid) {
+        ImGui::Text("Merging, %d tiles left",
+                    static_cast<int>(canvas.merge.remaining.size() + canvas.merge.queued.size()));
+    }
+
+    const float footer = ImGui::GetFrameHeightWithSpacing();
+    struct Drop {
+        Layer layer;
+        Layer target;
+    };
+    Drop drop{.layer = kLayerInvalid, .target = kLayerInvalid};
+    if (ImGui::BeginChild("rows", ImVec2(0.0f, -footer), ImGuiChildFlags_Borders)) {
+        // The rows shown, top first: a closed folder's layers sit right below it.
+        std::vector<std::uint16_t>& closed = gUiState.layerFoldersClosed[window];
+        std::vector<Layer> rows;
+        for (int h = static_cast<int>(canvas.layersOrder.size()) - 2; h >= 0; --h) {
+            const Layer id = canvas.layersOrder[static_cast<std::size_t>(h)];
+            rows.push_back(id);
+            if (std::ranges::contains(closed, id)) {
+                h -= canvas.layers[id].descendants;
+            }
+        }
+        int selectedShown = 0;
+        for (const Layer id : rows) {
+            selectedShown += std::ranges::contains(selected, id) ? 1 : 0;
+        }
+        const ImGuiMultiSelectFlags flags =
+            ImGuiMultiSelectFlags_ClearOnEscape | ImGuiMultiSelectFlags_ClearOnClickVoid;
+        if (ImGuiMultiSelectIO* io = ImGui::BeginMultiSelect(flags, selectedShown, static_cast<int>(rows.size()))) {
+            LayerSelectionApply(canvas, rows, *io);
+        }
+        const float indent = ImGui::GetStyle().IndentSpacing;
+        for (std::size_t row = 0; row < rows.size(); ++row) {
+            const Layer id = rows[row];
+            const LayerState& layer = canvas.layers[id];
+            const bool folder = HasAnyFlag(layer.flags, LayerFlags::Folder);
+            int depth = 0;
+            for (Layer p = canvas.layerParents[id]; canvas.layerParents[p] != kLayerInvalid;
+                 p = canvas.layerParents[p]) {
+                ++depth;
+            }
+            ImGui::PushID(id);
+
+            bool visible = !HasAnyFlag(layer.flags, LayerFlags::Hidden);
+            if (ImGui::Checkbox("##visible", &visible)) {
+                const LayerProperties before = LayerPropertiesGet(canvas, id);
+                LayerProperties after = before;
+                after.hidden = !visible;
+                LayerPropertiesEdit(canvas, id, before, after);
+            }
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (static_cast<float>(depth) * indent));
+            if (folder) {
+                const bool open = !std::ranges::contains(closed, id);
+                if (ImGui::ArrowButton("##folder", open ? ImGuiDir_Down : ImGuiDir_Right)) {
+                    if (open) {
+                        closed.push_back(id);
+                    } else {
+                        std::erase(closed, id);
+                    }
+                }
+                ImGui::SameLine();
+            }
+
+            if (gUiState.layerRenaming[window] == id) {
+                std::array<char, 64>& text = gUiState.layerRename[window];
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::IsWindowAppearing() || !ImGui::IsAnyItemActive()) {
+                    ImGui::SetKeyboardFocusHere();
+                }
+                const bool entered =
+                    ImGui::InputText("##rename", text.data(), text.size(),
+                                     ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                if (entered) {
+                    const LayerProperties before = LayerPropertiesGet(canvas, id);
+                    LayerProperties after = before;
+                    after.name = LayerName(text.data());
+                    LayerPropertiesEdit(canvas, id, before, after);
+                }
+                if (entered || ImGui::IsItemDeactivated()) {
+                    gUiState.layerRenaming[window] = -1;
+                }
+            } else {
+                ImGui::SetNextItemSelectionUserData(static_cast<ImGuiSelectionUserData>(row));
+                if (ImGui::Selectable(canvas.layerNames[id].data(), std::ranges::contains(selected, id),
+                                      ImGuiSelectableFlags_AllowDoubleClick)) {
+                    canvas.activeLayer = id;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        gUiState.layerRenaming[window] = id;
+                        gUiState.layerRename[window] = canvas.layerNames[id];
+                    }
+                }
+                if (ImGui::BeginDragDropSource()) {
+                    ImGui::SetDragDropPayload(kLayerDragPayload, &id, sizeof(id));
+                    ImGui::TextUnformatted(canvas.layerNames[id].data());
+                    ImGui::EndDragDropSource();
+                }
+                // Moved once the list is drawn, not while it is walked.
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kLayerDragPayload)) {
+                        std::memcpy(&drop.layer, payload->Data, sizeof(drop.layer));
+                        drop.target = id;
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+            }
+            ImGui::PopID();
+        }
+        if (ImGuiMultiSelectIO* io = ImGui::EndMultiSelect()) {
+            LayerSelectionApply(canvas, rows, *io);
+        }
+    }
+    ImGui::EndChild();
+    if (drop.layer != kLayerInvalid) {
+        if (const Layer height = LayerDropHeight(canvas, drop.layer, drop.target); height != kLayerInvalid) {
+            if (const auto res = LayerMove(canvas.id, drop.layer, height); !res) {
+                MIDORI_LOG_TRACE("layers window: move: {}", ErrorMessage(res.error()));
+            }
+        }
+    }
+
+    if (ImGui::Button("+ Layer")) {
+        AppLayerNew(window, false);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+ Folder")) {
+        AppLayerNew(window, true);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+        AppLayerDelete(window);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Up")) {
+        AppLayerMove(window, true);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Down")) {
+        AppLayerMove(window, false);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Merge")) {
+        AppLayerMerge(window);
+    }
+    ImGui::End();
+}
+
 struct HelpEntry {
     const char* keys;
     const char* action;
@@ -391,6 +697,17 @@ constexpr std::array kHelpPaint = {
 constexpr std::array kHelpErase = {
     HelpEntry{.keys = "Left drag", .action = "Erase with the brush; its color picks the channels removed"},
     HelpEntry{.keys = "B", .action = "Switch to the paint brush"},
+};
+constexpr std::array kHelpLayers = {
+    HelpEntry{.keys = "Ctrl+Shift+N", .action = "New layer above the active one"},
+    HelpEntry{.keys = "Ctrl+G", .action = "New folder above the active layer"},
+    HelpEntry{.keys = "Ctrl+Delete", .action = "Delete the selected layers, a folder with its layers"},
+    HelpEntry{.keys = "Ctrl+E", .action = "Merge the active layer down, or a folder into one layer"},
+    HelpEntry{.keys = "Page Up, Page Down", .action = "Select the layer above, below"},
+    HelpEntry{.keys = "Ctrl+Page Up, Ctrl+Page Down", .action = "Move the active layer up, down"},
+    HelpEntry{.keys = "Ctrl+,", .action = "Hide or show the selected layers"},
+    HelpEntry{.keys = "Alt+Page Up, Alt+Page Down", .action = "Next, previous blend mode"},
+    HelpEntry{.keys = "O", .action = "Change the active layer's opacity, like Shift+F"},
 };
 constexpr std::array kHelpBrush = {
     HelpEntry{.keys = "F", .action = "Change the brush radius"},
@@ -420,7 +737,7 @@ constexpr std::array kHelpNavigate = {
 constexpr std::array kHelpAdjust = {
     HelpEntry{.keys = "Move", .action = "Away from the center raises the value, toward it lowers it"},
     HelpEntry{.keys = "Shift", .action = "Change it 10 times slower"},
-    HelpEntry{.keys = "Alt", .action = "Snap it to powers of two"},
+    HelpEntry{.keys = "Alt", .action = "Snap it to powers of two, a layer opacity to multiples of 5%"},
     HelpEntry{.keys = "Left click, Enter", .action = "Keep the value"},
     HelpEntry{.keys = "Right click, Escape", .action = "Restore the previous value"},
 };
@@ -457,9 +774,9 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
         return;
     }
     const AppState& app = gAppState;
-    constexpr std::array kAdjustNames = {"", "radius", "opacity", "hardness"};
+    constexpr std::array kAdjustNames = {"", "brush radius", "brush opacity", "brush hardness", "layer opacity"};
     if (app.brushAdjust.mode != BrushAdjustMode::None) {
-        ImGui::Text("Adjusting the brush %s", kAdjustNames[std::to_underlying(app.brushAdjust.mode)]);
+        ImGui::Text("Adjusting the %s", kAdjustNames[std::to_underlying(app.brushAdjust.mode)]);
         HelpTable("adjust", kHelpAdjust);
     } else if (app.spaceDown || app.navigate.mode != NavigateMode::None) {
         ImGui::TextUnformatted("Moving the view");
@@ -476,6 +793,9 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Everywhere")) {
         HelpTable("general", kHelpGeneral);
+    }
+    if (ImGui::CollapsingHeader("Layers")) {
+        HelpTable("layers", kHelpLayers);
     }
     ImGui::End();
 }
@@ -524,6 +844,11 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.tileCellsShown[window] = false;
     gUiState.hidden[window] = false;
     gUiState.helpShown[window] = true;
+    gUiState.viewShown[window] = true;
+    gUiState.toolShown[window] = true;
+    gUiState.layersShown[window] = true;
+    gUiState.layerFoldersClosed[window].clear();
+    gUiState.layerRenaming[window] = -1;
     return context;
 }
 
@@ -647,8 +972,9 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
 
     ImGui::NewFrame();
     // ImGui::ShowDemoWindow();
-    if (viewport) {
-        ViewInfoOverlay(*state, *viewport);
+    if (const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
+        viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid) {
+        ViewInfoOverlay(*state, *viewport, gAppState.canvases[view->canvas]);
     }
     if (gUiState.hidden[window]) {
         BrushAdjustOverlay(window, *state, tools);
@@ -691,19 +1017,22 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
                 command = UiCommand::ToggleFullscreen;
             }
             ImGui::MenuItem("Hide UI", "Tab", &gUiState.hidden[window]);
+            ImGui::Separator();
+            ImGui::MenuItem("View", nullptr, &gUiState.viewShown[window]);
+            ImGui::MenuItem("Tool", nullptr, &gUiState.toolShown[window]);
+            ImGui::MenuItem("Layers", nullptr, &gUiState.layersShown[window]);
+            ImGui::MenuItem("Help", nullptr, &gUiState.helpShown[window]);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Debug")) {
             ImGui::MenuItem("Tile atlas", nullptr, &gUiState.tileAtlasShown[window]);
             ImGui::MenuItem("Tile cells on canvas", nullptr, &gUiState.tileCellsShown[window]);
-            ImGui::Separator();
-            ImGui::MenuItem("Help", nullptr, &gUiState.helpShown[window]);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
     }
-    if (viewport) {
-        if (ImGui::Begin("View")) {
+    if (viewport && gUiState.viewShown[window]) {
+        if (ImGui::Begin("View", &gUiState.viewShown[window])) {
             ImGui::Text("Zoom %.1f%%  Rotation %.1f deg", std::abs(viewport->zoomX) * 100.0f,
                         viewport->rot * 180.0f / std::numbers::pi_v<float>);
             // The pointer in canvas units, as painting places it.
@@ -728,28 +1057,14 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
         }
         ImGui::End();
     }
-    if (ImGui::Begin("Tool")) {
-        int tool = std::to_underlying(tools.tool);
-        ImGui::RadioButton("Paint (B)", &tool, std::to_underlying(Tool::Paint));
-        ImGui::SameLine();
-        ImGui::RadioButton("Erase (E)", &tool, std::to_underlying(Tool::Erase));
-        tools.tool = static_cast<Tool>(tool);
-        ImGui::Separator();
-        if (tools.tool == Tool::Paint) {
-            ImGui::ColorEdit4("Color", &tools.paint.color.r);
-            int blendMode = std::to_underlying(tools.paint.blendMode);
-            if (ImGui::Combo("Blend", &blendMode, kBlendModeNames.data(), static_cast<int>(kBlendModeNames.size()))) {
-                tools.paint.blendMode = static_cast<BlendMode>(blendMode);
-            }
-            BrushEdit(tools.paint.brush);
-        } else {
-            ImGui::ColorEdit4("Removes", &tools.erase.color.r);
-            BrushEdit(tools.erase.brush);
-        }
+    if (gUiState.toolShown[window]) {
+        ToolWindow(window, tools);
     }
-    ImGui::End();
     if (gUiState.tileAtlasShown[window]) {
         TileAtlasWindow(window);
+    }
+    if (gUiState.layersShown[window]) {
+        LayersWindow(window);
     }
     if (gUiState.helpShown[window]) {
         HelpWindow(window, tools);

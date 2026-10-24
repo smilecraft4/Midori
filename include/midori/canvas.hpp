@@ -37,17 +37,22 @@ enum struct LayerFlags : std::uint8_t {
     Folder = 1 << 0,
     Locked = 1 << 1,
     Mask = 1 << 2,
-    Internal = 1 << 3,
-    Deleted = 1 << 4, // out of the order; the save deletes its entry and tile range, then frees its id
-    Dirty = 1 << 5,   // changed since the last save
+    Internal = 1 << 3, // the root folder: always the top of the order, around every other layer
+    Deleted = 1 << 4,  // out of the order, its tiles kept while history can bring it back
+    Dirty = 1 << 5,    // changed since the last save
+    Hidden = 1 << 6,
+    Purged = 1 << 7,   // Deleted for good, its tiles gone: the save deletes its entry and tile range, then frees its id
 };
 template<>
 inline constexpr bool kEnumFlags<LayerFlags> = true;
 
+// Lands in front of layersOrder[height]: a folder at height f holds [f - descendants, f], so height f puts the layer
+// inside it on top, f + 1 above it.
 struct LayerCreateInfo {
     float opacity{1.0f};
     Layer id{kLayerInvalid}; // if `kLayerInvalid` get any available id
     Layer height{};
+    std::array<char, kLayerNameLenMax> name{};
     BlendMode blendMode{};
     LayerFlags flags{};
 };
@@ -70,13 +75,14 @@ struct LayerFileEntry {
     std::uint32_t tileCount;
     Layer descendants;
     BlendMode blendMode;
-    LayerFlags flags; // Deleted and Dirty are never written
+    LayerFlags flags; // Dirty and Purged are never written; a Deleted one is purged when opened
 };
 static_assert(std::is_trivially_copyable_v<LayerFileEntry>);
 static_assert(sizeof(LayerFileEntry) == kLayerNameLenMax + 16);
 
 constexpr std::uint32_t kCanvasFileMagic = 0x4F44494D; // "MIDO"
-constexpr std::uint32_t kCanvasFileVersion = 2; // 2: tiles are QOI; version 1 raw tiles still read
+// 3: a root folder tops the order. 2: tiles are QOI. Versions 1 (raw tiles) and 2 still read.
+constexpr std::uint32_t kCanvasFileVersion = 3;
 
 // Keys of the meta table.
 enum struct CanvasFileMeta : std::uint32_t {
@@ -122,11 +128,12 @@ enum struct TileFlags : std::uint8_t {
     None = 0,
     Loaded = 1 << 0,     // in its atlas cell; GPU work recorded from now on may read it
     Editable = 1 << 1,   // Loaded at mip 0
-    Dirty = 1 << 2,      // edited since its grid position was last composited
+    Dirty = 1 << 2,      // Composite: what it is composited from changed since
     Modified = 1 << 3,   // differs from the saved version
     CachedRam = 1 << 4,  // the current version is in the RAM cache
     CachedDisk = 1 << 5, // the current version is in the disk cache
     Saved = 1 << 6,      // some version is in the canvas file
+    Composite = 1 << 7,  // a folder's: never saved, cached or loaded; evicted, it is Dirty and composited again
 };
 template<>
 inline constexpr bool kEnumFlags<TileFlags> = true;
@@ -241,11 +248,10 @@ struct TileState {
     TileTransfer transfer;
 };
 
-struct TileGridPosState {
-    TileKey key;
-    std::uint32_t visibleFrame;
-    bool dirty;  // a layer tile was edited since the last composite
-    bool queued; // in `CanvasState::composites`
+// A grid position some view shows this frame where a layer has a tile.
+struct CompositeWant {
+    TileKey gridPos;    // level-0 key, layer bits zero
+    std::uint8_t level; // the finest level a view shows it at
 };
 
 struct TileRead {
@@ -273,24 +279,53 @@ struct HistoryTile {
     TileAtlasCell cell;
 };
 
-// One edit: HistoryState::blocks[firstBlock, firstBlock + blockCount) and tiles[firstTile, firstTile + tileCount).
+// A layer a layer op changed, as it was before and after.
+struct HistoryLayer {
+    LayerState before;
+    LayerState after;
+    std::array<char, kLayerNameLenMax> beforeName;
+    std::array<char, kLayerNameLenMax> afterName;
+    Layer id;
+};
+
+// One edit: HistoryState::blocks[firstBlock, firstBlock + blockCount) and tiles[firstTile, firstTile + tileCount) for a
+// stroke; layers[firstLayer, firstLayer + layerCount) and the layersOrder before then after it, from
+// orders[firstOrder], for a layer op.
 struct HistoryRecord {
     std::uint64_t sequence; // orders records across canvases, the oldest goes first when the store is full
     std::uint32_t firstBlock;
     std::uint32_t blockCount;
     std::uint32_t firstTile;
     std::uint32_t tileCount;
+    std::uint32_t firstLayer;
+    std::uint32_t layerCount;
+    std::uint32_t firstOrder;
+    std::uint32_t orderBeforeCount;
+    std::uint32_t orderAfterCount;
 };
 
 // records[0, current) can be undone, the rest redone. Undo and redo swap each block with its tile's on the GPU, and
-// delete or insert the created tiles.
+// delete or insert the created tiles; a layer op puts its layers and order back as they were before, or after. A
+// Deleted layer no record names any more is purged.
 struct HistoryState {
     std::vector<HistoryBlock> blocks;
     std::vector<HistoryTile> tiles;
+    std::vector<HistoryLayer> layers;
+    std::vector<Layer> orders;
     std::vector<HistoryRecord> records;
     std::uint32_t current{};
     std::uint32_t pendingFrame{}; // gAppState.frame when `pending` last left 0 or a step was applied
     std::int32_t pending{};       // steps asked for and not applied yet: negative undoes, positive redoes
+};
+
+// A merge in progress: no edit of its canvas until it is done. Each grid position's result tile is composited once the
+// sources' tiles there are loaded; then the result takes the place of the sources, which are Deleted.
+struct LayerMergeState {
+    std::vector<TileKey> remaining; // level-0 keys of the grid positions left, layer bits zero
+    std::vector<TileKey> queued;    // grid positions whose result tile the next submit composites
+    Layer result{kLayerInvalid};    // kLayerInvalid: no merge
+    Layer upper{kLayerInvalid};     // merged down into `lower`, or the folder flattened
+    Layer lower{kLayerInvalid};     // kLayerInvalid when flattening a folder
 };
 
 // Owned and touched by the main thread only: jobs and the graphics backend drain the tile request queues
@@ -300,29 +335,34 @@ struct CanvasState {
     std::filesystem::path path; // empty until first saved
     std::vector<TileState> tiles;
     std::unordered_map<TileKey, std::uint32_t> tileIndices;
-    std::vector<TileGridPosState> gridPositions;
-    std::unordered_map<TileKey, std::uint32_t> gridPosIndices;
-    std::vector<TileKey> creates;        // new tiles waiting for their atlas cell to be filled
-    std::vector<TileKey> mipBuilds;      // level-0 tiles whose new level 1-3 tiles the next submit builds
-    std::vector<TileKey> tileDeletes;    // tiles in the file deleted since the last save
-    std::vector<TileKey> uploads;        // RAM cached tiles waiting for an upload slot
-    std::vector<TileRead> reads;         // tiles waiting for a read + decompress + upload job
-    std::vector<TileDownload> downloads; // tiles waiting for a download slot
-    std::vector<TileKey> cacheSaves;     // evicted tiles saved from their cache entry
-    std::vector<TileKey> visibleDirty;   // dirty grid positions shown this frame, not queued yet
-    std::vector<TileKey> composites;     // visible dirty grid positions with every layer tile loaded
-    std::vector<Layer> layersOrder;      // layersOrder[height] = id, bottom to top; saved as one entry
-    std::vector<Layer> freeLayers;       // largest first, so pop_back gives the smallest
+    std::vector<TileKey> creates;              // new tiles waiting for their atlas cell to be filled
+    std::vector<TileKey> mipBuilds;            // level-0 tiles whose new level 1-3 tiles the next submit builds
+    std::vector<TileKey> tileDeletes;          // tiles in the file deleted since the last save
+    std::vector<TileKey> uploads;              // RAM cached tiles waiting for an upload slot
+    std::vector<TileRead> reads;               // tiles waiting for a read + decompress + upload job
+    std::vector<TileDownload> downloads;       // tiles waiting for a download slot
+    std::vector<TileKey> cacheSaves;           // evicted tiles saved from their cache entry
+    std::vector<CompositeWant> compositeWants; // sorted by grid position, rebuilt every frame by TilesMarkVisible
+    std::vector<TileKey> composites;   // level-0 folder tiles the next submit composites, children before parents
+    std::vector<Layer> layersOrder;    // layersOrder[height] = id, bottom to top, the root last; saved as one entry
+    std::vector<Layer> freeLayers;     // largest first, so pop_back gives the smallest
+    std::vector<Layer> selectedLayers; // picked together, any order; may hold layers gone since, see LayersSelected
     std::array<LayerState, kLayerMax> layers;
     std::array<std::array<char, kLayerNameLenMax>, kLayerMax> layerNames;
+    // Derived from layersOrder, rebuilt after every change of it; kLayerInvalid for a layer out of the order, and for
+    // the root's parent.
+    std::array<Layer, kLayerMax> layerHeights;
+    std::array<Layer, kLayerMax> layerParents;
+    LayerMergeState merge;
     Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}; // under every layer, not saved yet
     CanvasFile file;
     CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
     HistoryState history;
     Layer largestLayer{};
-    Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
+    Layer activeLayer{kLayerInvalid}; // strokes paint into it; kLayerInvalid when none
+    Canvas id{kCanvasInvalid};        // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
-    bool modified{};           // changed since the last save, or since created
+    bool modified{};                  // changed since the last save, or since created
 };
 
 // These never ask the user anything; the App* calls wrap them with dialogs.
@@ -330,14 +370,16 @@ struct CanvasState {
 // Tiles stay in the file until visible.
 [[nodiscard]] Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept;
 // Writes what changed since the last save into the canvas's file, in one transaction. The canvas must have one.
-// Transparent level-0 tiles are deleted, from the file and the canvas, with their level 1-3 tiles.
+// Transparent level-0 tiles are deleted, from the file and the canvas, with their level 1-3 tiles. Both saves return
+// Error::CanvasBusy while the canvas merges layers.
 [[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
 // Writes the whole canvas into a new file that then replaces `path`, and keeps it as the canvas's file.
 [[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
 // Unsaved changes are lost. Waits for every job.
 void CanvasDestroy(Canvas canvas) noexcept;
 // Once per update, after the tiles shown this frame have `visibleFrame` set; never waits. Takes the finished jobs
-// and GPU copies, then sends the loaded tiles no longer visible whose content is stored nowhere to their canvas's
+// and GPU copies, queues the root composites the views need (wanting the layer tiles they read), then sends the
+// loaded tiles no longer visible whose content is stored nowhere to their canvas's
 // cache (which makes them evictable), and reads the visible tiles that are not loaded, from the cache or else the
 // file. Above the occupancy watermark it evicts the tiles shown the longest ago. Transfers are bounded by the free
 // slots; visible tiles past what the atlas holds stay unloaded.

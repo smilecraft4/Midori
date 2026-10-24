@@ -1,11 +1,13 @@
 #include "midori/history.hpp"
 
 #include "midori/app.hpp"
+#include "midori/layer.hpp"
 #include "midori/log.hpp"
 #include "midori/stroke.hpp"
 #include "midori/tile.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <span>
 #include <utility>
@@ -45,26 +47,66 @@ void HistoryRedoDrop(HistoryState& history) noexcept {
     const HistoryRecord& first = history.records[history.current];
     history.blocks.resize(first.firstBlock);
     history.tiles.resize(first.firstTile);
+    history.layers.resize(first.firstLayer);
+    history.orders.resize(first.firstOrder);
     history.records.resize(history.current);
     history.pending = std::min(history.pending, 0);
+}
+
+// Deleted layers no record can bring back lose their tiles; the next save deletes them from the file and frees their
+// ids.
+void HistoryLayersPurge(CanvasState& canvas) noexcept {
+    ZoneScopedN("HistoryLayersPurge");
+    std::array<bool, kLayerMax> named{};
+    for (const HistoryLayer& layer : canvas.history.layers) {
+        named[layer.id] = true;
+    }
+    std::array<bool, kLayerMax> purged{};
+    bool any = false;
+    for (Layer id = 0; id < canvas.largestLayer; ++id) {
+        LayerState& layer = canvas.layers[id];
+        if (!named[id] && HasAnyFlag(layer.flags, LayerFlags::Deleted)
+            && !HasAnyFlag(layer.flags, LayerFlags::Purged)) {
+            layer.flags |= LayerFlags::Purged;
+            purged[id] = true;
+            any = true;
+        }
+    }
+    if (!any) {
+        return;
+    }
+    std::vector<TileKey> keys;
+    for (const TileState& tile : canvas.tiles) {
+        if (purged[TileKeyLayer(tile.key)]) {
+            keys.push_back(tile.key);
+        }
+    }
+    // Deleting a level-0 tile deletes its level 1-3 tiles, which may come later in `keys`: deleting those does nothing.
+    for (const TileKey key : keys) {
+        const Tile tile{
+            .canvas = canvas.id, .mip = TileKeyMip(key), .layer = TileKeyLayer(key), .gridPos = TileKeyGridPos(key)};
+        if (!TileDelete(tile)) {
+            MIDORI_LOG_WARN("history: tile {:#018x} of a purged layer not deleted", key);
+        }
+    }
 }
 
 // Drops the oldest record of any canvas: when its canvas has nothing left to undo, every record of it, since each
 // one only redoes onto the one before. False when no canvas has a record.
 [[nodiscard]] bool HistoryDropOldest() noexcept {
     ZoneScopedN("HistoryDropOldest");
-    HistoryState* oldest = nullptr;
+    CanvasState* oldest = nullptr;
     for (CanvasState& canvas : gAppState.canvases) {
-        HistoryState& history = canvas.history;
+        const HistoryState& history = canvas.history;
         if (canvas.id != kCanvasInvalid && !history.records.empty()
-            && (!oldest || history.records.front().sequence < oldest->records.front().sequence)) {
-            oldest = &history;
+            && (!oldest || history.records.front().sequence < oldest->history.records.front().sequence)) {
+            oldest = &canvas;
         }
     }
     if (!oldest) {
         return false;
     }
-    HistoryState& history = *oldest;
+    HistoryState& history = oldest->history;
     const std::size_t count = history.current == 0 ? history.records.size() : 1;
     HistoryRecordsFree(history, 0, count);
     const bool all = count == history.records.size();
@@ -72,17 +114,54 @@ void HistoryRedoDrop(HistoryState& history) noexcept {
         all ? static_cast<std::uint32_t>(history.blocks.size()) : history.records[count].firstBlock;
     const std::uint32_t dropTiles =
         all ? static_cast<std::uint32_t>(history.tiles.size()) : history.records[count].firstTile;
+    const std::uint32_t dropLayers =
+        all ? static_cast<std::uint32_t>(history.layers.size()) : history.records[count].firstLayer;
+    const std::uint32_t dropOrders =
+        all ? static_cast<std::uint32_t>(history.orders.size()) : history.records[count].firstOrder;
     history.blocks.erase(history.blocks.begin(), history.blocks.begin() + dropBlocks);
     history.tiles.erase(history.tiles.begin(), history.tiles.begin() + dropTiles);
+    history.layers.erase(history.layers.begin(), history.layers.begin() + dropLayers);
+    history.orders.erase(history.orders.begin(), history.orders.begin() + dropOrders);
     history.records.erase(history.records.begin(), history.records.begin() + static_cast<std::ptrdiff_t>(count));
     for (HistoryRecord& record : history.records) {
         record.firstBlock -= dropBlocks;
         record.firstTile -= dropTiles;
+        record.firstLayer -= dropLayers;
+        record.firstOrder -= dropOrders;
     }
     history.current -= std::min(history.current, static_cast<std::uint32_t>(count));
     history.pending = std::clamp(history.pending, -static_cast<std::int32_t>(history.current),
                                  static_cast<std::int32_t>(history.records.size() - history.current));
+    HistoryLayersPurge(*oldest);
     return true;
+}
+
+// Puts the layers and the order back as they were before the record, or after it.
+void HistoryLayersApply(CanvasState& canvas, const HistoryRecord& record, bool undo) noexcept {
+    ZoneScopedN("HistoryLayersApply");
+    const HistoryState& history = canvas.history;
+    for (std::uint32_t i = record.firstLayer; i < record.firstLayer + record.layerCount; ++i) {
+        const HistoryLayer& entry = history.layers[i];
+        LayerState& layer = canvas.layers[entry.id];
+        // Counted live, whatever the record holds.
+        const std::uint32_t tileCount = layer.tileCount;
+        layer = undo ? entry.before : entry.after;
+        layer.tileCount = tileCount;
+        layer.flags |= LayerFlags::Dirty;
+        canvas.layerNames[entry.id] = undo ? entry.beforeName : entry.afterName;
+    }
+    if (record.orderBeforeCount != 0) {
+        const auto first = history.orders.begin() + record.firstOrder + (undo ? 0 : record.orderBeforeCount);
+        canvas.layersOrder.assign(first, first + (undo ? record.orderBeforeCount : record.orderAfterCount));
+    }
+    LayersIndex(canvas);
+    LayerCompositesDirty(canvas, kLayerInvalid);
+    if (canvas.activeLayer == kLayerInvalid || canvas.layerHeights[canvas.activeLayer] == kLayerInvalid) {
+        // The topmost layer under the root.
+        canvas.activeLayer =
+            canvas.layersOrder.size() > 1 ? canvas.layersOrder[canvas.layersOrder.size() - 2] : kLayerInvalid;
+    }
+    canvas.modified = true;
 }
 
 } // namespace
@@ -91,7 +170,8 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
     ZoneScopedN("HistoryPushStroke");
     MIDORI_ASSERT(gAppState.historyPool.ops.empty(), "history pushed with ops waiting");
     HistoryPoolState& pool = gAppState.historyPool;
-    HistoryState& history = gAppState.canvases[stroke.canvas].history;
+    CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    HistoryState& history = canvas.history;
     HistoryRedoDrop(history);
 
     std::uint32_t needed = 0;
@@ -105,9 +185,12 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
         MIDORI_LOG_WARN("history: stroke touches {} blocks, more than the store holds; history cleared", needed);
         HistoryRecordsFree(history, 0, history.records.size());
         history = {};
+        HistoryLayersPurge(canvas);
         return;
     }
     while (pool.freeSlots.size() < needed && HistoryDropOldest()) {}
+    // What could be redone may have been all that kept a Deleted layer.
+    HistoryLayersPurge(canvas);
 
     HistoryRecord record{
         .sequence = pool.sequence++,
@@ -115,6 +198,11 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
         .blockCount = 0,
         .firstTile = static_cast<std::uint32_t>(history.tiles.size()),
         .tileCount = 0,
+        .firstLayer = static_cast<std::uint32_t>(history.layers.size()),
+        .layerCount = 0,
+        .firstOrder = static_cast<std::uint32_t>(history.orders.size()),
+        .orderBeforeCount = 0,
+        .orderAfterCount = 0,
     };
     for (const StrokeTile& tile : stroke.tiles) {
         if (tile.backupCell == kTileAtlasCellClear) {
@@ -142,16 +230,55 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
     ++history.current;
 }
 
+void HistoryPushLayers(Canvas canvasId, std::span<const Layer> orderBefore, std::span<HistoryLayer> layers) noexcept {
+    ZoneScopedN("HistoryPushLayers");
+    CanvasState& canvas = gAppState.canvases[canvasId];
+    HistoryState& history = canvas.history;
+    HistoryRedoDrop(history);
+    for (HistoryLayer& entry : layers) {
+        entry.after = canvas.layers[entry.id];
+        entry.afterName = canvas.layerNames[entry.id];
+    }
+    history.records.push_back(HistoryRecord{
+        .sequence = gAppState.historyPool.sequence++,
+        .firstBlock = static_cast<std::uint32_t>(history.blocks.size()),
+        .blockCount = 0,
+        .firstTile = static_cast<std::uint32_t>(history.tiles.size()),
+        .tileCount = 0,
+        .firstLayer = static_cast<std::uint32_t>(history.layers.size()),
+        .layerCount = static_cast<std::uint32_t>(layers.size()),
+        .firstOrder = static_cast<std::uint32_t>(history.orders.size()),
+        .orderBeforeCount = static_cast<std::uint32_t>(orderBefore.size()),
+        .orderAfterCount = orderBefore.empty() ? 0 : static_cast<std::uint32_t>(canvas.layersOrder.size()),
+    });
+    history.layers.insert(history.layers.end(), layers.begin(), layers.end());
+    if (!orderBefore.empty()) {
+        history.orders.insert(history.orders.end(), orderBefore.begin(), orderBefore.end());
+        history.orders.insert(history.orders.end(), canvas.layersOrder.begin(), canvas.layersOrder.end());
+    }
+    ++history.current;
+    // After the push: the layers this op deleted are named by it.
+    HistoryLayersPurge(canvas);
+}
+
 void HistoryUpdate(Canvas canvas) noexcept {
     CanvasState& state = gAppState.canvases[canvas];
     HistoryState& history = state.history;
     HistoryPoolState& pool = gAppState.historyPool;
-    if (history.pending == 0 || gAppState.stroke.canvas == canvas || !pool.ops.empty()) {
+    if (history.pending == 0 || gAppState.stroke.canvas == canvas || !pool.ops.empty()
+        || state.merge.result != kLayerInvalid) {
         return;
     }
     ZoneScopedN("HistoryUpdate");
     const bool undo = history.pending < 0;
     const HistoryRecord record = history.records[undo ? history.current - 1 : history.current];
+    if (record.layerCount != 0 || record.orderBeforeCount != 0) {
+        HistoryLayersApply(state, record, undo);
+        history.current = undo ? history.current - 1 : history.current + 1;
+        history.pending += undo ? 1 : -1;
+        history.pendingFrame = gAppState.frame;
+        return;
+    }
     const std::span<HistoryBlock> blocks(history.blocks.data() + record.firstBlock, record.blockCount);
     const std::span<HistoryTile> tiles(history.tiles.data() + record.firstTile, record.tileCount);
 
@@ -207,6 +334,7 @@ void HistoryUpdate(Canvas canvas) noexcept {
             TileAtlasCellOwn(tile.cell, canvas, tile.key);
             // Deleted from the file at the next save no more; the save writes it instead.
             std::erase(state.tileDeletes, entry.key);
+            LayerCompositesTouch(state, entry.key);
             continue;
         }
         if (entry.cell == kTileAtlasCellInvalid) {
@@ -240,6 +368,7 @@ void HistoryUpdate(Canvas canvas) noexcept {
         ++tile.edits;
         std::erase(state.mipBuilds, blocks[i].key);
         TileMipsDelete(canvas, blocks[i].key);
+        LayerCompositesTouch(state, blocks[i].key);
     }
     std::ranges::sort(pool.ops, {}, &HistoryOp::cell);
     state.modified = true;

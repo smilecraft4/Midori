@@ -31,6 +31,13 @@ struct HistoryGpuOp {
     std::uint32_t swap;
 };
 
+// One child layer a composite reads. Mirrors Source in tile_blend.cs.hlsl.
+struct CompositeGpuSource {
+    std::uint32_t cell; // level 0
+    float opacity;
+    std::uint32_t blendMode;
+};
+
 struct StrokeDab;
 
 struct GraphicsInitInfo {
@@ -75,24 +82,28 @@ struct GraphicsState {
     ID3D12GraphicsCommandList* list; // closed between submits
     ID3D12Fence* fence;
     ID3D12DescriptorHeap* rtvs;
-    ID3D12RootSignature* tileRootSignature;   // embedded in tile.vs.hlsl
+    ID3D12RootSignature* tileRootSignature;      // embedded in tile.vs.hlsl
     ID3D12PipelineState* tilePipeline;
-    ID3D12Resource* pageTables;               // upload heap, kPageTableEntriesMax cells per frame in flight
+    ID3D12Resource* pageTables;                  // upload heap, kPageTableEntriesMax cells per frame in flight
     std::uint32_t* pageTablesMapped;
-    ID3D12RootSignature* outlineRootSignature; // embedded in brush_outline.vs.hlsl
+    ID3D12RootSignature* outlineRootSignature;   // embedded in brush_outline.vs.hlsl
     ID3D12PipelineState* outlinePipeline;
-    ID3D12RootSignature* strokeRootSignature; // embedded in stroke.cs.hlsl
+    ID3D12RootSignature* strokeRootSignature;    // embedded in stroke.cs.hlsl
     ID3D12PipelineState* strokePipeline;
-    ID3D12RootSignature* mipRootSignature; // embedded in tile_mip.cs.hlsl
+    ID3D12RootSignature* mipRootSignature;       // embedded in tile_mip.cs.hlsl
     ID3D12PipelineState* mipPipeline;
-    ID3D12RootSignature* historyRootSignature; // embedded in history.cs.hlsl
+    ID3D12RootSignature* compositeRootSignature; // embedded in tile_blend.cs.hlsl
+    ID3D12PipelineState* compositePipeline;
+    ID3D12Resource* compositeSources;            // upload heap, kCompositeSourcesMax per frame in flight
+    CompositeGpuSource* compositeSourcesMapped;
+    ID3D12RootSignature* historyRootSignature;   // embedded in history.cs.hlsl
     ID3D12PipelineState* historyPipeline;
-    ID3D12Resource* historyStore;             // default heap, kHistorySlotsMax blocks
-    ID3D12Resource* historyOps;               // upload heap, kHistorySlotsMax ops per frame in flight
+    ID3D12Resource* historyStore;                // default heap, kHistorySlotsMax blocks
+    ID3D12Resource* historyOps;                  // upload heap, kHistorySlotsMax ops per frame in flight
     HistoryGpuOp* historyOpsMapped;
-    ID3D12Resource* strokeDabs;               // upload heap, kStrokeDabMax dabs per frame in flight
+    ID3D12Resource* strokeDabs;                  // upload heap, kStrokeDabMax dabs per frame in flight
     StrokeDab* strokeDabsMapped;
-    ID3D12DescriptorHeap* views;              // shader visible: the tile pool SRVs and UAVs, then UI textures
+    ID3D12DescriptorHeap* views;                 // shader visible: the tile pool SRVs and UAVs, then UI textures
     // Texture2DArray per atlas, one slice per cell; null until created, in order.
     std::array<ID3D12Resource*, kTileAtlasMax> tilePools;
     ID3D12Resource* tileAtlasDebug; // Texture2D of one atlas's cells, created on first use
