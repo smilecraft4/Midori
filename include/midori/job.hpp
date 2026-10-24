@@ -22,10 +22,11 @@ enum struct JobType : std::uint8_t {
 struct Job {
     CanvasFile file;
     TileKey key;
-    std::byte* pixels; // kTileBytes of a transfer slot's mapped memory
+    std::byte* pixels; // kTileSlotBytes of a transfer slot's mapped memory, a tile of `format`
     TileTransferSlot slot;
     Canvas canvas;
     JobType type;
+    PixelFormat format;
     bool failed;
     bool empty; // TileWrite: the tile was transparent, so nothing was written
 };

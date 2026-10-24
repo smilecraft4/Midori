@@ -12,8 +12,7 @@
 namespace Midori {
 
 using TileAxis = std::int32_t;
-constexpr TileAxis kTileSize = 256;                                        // canvas units, and texels at mip 0
-constexpr std::size_t kTileBytes = std::size_t{kTileSize} * kTileSize * 4; // mip 0, 8-bit RGBA
+constexpr TileAxis kTileSize = 256; // canvas units, and texels at mip 0
 static_assert(kViewportPosMax * 2.0 <= static_cast<double>(std::int64_t{1} << (kTileXBitSize - 1)) * kTileSize
                   && kTileXBitSize == kTileYBitSize,
               "a canvas point in reach of the view has a tile key");
@@ -28,13 +27,17 @@ constexpr TileMip kTileMipMax = 0b11 + 1; // 256, 128, 64, 32
 }
 
 // Rows padded to the 256 bytes GPU copies need: the layout of a level-k tile in transfer slots, the cache and the
-// canvas file. Every level fits in kTileBytes.
-[[nodiscard]] constexpr std::size_t TileLevelPitch(TileMip level) noexcept {
-    return std::max<std::size_t>(std::size_t{TileLevelSize(level)} * 4, 256);
+// canvas file. Every level fits in TileBytes.
+[[nodiscard]] constexpr std::size_t TileLevelPitch(TileMip level, PixelFormat format) noexcept {
+    return std::max<std::size_t>(std::size_t{TileLevelSize(level)} * PixelFormatTexelBytes(format), 256);
 }
 
-[[nodiscard]] constexpr std::size_t TileLevelBytes(TileMip level) noexcept {
-    return TileLevelPitch(level) * TileLevelSize(level);
+[[nodiscard]] constexpr std::size_t TileLevelBytes(TileMip level, PixelFormat format) noexcept {
+    return TileLevelPitch(level, format) * TileLevelSize(level);
+}
+
+[[nodiscard]] constexpr std::size_t TileBytes(PixelFormat format) noexcept {
+    return TileLevelBytes(0, format);
 }
 
 struct TileGridPos {
@@ -148,10 +151,12 @@ TileState& TileInsert(CanvasState& canvas, TileKey key, TileAtlasCell cell) noex
 // missing or not loaded yet.
 [[nodiscard]] bool TileDrawn(const CanvasState& canvas, const TileState& tile, TileMip viewLevel) noexcept;
 
-// Persistently mapped memory of kTileBytes per slot, one buffer per direction (GraphicsTileUploadMemory,
-// GraphicsTileDownloadMemory), so streaming never waits for the GPU.
+// Persistently mapped memory of kTileSlotBytes per slot, one buffer per direction (GraphicsTileUploadMemory,
+// GraphicsTileDownloadMemory), so streaming never waits for the GPU. Slots move tiles of every canvas, so each fits
+// a tile of the widest format.
 using TileTransferSlot = std::uint8_t;
 constexpr TileTransferSlot kTileTransferSlots = 32;
+constexpr std::size_t kTileSlotBytes = std::size_t{kTileSize} * kTileSize * std::ranges::max(kPixelFormatTexelBytes);
 
 // Upload: Job (a reader fills the memory) -> Ready (waits for an atlas cell) -> Record -> Gpu -> Free.
 // Download: Record -> Gpu -> Job (the writer stores the memory in the cache) -> Free.

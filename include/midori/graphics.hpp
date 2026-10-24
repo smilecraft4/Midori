@@ -44,7 +44,7 @@ constexpr TileAtlasPage kTileAtlasDebugRows = (kTileAtlasPages + kTileAtlasDebug
 // refreshed in each frame whose UI called this. Created on the first call; 0 when that failed.
 [[nodiscard]] std::uint64_t GraphicsTileAtlasDebugTexture(TileAtlas atlas) noexcept;
 
-// A transfer slot's mapped memory, kTileBytes, valid from GraphicsInit to GraphicsTerminate. Each submit records
+// A transfer slot's mapped memory, kTileSlotBytes, valid from GraphicsInit to GraphicsTerminate. Each submit records
 // the copies of the slots in TileSlotState::Record (gAppState.transfers) and moves them to Gpu with the fence it
 // signals; a job may use the memory from another thread while its slot is in TileSlotState::Job.
 [[nodiscard]] std::byte* GraphicsTileUploadMemory(TileTransferSlot slot) noexcept;
@@ -52,8 +52,8 @@ constexpr TileAtlasPage kTileAtlasDebugRows = (kTileAtlasPages + kTileAtlasDebug
 // The GPU is done with everything recorded before a fence value up to this one.
 [[nodiscard]] std::uint64_t GraphicsCompletedFence() noexcept;
 
-// Waits for the GPU. A kTileBytes stride per cell, each tile TileLevelBytes of its level. First records pending new
-// tiles, uploads, the stroke and level builds so far.
+// Waits for the GPU. A TileBytes stride per cell, each tile TileLevelBytes of its level, both in the atlas's RGBA8.
+// First records pending new tiles, uploads, the stroke and level builds so far.
 [[nodiscard]] Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells,
                                                  std::span<std::byte> pixels) noexcept;
 

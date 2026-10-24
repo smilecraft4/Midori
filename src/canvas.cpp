@@ -155,10 +155,11 @@ void CacheClose(CanvasFile& cache) noexcept {
 
 // Every texel transparent: premultiplied, so every byte is zero. Only level-0 tiles are removed for it; an empty
 // level 1-3 tile of a painted one would only be built again.
-[[nodiscard]] bool TileEmpty(const std::byte* pixels) noexcept {
-    for (std::size_t row = 0; row < kTileBytes; row += std::size_t{kTileSize} * 4) {
+[[nodiscard]] bool TileEmpty(PixelFormat format, const std::byte* pixels) noexcept {
+    const std::size_t pitch = TileLevelPitch(0, format);
+    for (std::size_t row = 0; row < TileBytes(format); row += pitch) {
         std::uint64_t bits = 0;
-        for (std::size_t i = row; i < row + (std::size_t{kTileSize} * 4); i += sizeof(bits)) {
+        for (std::size_t i = row; i < row + pitch; i += sizeof(bits)) {
             std::uint64_t word = 0;
             std::memcpy(&word, pixels + i, sizeof(word));
             bits |= word;
@@ -170,18 +171,23 @@ void CacheClose(CanvasFile& cache) noexcept {
     return true;
 }
 
-// QOI stream of a tile of `level` laid out as TileLevelBytes in `pixels`, in this thread's QOI buffer until its next
-// encode or decode. QOI keeps the premultiplied channels as they are. Null on failure.
-[[nodiscard]] void* TileEncode(TileMip level, const std::byte* pixels, int& size) noexcept {
+// A tile of `level` laid out as TileLevelBytes in `pixels`. RGBA8 is a QOI stream in this thread's QOI buffer until its
+// next encode or decode; QOI keeps the premultiplied channels as they are. Other formats have no codec yet and are
+// `pixels` itself, raw. Null on failure.
+[[nodiscard]] const void* TileEncode(TileMip level, PixelFormat format, const std::byte* pixels, int& size) noexcept {
     ZoneScopedN("TileEncode");
+    if (format != PixelFormat::RGBA8) {
+        size = static_cast<int>(TileLevelBytes(level, format));
+        return pixels;
+    }
     const std::uint32_t side = TileLevelSize(level);
-    const std::size_t row = std::size_t{side} * 4;
+    const std::size_t row = std::size_t{side} * 4llu;
     // Only rows narrower than the 256-byte pitch are padded: level 3, 32^2.
-    std::array<std::byte, 32 * 32 * 4> packed;
-    if (TileLevelPitch(level) != row) {
+    std::array<std::byte, 32llu * 32llu * 4llu> packed;
+    if (TileLevelPitch(level, format) != row) {
         MIDORI_ASSERT(row * side <= packed.size(), "level {} padded", level);
         for (std::uint32_t y = 0; y < side; ++y) {
-            std::memcpy(packed.data() + (y * row), pixels + (y * TileLevelPitch(level)), row);
+            std::memcpy(packed.data() + (y * row), pixels + (y * TileLevelPitch(level, format)), row);
         }
         pixels = packed.data();
     }
@@ -189,12 +195,19 @@ void CacheClose(CanvasFile& cache) noexcept {
     return qoi_encode(pixels, &desc, &size);
 }
 
-// Into TileLevelBytes of `pixels`. Version 1 files hold tiles raw: QOI's magic "qoif" read as a premultiplied texel has
-// more red than alpha, so no raw tile starts with it.
-[[nodiscard]] bool TileDecode(TileMip level, const MDBX_val& value, std::byte* pixels) noexcept {
+// Into TileLevelBytes of `pixels`. Version 1 files hold RGBA8 tiles raw: QOI's magic "qoif" read as a premultiplied
+// texel has more red than alpha, so no raw tile starts with it.
+[[nodiscard]] bool TileDecode(TileMip level, PixelFormat format, const MDBX_val& value, std::byte* pixels) noexcept {
     ZoneScopedN("TileDecode");
     const auto* data = static_cast<const unsigned char*>(value.iov_base);
-    if (value.iov_len == TileLevelBytes(level) && std::memcmp(data, "qoif", 4) != 0) {
+    if (format != PixelFormat::RGBA8) {
+        if (value.iov_len != TileLevelBytes(level, format)) {
+            return false;
+        }
+        std::memcpy(pixels, data, value.iov_len);
+        return true;
+    }
+    if (value.iov_len == TileLevelBytes(level, format) && std::memcmp(data, "qoif", 4) != 0) {
         std::memcpy(pixels, data, value.iov_len);
         return true;
     }
@@ -214,16 +227,18 @@ void CacheClose(CanvasFile& cache) noexcept {
     }
     const std::size_t row = std::size_t{side} * 4;
     for (std::uint32_t y = 0; y < side; ++y) {
-        std::memcpy(pixels + (y * TileLevelPitch(level)), static_cast<const std::byte*>(decoded) + (y * row), row);
+        std::memcpy(pixels + (y * TileLevelPitch(level, format)), static_cast<const std::byte*>(decoded) + (y * row),
+                    row);
     }
     return true;
 }
 
-// A kTileBytes stride per key in `pixels`, each tile TileLevelBytes of its level.
-[[nodiscard]] Result<void> TilesRead(const CanvasFile& file, std::span<const TileKey> keys,
+// A TileBytes stride per key in `pixels`, each tile TileLevelBytes of its level.
+[[nodiscard]] Result<void> TilesRead(const CanvasFile& file, PixelFormat format, std::span<const TileKey> keys,
                                      std::span<std::byte> pixels) noexcept {
     ZoneScopedN("TilesRead");
-    MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
+    MIDORI_ASSERT(pixels.size() == keys.size() * TileBytes(format), "{} bytes for {} tiles", pixels.size(),
+                  keys.size());
     if (keys.empty()) {
         return {};
     }
@@ -236,7 +251,8 @@ void CacheClose(CanvasFile& cache) noexcept {
         MDBX_val key = Val(keys[i]);
         MDBX_val value{};
         const int rc = mdbx_get(txn, file.tilesDbi, &key, &value);
-        if (rc != MDBX_SUCCESS || !TileDecode(TileKeyMip(keys[i]), value, pixels.data() + (i * kTileBytes))) {
+        if (rc != MDBX_SUCCESS
+            || !TileDecode(TileKeyMip(keys[i]), format, value, pixels.data() + (i * TileBytes(format)))) {
             MIDORI_LOG_ERROR("reading tile {:#018x}: {}", keys[i],
                              rc == MDBX_SUCCESS ? "invalid data" : mdbx_strerror(rc));
             mdbx_txn_abort(txn);
@@ -247,10 +263,11 @@ void CacheClose(CanvasFile& cache) noexcept {
     return {};
 }
 
-[[nodiscard]] Result<void> TilesWrite(const CanvasFile& file, std::span<const TileKey> keys,
+[[nodiscard]] Result<void> TilesWrite(const CanvasFile& file, PixelFormat format, std::span<const TileKey> keys,
                                       std::span<const std::byte> pixels) noexcept {
     ZoneScopedN("TilesWrite");
-    MIDORI_ASSERT(pixels.size() == keys.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
+    MIDORI_ASSERT(pixels.size() == keys.size() * TileBytes(format), "{} bytes for {} tiles", pixels.size(),
+                  keys.size());
     MDBX_txn* txn = nullptr;
     if (const int rc = mdbx_txn_begin(file.env, nullptr, MDBX_TXN_READWRITE, &txn); rc != MDBX_SUCCESS) {
         LogMdbx("mdbx_txn_begin", rc);
@@ -258,14 +275,14 @@ void CacheClose(CanvasFile& cache) noexcept {
     }
     for (std::size_t i = 0; i < keys.size(); ++i) {
         int size = 0;
-        void* encoded = TileEncode(TileKeyMip(keys[i]), pixels.data() + (i * kTileBytes), size);
+        const void* encoded = TileEncode(TileKeyMip(keys[i]), format, pixels.data() + (i * TileBytes(format)), size);
         if (!encoded) {
             MIDORI_LOG_ERROR("encoding tile {:#018x} failed", keys[i]);
             mdbx_txn_abort(txn);
             return std::unexpected(Error::TileCacheFailed);
         }
         MDBX_val key = Val(keys[i]);
-        MDBX_val value{.iov_base = encoded, .iov_len = static_cast<std::size_t>(size)};
+        MDBX_val value{.iov_base = const_cast<void*>(encoded), .iov_len = static_cast<std::size_t>(size)};
         const int rc = mdbx_put(txn, file.tilesDbi, &key, &value, MDBX_UPSERT);
         if (rc != MDBX_SUCCESS) {
             LogMdbx("mdbx_put tile", rc);
@@ -306,14 +323,16 @@ void CacheClose(CanvasFile& cache) noexcept {
         }
     }
     MIDORI_ASSERT(all || savedKeys.empty(), "modified tiles evicted without a cache");
-    std::vector<std::byte> pixels((keys.size() + cachedKeys.size() + savedKeys.size()) * kTileBytes);
-    const std::span<std::byte> downloaded = std::span(pixels).first(cells.size() * kTileBytes);
-    const std::span<std::byte> cached = std::span(pixels).subspan(downloaded.size(), cachedKeys.size() * kTileBytes);
+    const std::size_t tileBytes = TileBytes(canvas.pixelFormat);
+    std::vector<std::byte> pixels((keys.size() + cachedKeys.size() + savedKeys.size()) * tileBytes);
+    const std::span<std::byte> downloaded = std::span(pixels).first(cells.size() * tileBytes);
+    const std::span<std::byte> cached = std::span(pixels).subspan(downloaded.size(), cachedKeys.size() * tileBytes);
     const std::span<std::byte> saved = std::span(pixels).subspan(downloaded.size() + cached.size());
     if (const auto res = GraphicsTilesDownload(cells, downloaded); !res) {
         return std::unexpected(res.error());
     }
-    if (!TilesRead(canvas.cache, cachedKeys, cached) || !TilesRead(canvas.file, savedKeys, saved)) {
+    if (!TilesRead(canvas.cache, canvas.pixelFormat, cachedKeys, cached)
+        || !TilesRead(canvas.file, canvas.pixelFormat, savedKeys, saved)) {
         return std::unexpected(Error::CanvasSaveFailed);
     }
     keys.insert(keys.end(), cachedKeys.begin(), cachedKeys.end());
@@ -421,7 +440,7 @@ void CacheClose(CanvasFile& cache) noexcept {
     // A tile in the stroke is written whatever it holds: the stroke keeps painting into its cell.
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (TileKeyMip(keys[i]) == 0 && !StrokeHasTile(gAppState.stroke, canvas.id, keys[i])
-            && TileEmpty(pixels.data() + (i * kTileBytes))) {
+            && TileEmpty(canvas.pixelFormat, pixels.data() + (i * tileBytes))) {
             empties.push_back(keys[i]);
         }
     }
@@ -440,13 +459,15 @@ void CacheClose(CanvasFile& cache) noexcept {
             continue;
         }
         int size = 0;
-        void* encoded = TileEncode(TileKeyMip(keys[i]), pixels.data() + (i * kTileBytes), size);
+        const void* encoded =
+            TileEncode(TileKeyMip(keys[i]), canvas.pixelFormat, pixels.data() + (i * tileBytes), size);
         if (!encoded) {
             MIDORI_LOG_ERROR("encoding tile {:#018x} failed", keys[i]);
             mdbx_txn_abort(txn);
             return std::unexpected(Error::CanvasSaveFailed);
         }
-        const int rc = put(file.tilesDbi, Val(keys[i]), MDBX_val{.iov_base = encoded, .iov_len = static_cast<std::size_t>(size)});
+        const MDBX_val value{.iov_base = const_cast<void*>(encoded), .iov_len = static_cast<std::size_t>(size)};
+        const int rc = put(file.tilesDbi, Val(keys[i]), value);
         if (rc != MDBX_SUCCESS) {
             return fail("mdbx_put tile", rc);
         }
@@ -601,6 +622,7 @@ void TileSlotsAdvance() noexcept {
             .slot = i,
             .canvas = slot.canvas,
             .type = JobType::TileWrite,
+            .format = gAppState.canvases[slot.canvas].pixelFormat,
             .failed = false,
             .empty = false,
         });
@@ -682,6 +704,7 @@ void TileLoadsSchedule(CanvasState& canvas) noexcept {
             .slot = i,
             .canvas = canvas.id,
             .type = JobType::TileRead,
+            .format = canvas.pixelFormat,
             .failed = false,
             .empty = false,
         });
@@ -1038,12 +1061,12 @@ void CanvasTilesStream() noexcept {
 Result<void> CanvasJobExecute(Job& job) noexcept {
     ZoneScopedN("CanvasJobExecute");
     const std::span<const TileKey> key(&job.key, 1);
-    const std::span<std::byte> pixels(job.pixels, kTileBytes);
+    const std::span<std::byte> pixels(job.pixels, TileBytes(job.format));
     if (job.type == JobType::TileRead) {
-        return TilesRead(job.file, key, pixels);
+        return TilesRead(job.file, job.format, key, pixels);
     }
-    job.empty = TileKeyMip(job.key) == 0 && TileEmpty(job.pixels);
-    return job.empty ? Result<void>{} : TilesWrite(job.file, key, pixels);
+    job.empty = TileKeyMip(job.key) == 0 && TileEmpty(job.format, job.pixels);
+    return job.empty ? Result<void>{} : TilesWrite(job.file, job.format, key, pixels);
 }
 
 } // namespace Midori

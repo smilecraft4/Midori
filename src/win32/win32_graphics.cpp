@@ -41,6 +41,7 @@ namespace {
 constexpr float kWindowBackground[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 constexpr DXGI_FORMAT kTileFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr PixelFormat kTilePixelFormat = PixelFormat::RGBA8;
 // Page table entries per frame in flight, shared by the views drawn in it: a 4K view zoomed out to 1/64 needs about
 // half a million.
 constexpr std::size_t kPageTableEntriesMax = std::size_t{1} << 21;
@@ -317,9 +318,9 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
     double minY = std::numeric_limits<double>::max();
     double maxX = std::numeric_limits<double>::lowest();
     double maxY = std::numeric_limits<double>::lowest();
-    for (const auto [px, py] : {std::pair{0.0, 0.0}, std::pair{static_cast<double>(width), 0.0},
-                                std::pair{0.0, static_cast<double>(height)},
-                                std::pair{static_cast<double>(width), static_cast<double>(height)}}) {
+    for (const auto [px, py] :
+         {std::pair{0.0, 0.0}, std::pair{static_cast<double>(width), 0.0}, std::pair{0.0, static_cast<double>(height)},
+          std::pair{static_cast<double>(width), static_cast<double>(height)}}) {
         const double x = (xx * px) + (xy * py) + offsetX;
         const double y = (yx * px) + (yy * py) + offsetY;
         minX = std::min(minX, x);
@@ -327,7 +328,9 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
         maxX = std::max(maxX, x);
         maxY = std::max(maxY, y);
     }
-    const auto tileOf = [](double pos) { return static_cast<TileAxis>(std::floor(pos / kTileSize)); };
+    const auto tileOf = [](double pos) {
+        return static_cast<TileAxis>(std::floor(pos / kTileSize));
+    };
     const TileGridPos regionOrigin{.x = tileOf(minX) - 1, .y = tileOf(minY) - 1};
     return CanvasViewConstants{
         .pixelToCanvasX = {static_cast<float>(xx), static_cast<float>(xy)},
@@ -531,7 +534,8 @@ void RecordStroke() noexcept {
             }
             for (TileMip mip = 1; mip < kTileMipMax; ++mip) {
                 const auto found = canvas.tileIndices.find(TileKeyWithMip(tile.key, mip));
-                if (found == canvas.tileIndices.end() || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)) {
+                if (found == canvas.tileIndices.end()
+                    || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded)) {
                     continue;
                 }
                 const std::uint32_t scale = 1u << mip;
@@ -616,11 +620,11 @@ void ListExecuteAndWait() noexcept {
     WaitIdle();
 }
 
-// A buffer holding `count` tiles back to back; the pool's mip 0 rows need no padding.
-[[nodiscard]] Result<ID3D12Resource*> TileBufferCreate(D3D12_HEAP_TYPE heapType, std::size_t count) noexcept {
+// A buffer holding tiles back to back; the pool's mip 0 rows need no padding.
+[[nodiscard]] Result<ID3D12Resource*> TileBufferCreate(D3D12_HEAP_TYPE heapType, std::size_t bytes) noexcept {
     ZoneScopedN("TileBufferCreate");
     const CD3DX12_HEAP_PROPERTIES heap(heapType);
-    const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(count * kTileBytes);
+    const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
     const D3D12_RESOURCE_STATES initial =
         heapType == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COPY_DEST;
     ID3D12Resource* buffer = nullptr;
@@ -633,27 +637,27 @@ void ListExecuteAndWait() noexcept {
     return buffer;
 }
 
-// Tile `index` of a buffer of kTileBytes strides, laid out as TileLevelPitch rows of its level.
-[[nodiscard]] D3D12_PLACED_SUBRESOURCE_FOOTPRINT TileBufferFootprint(std::size_t index, TileMip level) noexcept {
+// The tile at `offset` in a buffer, laid out as TileLevelPitch rows of its level.
+[[nodiscard]] D3D12_PLACED_SUBRESOURCE_FOOTPRINT TileBufferFootprint(std::size_t offset, TileMip level) noexcept {
     const std::uint32_t size = TileLevelSize(level);
     return D3D12_PLACED_SUBRESOURCE_FOOTPRINT{
-        .Offset = index * kTileBytes,
+        .Offset = offset,
         .Footprint = {.Format = kTileFormat,
                       .Width = size,
                       .Height = size,
                       .Depth = 1,
-                      .RowPitch = static_cast<UINT>(TileLevelPitch(level))},
+                      .RowPitch = static_cast<UINT>(TileLevelPitch(level, kTilePixelFormat))},
     };
 }
 
-void TileCopyToCell(ID3D12Resource* buffer, std::size_t index, TileAtlasCell cell) noexcept {
+void TileCopyToCell(ID3D12Resource* buffer, std::size_t offset, TileAtlasCell cell) noexcept {
     const CD3DX12_TEXTURE_COPY_LOCATION dst = TilePoolLocation(cell);
-    const CD3DX12_TEXTURE_COPY_LOCATION src(buffer, TileBufferFootprint(index, TileAtlasCellLevel(cell)));
+    const CD3DX12_TEXTURE_COPY_LOCATION src(buffer, TileBufferFootprint(offset, TileAtlasCellLevel(cell)));
     gGraphicsState.list->CopyTextureRegion(&dst, TileAtlasCellX(cell), TileAtlasCellY(cell), 0, &src, nullptr);
 }
 
-void TileCopyFromCell(TileAtlasCell cell, ID3D12Resource* buffer, std::size_t index) noexcept {
-    const CD3DX12_TEXTURE_COPY_LOCATION dst(buffer, TileBufferFootprint(index, TileAtlasCellLevel(cell)));
+void TileCopyFromCell(TileAtlasCell cell, ID3D12Resource* buffer, std::size_t offset) noexcept {
+    const CD3DX12_TEXTURE_COPY_LOCATION dst(buffer, TileBufferFootprint(offset, TileAtlasCellLevel(cell)));
     const CD3DX12_TEXTURE_COPY_LOCATION src = TilePoolLocation(cell);
     const D3D12_BOX box = TileCellBox(cell);
     gGraphicsState.list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
@@ -674,7 +678,7 @@ void RecordTileUploads() noexcept {
         if (slot.state != TileSlotState::Record) {
             continue;
         }
-        TileCopyToCell(state.tileUploads, i, slot.cell);
+        TileCopyToCell(state.tileUploads, std::size_t{i} * kTileSlotBytes, slot.cell);
         slot.state = TileSlotState::Gpu;
         slot.fence = state.fenceValue + 1;
     }
@@ -747,7 +751,7 @@ void RecordTileDownloads() noexcept {
         if (slot.state != TileSlotState::Record) {
             continue;
         }
-        TileCopyFromCell(slot.cell, state.tileDownloads, i);
+        TileCopyFromCell(slot.cell, state.tileDownloads, std::size_t{i} * kTileSlotBytes);
         slot.state = TileSlotState::Gpu;
         slot.fence = state.fenceValue + 1;
     }
@@ -851,9 +855,9 @@ void RecordTileDownloads() noexcept {
                     state.list->RSSetViewports(1, &target);
                     state.list->SetGraphicsRoot32BitConstants(kCanvasViewRootParameter, kCanvasViewConstantCount,
                                                               &constants, 0);
-                    state.list->SetGraphicsRootShaderResourceView(
-                        kPageTableRootParameter,
-                        state.pageTables->GetGPUVirtualAddress() + (first * sizeof(std::uint32_t)));
+                    state.list->SetGraphicsRootShaderResourceView(kPageTableRootParameter,
+                                                                  state.pageTables->GetGPUVirtualAddress()
+                                                                      + (first * sizeof(std::uint32_t)));
                     state.list->DrawInstanced(3, 1, 0, 0);
                 }
 
@@ -1121,8 +1125,9 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
         // Mapped for their whole life: an upload heap is write-only for the CPU, a readback heap is read only after
         // the fence of the copy that wrote it.
         ZoneScopedN("CreateTileTransferSlots");
-        const auto uploads = TileBufferCreate(D3D12_HEAP_TYPE_UPLOAD, kTileTransferSlots);
-        const auto downloads = TileBufferCreate(D3D12_HEAP_TYPE_READBACK, kTileTransferSlots);
+        const auto uploads = TileBufferCreate(D3D12_HEAP_TYPE_UPLOAD, std::size_t{kTileTransferSlots} * kTileSlotBytes);
+        const auto downloads =
+            TileBufferCreate(D3D12_HEAP_TYPE_READBACK, std::size_t{kTileTransferSlots} * kTileSlotBytes);
         state.tileUploads = uploads.value_or(nullptr);
         state.tileDownloads = downloads.value_or(nullptr);
         if (!uploads || !downloads) {
@@ -1135,7 +1140,7 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
             return fail("ID3D12Resource::Map", hr);
         }
         state.tileUploadsMapped = static_cast<std::byte*>(mapped);
-        const D3D12_RANGE all{.Begin = 0, .End = std::size_t{kTileTransferSlots} * kTileBytes};
+        const D3D12_RANGE all{.Begin = 0, .End = std::size_t{kTileTransferSlots} * kTileSlotBytes};
         if (const HRESULT hr = state.tileDownloads->Map(0, &all, &mapped); FAILED(hr)) {
             return fail("ID3D12Resource::Map", hr);
         }
@@ -1257,8 +1262,8 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
         }
 
         const CD3DX12_HEAP_PROPERTIES opsHeap(D3D12_HEAP_TYPE_UPLOAD);
-        const CD3DX12_RESOURCE_DESC opsDesc =
-            CD3DX12_RESOURCE_DESC::Buffer(std::size_t{kGraphicsFramesInFlight} * kHistorySlotsMax * sizeof(HistoryGpuOp));
+        const CD3DX12_RESOURCE_DESC opsDesc = CD3DX12_RESOURCE_DESC::Buffer(std::size_t{kGraphicsFramesInFlight}
+                                                                            * kHistorySlotsMax * sizeof(HistoryGpuOp));
         if (const HRESULT hr = state.device->CreateCommittedResource(&opsHeap, D3D12_HEAP_FLAG_NONE, &opsDesc,
                                                                      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                                                                      IID_PPV_ARGS(&state.historyOps));
@@ -1493,12 +1498,12 @@ void GraphicsWindowRequestFrame(Window window) noexcept {
 
 std::byte* GraphicsTileUploadMemory(TileTransferSlot slot) noexcept {
     MIDORI_ASSERT(slot < kTileTransferSlots, "transfer slot {}", slot);
-    return gGraphicsState.tileUploadsMapped + (std::size_t{slot} * kTileBytes);
+    return gGraphicsState.tileUploadsMapped + (std::size_t{slot} * kTileSlotBytes);
 }
 
 std::byte* GraphicsTileDownloadMemory(TileTransferSlot slot) noexcept {
     MIDORI_ASSERT(slot < kTileTransferSlots, "transfer slot {}", slot);
-    return gGraphicsState.tileDownloadsMapped + (std::size_t{slot} * kTileBytes);
+    return gGraphicsState.tileDownloadsMapped + (std::size_t{slot} * kTileSlotBytes);
 }
 
 std::uint64_t GraphicsCompletedFence() noexcept {
@@ -1538,12 +1543,13 @@ std::uint64_t GraphicsTileAtlasDebugTexture(TileAtlas atlas) noexcept {
 
 Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells, std::span<std::byte> pixels) noexcept {
     ZoneScopedN("GraphicsTilesDownload");
-    MIDORI_ASSERT(pixels.size() == cells.size() * kTileBytes, "{} bytes for {} tiles", pixels.size(), cells.size());
+    MIDORI_ASSERT(pixels.size() == cells.size() * TileBytes(kTilePixelFormat), "{} bytes for {} tiles", pixels.size(),
+                  cells.size());
     GraphicsState& state = gGraphicsState;
     if (cells.empty()) {
         return {};
     }
-    const auto readback = TileBufferCreate(D3D12_HEAP_TYPE_READBACK, cells.size());
+    const auto readback = TileBufferCreate(D3D12_HEAP_TYPE_READBACK, pixels.size());
     if (!readback) {
         return std::unexpected(readback.error());
     }
@@ -1560,7 +1566,7 @@ Result<void> GraphicsTilesDownload(std::span<const TileAtlasCell> cells, std::sp
         RecordTileMips();
         TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
         for (std::size_t i = 0; i < cells.size(); ++i) {
-            TileCopyFromCell(cells[i], *readback, i);
+            TileCopyFromCell(cells[i], *readback, i * TileBytes(kTilePixelFormat));
         }
         TilePoolsTransition(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }

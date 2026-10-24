@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <utility>
 
 namespace Midori {
 
@@ -13,6 +15,12 @@ enum struct PixelFormat : std::uint8_t {
     R16_HDR,
     Count_,
 };
+
+constexpr std::array<std::uint8_t, std::to_underlying(PixelFormat::Count_)> kPixelFormatTexelBytes{4, 1, 8, 2, 8, 2};
+
+[[nodiscard]] constexpr std::uint32_t PixelFormatTexelBytes(PixelFormat format) noexcept {
+    return kPixelFormatTexelBytes[std::to_underlying(format)];
+}
 
 enum struct BlendMode : std::uint8_t {
     Normal,
