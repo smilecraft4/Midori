@@ -5,8 +5,10 @@
 #include "midori/color.hpp"
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
+#include "midori/text.hpp"
 #include "midori/viewport.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -17,6 +19,14 @@ struct ImGuiContext;
 namespace Midori {
 
 struct ToolsState;
+
+struct SearchEntry {
+    std::string label; // dynamic entries only: the preset, layer, file, language or filter name
+    std::uint32_t arg;
+    float score;
+    ActionId action;
+    Text blocked; // Text::Count_ when it would run
+};
 
 // The panels a new window shows, kept between runs.
 struct UiPreferences {
@@ -53,9 +63,16 @@ struct UiState {
     std::array<std::array<char, 128>, kWindowMax> searchQuery;
     std::array<std::vector<SearchEntry>, kWindowMax> searchEntries; // matching ones, best first
     std::array<int, kWindowMax> searchSelected;
+    std::array<bool, kWindowMax> searchFocus;                       // until its query field takes the keyboard
+    // Read once, used by every context's atlas without a copy; empty when not installed.
+    std::vector<std::byte> fontLatin;
+    std::vector<std::byte> fontJapanese; // merged into the Latin one
 };
 
 extern UiState gUiState;
+
+// Before the first UiWindowInit. A font not found falls back to Dear ImGui's, without kana and kanji.
+void UiFontsLoad() noexcept;
 
 // Called by the platform around a window's lifetime: init before GraphicsWindowInit, terminate after
 // GraphicsWindowTerminate, so the renderer backend never outlives its context.
@@ -67,28 +84,12 @@ void UiWindowTerminate(Window window) noexcept;
 // window's last frame, so it lags the event by up to one frame.
 [[nodiscard]] bool UiEvent(const Event& event) noexcept;
 
-// Picked from the menu bar. The frame is built inside the renderer's submit, where no dialog can open, so
-// the app runs it later.
-enum struct UiCommand : std::uint8_t {
-    None,
-    CanvasNew,
-    CanvasOpen,
-    CanvasSave,
-    CanvasSaveAs,
-    CanvasOpenRecent,
-    Exit,
-    Undo,
-    Redo,
-    ToggleFullscreen,
-};
-
-// Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
-// panel edits `viewport` and its canvas's `backgroundColor`, and is hidden while the window shows no canvas view
-// (both null). The tool panel edits `tools`.
 // The cursor the UI asks for while it has the pointer, as of the window's last frame; nothing when the canvas has it.
 [[nodiscard]] std::optional<WindowCursor> UiCursor(Window window) noexcept;
 
-[[nodiscard]] UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor,
-                                      ToolsState& tools) noexcept;
+// Builds the window's next frame, up to ImGui::Render. The renderer then draws its draw data. The view
+// panel edits `viewport` and its canvas's `backgroundColor`, and is hidden while the window shows no canvas view
+// (both null). The tool panel edits `tools`. What the menus and the search pick goes to gAppState.actionRequests.
+void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept;
 
 } // namespace Midori

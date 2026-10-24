@@ -7,6 +7,7 @@
 #include "midori/ui.hpp"
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace Midori {
@@ -21,6 +22,7 @@ struct Preferences {
     WindowCreateInfo window;                        // where the first window opens; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2};
     std::vector<std::filesystem::path> recentFiles; // the most recent first, up to kRecentFilesMax
+    std::string language;                           // a code of kLanguages, empty for the system's
 };
 
 // The defaults while there is no file yet. A file that is not JSON is set aside as preferences.json.bad, so the next

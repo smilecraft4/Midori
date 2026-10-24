@@ -2,6 +2,7 @@
 
 #include "midori/log.hpp"
 #include "midori/platform.hpp"
+#include "midori/text.hpp"
 #include "midori/version.h"
 
 #include <algorithm>
@@ -186,6 +187,11 @@ Result<Preferences> PreferencesLoad() noexcept {
         return std::unexpected(Error::PreferencesFailed);
     }
 
+    if (const auto language = root.find("language");
+        language != root.end() && language->is_string()
+        && std::ranges::contains(kLanguages, language->get_ref<const std::string&>(), &LanguageInfo::code)) {
+        preferences.language = language->get_ref<const std::string&>();
+    }
     if (const int filter = ReadName(root, "canvasFilter", kCanvasFilterNames); filter >= 0) {
         preferences.canvasFilter = static_cast<CanvasFilter>(filter);
     }
@@ -197,6 +203,20 @@ Result<Preferences> PreferencesLoad() noexcept {
         Read(*paint, "color", preferences.tools.paint.color);
         if (const int blendMode = ReadName(*paint, "blendMode", kBlendModeNames); blendMode >= 0) {
             preferences.tools.paint.blendMode = static_cast<BlendMode>(blendMode);
+        }
+    }
+    if (const auto presets = root.find("brushPresets"); presets != root.end() && presets->is_array()) {
+        for (const Json& entry : *presets) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            BrushPreset preset{};
+            ReadBrush(entry, preset.brush);
+            if (const auto name = entry.find("name"); name != entry.end() && name->is_string()) {
+                const std::string& text = name->get_ref<const std::string&>();
+                std::copy_n(text.begin(), std::min(text.size(), preset.name.size() - 1), preset.name.begin());
+            }
+            preferences.tools.presets.push_back(preset);
         }
     }
     if (const auto erase = root.find("erase"); erase != root.end() && erase->is_object()) {
@@ -268,12 +288,17 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         windowJson["x"] = window.x;
         windowJson["y"] = window.y;
     }
+    Json brushPresets = Json::array();
+    for (const BrushPreset& preset : tools.presets) {
+        brushPresets.push_back(Json{{"name", preset.name.data()}, {"brush", BrushJson(preset.brush)}});
+    }
     Json recentFiles = Json::array();
     for (const std::filesystem::path& file : preferences.recentFiles) {
         recentFiles.push_back(PathUtf8(file));
     }
     const Json root{
         {"version", kPreferencesVersion},
+        {"language", preferences.language},
         {"tool", kToolNames[std::to_underlying(tools.tool)]},
         {"canvasFilter", kCanvasFilterNames[std::to_underlying(preferences.canvasFilter)]},
         {"paint",
@@ -295,6 +320,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
              {"helpShown", preferences.ui.helpShown},
              {"imguiSettings", preferences.ui.imguiSettings},
          }},
+        {"brushPresets", brushPresets},
         {"window", windowJson},
         {"recentFiles", recentFiles},
     };

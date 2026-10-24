@@ -92,6 +92,19 @@ struct WindowState {
 // Where this user's settings of every app go, roaming with the user: %APPDATA% on Windows.
 [[nodiscard]] Result<std::filesystem::path> PlatformUserSettingsPath() noexcept;
 
+enum struct FontScript : std::uint8_t {
+    Latin,
+    Japanese,
+};
+
+// The folder holding the executable, and its data next to it.
+[[nodiscard]] Result<std::filesystem::path> PlatformExecutableFolder() noexcept;
+// The user's preferred UI language as a two-letter code, "en" when unknown.
+[[nodiscard]] std::string PlatformLanguage() noexcept;
+
+// The first of the system's UI fonts for `script` that is installed.
+[[nodiscard]] Result<std::filesystem::path> PlatformFontPath(FontScript script) noexcept;
+
 [[nodiscard]] inline std::string PathUtf8(const std::filesystem::path& path) noexcept {
     const std::u8string text = path.u8string();
     return {text.begin(), text.end()};

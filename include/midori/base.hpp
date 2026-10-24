@@ -29,6 +29,8 @@ enum struct Error : std::uint8_t {
     CanvasBusy,
     LayerOpInvalid,
     PreferencesFailed,
+    FontNotFound,
+    KeyBindingInvalid,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -73,6 +75,10 @@ enum struct Error : std::uint8_t {
             return "layer operation not allowed";
         case Error::PreferencesFailed:
             return "preferences not read or written";
+        case Error::FontNotFound:
+            return "font not found";
+        case Error::KeyBindingInvalid:
+            return "key binding not understood";
     }
     return "unknown error";
 }

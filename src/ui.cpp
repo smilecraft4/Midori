@@ -3,6 +3,7 @@
 #include "midori/graphics.hpp"
 #include "midori/layer.hpp"
 #include "midori/log.hpp"
+#include "midori/text.hpp"
 #include "midori/tile.hpp"
 #include "midori/tool.hpp"
 
@@ -15,8 +16,12 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <ios>
 #include <numbers>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,10 +35,60 @@ UiState gUiState{};
 namespace {
 
 constexpr float kFirstFrameSeconds = 1.0f / 60.0f;
+constexpr float kFontSize = 15.0f; // DIPs
 
-constexpr std::array<const char*, std::to_underlying(BlendMode::Count_)> kBlendModeNames = {
-    "Normal", "Multiply", "Add", "Screen", "Normal (OkLab)",
+constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
+    Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab,
 };
+constexpr std::array<Text, std::to_underlying(CanvasFilter::Count_)> kFilterTexts = {
+    Text::FilterNearest,  Text::FilterBilinear, Text::FilterBicubic,
+    Text::FilterMitchell, Text::FilterLanczos2, Text::FilterLanczos3,
+};
+
+// For Combo, which takes the names as one array.
+template<std::size_t N>
+[[nodiscard]] std::array<const char*, N> TextsGet(const std::array<Text, N>& texts) noexcept {
+    std::array<const char*, N> names{};
+    for (std::size_t i = 0; i < N; ++i) {
+        names[i] = TextGet(texts[i]);
+    }
+    return names;
+}
+
+void ActionRequestPush(Window window, ActionId action, std::uint32_t arg = 0) noexcept {
+    gAppState.actionRequests.push_back(ActionRequest{.arg = arg, .action = action, .window = window});
+}
+
+// The keys of the first binding of `action` with `arg`, "" when none.
+[[nodiscard]] const char* BindingKeys(ActionId action, std::uint32_t arg) noexcept {
+    const KeymapState& keymap = gAppState.keymap;
+    for (std::size_t i = 0; i < keymap.bindings.size(); ++i) {
+        if (keymap.bindings[i].action == action && keymap.bindings[i].arg == arg) {
+            return keymap.keys[i].c_str();
+        }
+    }
+    return "";
+}
+
+// Runs `action` from a menu: its keys on the right, greyed out while blocked, the reason shown on hover.
+void MenuAction(Window window, Text label, ActionId action, bool selected = false, std::uint32_t arg = 0) noexcept {
+    const Text blocked = ActionBlocked(window, action, arg);
+    if (ImGui::MenuItem(TextLabel(label), BindingKeys(action, arg), selected, blocked == Text::Count_)) {
+        ActionRequestPush(window, action, arg);
+    }
+    if (blocked != Text::Count_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", TextGet(blocked));
+    }
+}
+
+// "Radius (F)###radius": the text with the keys of the action's first binding, its id the text's.
+[[nodiscard]] std::string ShortcutLabel(Text text, ActionId action) noexcept {
+    const char* keys = KeymapKeys(gAppState.keymap, action);
+    if (*keys == '\0') {
+        return TextLabel(text);
+    }
+    return std::format("{} ({})###{}", TextGet(text), keys, kTexts[std::to_underlying(text)].key);
+}
 
 [[nodiscard]] ImGuiKey ImGuiKeyOffset(ImGuiKey first, Key key, Key firstKey) noexcept {
     return static_cast<ImGuiKey>(first + (std::to_underlying(key) - std::to_underlying(firstKey)));
@@ -195,48 +250,53 @@ constexpr std::array<const char*, std::to_underlying(BlendMode::Count_)> kBlendM
 }
 
 // Whether pressure drives a property, and its value at no pressure and at full pressure, as a share of the slider's.
-void PressureEdit(const char* label, bool& enabled, float& min, float& max) noexcept {
-    ImGui::PushID(label);
+void PressureEdit(Text label, bool& enabled, float& min, float& max) noexcept {
+    ImGui::PushID(std::to_underlying(label));
     ImGui::Checkbox("##enabled", &enabled);
     ImGui::SameLine();
     ImGui::BeginDisabled(!enabled);
-    ImGui::DragFloatRange2(label, &min, &max, 0.005f, 0.0f, 1.0f, "Min %.2f", "Max %.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::DragFloatRange2(TextLabel(label), &min, &max, 0.005f, 0.0f, 1.0f, TextGet(Text::PressureMin),
+                           TextGet(Text::PressureMax), ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
     ImGui::PopID();
 }
 
 void BrushEdit(BrushState& brush) noexcept {
     ZoneScopedN("BrushEdit");
-    ImGui::SliderFloat("Radius (F)", &brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.1f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Hardness (Ctrl+F)", &brush.hardness, 0.0f, 1.0f);
-    ImGui::SliderFloat("Flow", &brush.flow, 0.0f, 1.0f);
-    ImGui::SliderFloat("Opacity (Shift+F)", &brush.opacity, 0.0f, 1.0f);
-    ImGui::SliderFloat("Spacing", &brush.spacing, 0.01f, 1.0f);
-    PressureEdit("Pressure radius", brush.pressureRadius, brush.pressureRadiusMin, brush.pressureRadiusMax);
-    PressureEdit("Pressure hardness", brush.pressureHardness, brush.pressureHardnessMin, brush.pressureHardnessMax);
-    PressureEdit("Pressure flow", brush.pressureFlow, brush.pressureFlowMin, brush.pressureFlowMax);
-    PressureEdit("Pressure opacity", brush.pressureOpacity, brush.pressureOpacityMin, brush.pressureOpacityMax);
+    ImGui::SliderFloat(ShortcutLabel(Text::Radius, ActionId::BrushRadius).c_str(), &brush.radius, kBrushRadiusMin,
+                       kBrushRadiusMax, "%.1f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat(ShortcutLabel(Text::Hardness, ActionId::BrushHardness).c_str(), &brush.hardness, 0.0f, 1.0f);
+    ImGui::SliderFloat(TextLabel(Text::Flow), &brush.flow, 0.0f, 1.0f);
+    ImGui::SliderFloat(ShortcutLabel(Text::Opacity, ActionId::BrushOpacity).c_str(), &brush.opacity, 0.0f, 1.0f);
+    ImGui::SliderFloat(TextLabel(Text::Spacing), &brush.spacing, 0.01f, 1.0f);
+    PressureEdit(Text::PressureRadius, brush.pressureRadius, brush.pressureRadiusMin, brush.pressureRadiusMax);
+    PressureEdit(Text::PressureHardness, brush.pressureHardness, brush.pressureHardnessMin, brush.pressureHardnessMax);
+    PressureEdit(Text::PressureFlow, brush.pressureFlow, brush.pressureFlowMin, brush.pressureFlowMax);
+    PressureEdit(Text::PressureOpacity, brush.pressureOpacity, brush.pressureOpacityMin, brush.pressureOpacityMax);
 }
 
 void ToolWindow(Window window, ToolsState& tools) noexcept {
     ZoneScopedN("ToolWindow");
-    if (ImGui::Begin("Tool", &gUiState.toolShown[window])) {
+    if (ImGui::Begin(TextLabel(Text::Tool), &gUiState.toolShown[window])) {
         int tool = std::to_underlying(tools.tool);
-        ImGui::RadioButton("Paint (B)", &tool, std::to_underlying(Tool::Paint));
+        ImGui::RadioButton(ShortcutLabel(Text::Paint, ActionId::ToolPaint).c_str(), &tool,
+                           std::to_underlying(Tool::Paint));
         ImGui::SameLine();
-        ImGui::RadioButton("Erase (E)", &tool, std::to_underlying(Tool::Erase));
+        ImGui::RadioButton(ShortcutLabel(Text::Erase, ActionId::ToolErase).c_str(), &tool,
+                           std::to_underlying(Tool::Erase));
         tools.tool = static_cast<Tool>(tool);
         ImGui::Separator();
         if (tools.tool == Tool::Paint) {
-            ImGui::ColorEdit4("Color", &tools.paint.color.r);
+            ImGui::ColorEdit4(TextLabel(Text::Color), &tools.paint.color.r);
             int blendMode = std::to_underlying(tools.paint.blendMode);
-            if (ImGui::Combo("Blend", &blendMode, kBlendModeNames.data(), static_cast<int>(kBlendModeNames.size()))) {
+            const auto blendModeNames = TextsGet(kBlendModeTexts);
+            if (ImGui::Combo(TextLabel(Text::Blend), &blendMode, blendModeNames.data(),
+                             static_cast<int>(blendModeNames.size()))) {
                 tools.paint.blendMode = static_cast<BlendMode>(blendMode);
             }
             BrushEdit(tools.paint.brush);
         } else {
-            ImGui::ColorEdit4("Removes", &tools.erase.color.r);
+            ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.erase.color.r);
             BrushEdit(tools.erase.brush);
         }
     }
@@ -316,7 +376,7 @@ void ViewInfoOverlay(const WindowState& windowState, const Viewport& viewport, c
         const LayerState& layer = canvas.layers[active];
         const std::size_t selected = LayersSelected(canvas).size();
         const char* name = canvas.layerNames[active].data();
-        const char* blendMode = kBlendModeNames[std::to_underlying(layer.blendMode)];
+        const char* blendMode = TextGet(kBlendModeTexts[std::to_underlying(layer.blendMode)]);
         const float opacity = layer.opacity * 100.0f;
         if (selected > 1) {
             std::format_to_n(layerText.data(), layerText.size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1,
@@ -377,7 +437,8 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
         drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text);
         drawList->AddText(pos, IM_COL32_WHITE, text);
     };
-    constexpr std::array kNames = {"", "Radius", "Opacity", "Hardness", "Layer opacity"};
+    constexpr std::array kNames = {Text::AdjustRadius, Text::AdjustRadius, Text::AdjustOpacity, Text::AdjustHardness,
+                                   Text::AdjustLayerOpacity};
     std::array<char, 16> text{};
     // A radius is whole from 1 up, see BrushAdjustApply.
     int decimals = 3;
@@ -387,7 +448,7 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     std::format_to_n(text.data(), text.size() - 1, "{:.{}f}", value, decimals);
     // The value at the center, the property it belongs to right above.
     const float lineHeight = ImGui::GetTextLineHeight();
-    label(kNames[std::to_underlying(adjust.mode)], center.x, center.y - (lineHeight * 1.5f));
+    label(TextGet(kNames[std::to_underlying(adjust.mode)]), center.x, center.y - (lineHeight * 1.5f));
     label(text.data(), center.x, center.y - (lineHeight * 0.5f));
 }
 
@@ -396,7 +457,7 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
 void TileAtlasWindow(Window window) noexcept {
     ZoneScopedN("TileAtlasWindow");
     ImGui::SetNextWindowSize(ImVec2(400.0f, 450.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Tile atlas", &gUiState.tileAtlasShown[window])) {
+    if (!ImGui::Begin(TextLabel(Text::TileAtlas), &gUiState.tileAtlasShown[window])) {
         ImGui::End();
         return;
     }
@@ -415,7 +476,7 @@ void TileAtlasWindow(Window window) noexcept {
     ImGui::Text("%d uploads, %d downloads in flight of %d", busy(gAppState.transfers.uploads),
                 busy(gAppState.transfers.downloads), static_cast<int>(kTileTransferSlots));
     int& atlas = gUiState.tileAtlasIndex[window];
-    ImGui::SliderInt("Atlas", &atlas, 0, atlasCount - 1, "%d", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderInt("Atlas###atlas", &atlas, 0, atlasCount - 1, "%d", ImGuiSliderFlags_AlwaysClamp);
     atlas = std::clamp(atlas, 0, atlasCount - 1);
 
     const std::uint64_t texture = GraphicsTileAtlasDebugTexture(static_cast<TileAtlas>(atlas));
@@ -497,13 +558,13 @@ void LayerSelectionApply(CanvasState& canvas, std::span<const Layer> rows, const
 void LayersWindow(Window window) noexcept {
     ZoneScopedN("LayersWindow");
     ImGui::SetNextWindowSize(ImVec2(300.0f, 420.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Layers", &gUiState.layersShown[window])) {
+    if (!ImGui::Begin(TextLabel(Text::Layers), &gUiState.layersShown[window])) {
         ImGui::End();
         return;
     }
     const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
     if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
-        ImGui::TextUnformatted("No canvas");
+        ImGui::TextUnformatted(TextGet(Text::NoCanvas));
         ImGui::End();
         return;
     }
@@ -518,7 +579,8 @@ void LayersWindow(Window window) noexcept {
         const LayerProperties shown = LayerPropertiesGet(canvas, active);
         int blendMode = std::to_underlying(shown.blendMode);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
-        if (ImGui::Combo("##blend", &blendMode, kBlendModeNames.data(), static_cast<int>(kBlendModeNames.size()))) {
+        const auto blendModeNames = TextsGet(kBlendModeTexts);
+        if (ImGui::Combo("##blend", &blendMode, blendModeNames.data(), static_cast<int>(blendModeNames.size()))) {
             AppLayerBlendMode(window, static_cast<BlendMode>(blendMode));
         }
         ImGui::SameLine();
@@ -554,7 +616,7 @@ void LayersWindow(Window window) noexcept {
     }
 
     if (canvas.merge.result != kLayerInvalid) {
-        ImGui::Text("Merging, %d tiles left",
+        ImGui::Text(TextGet(Text::Merging),
                     static_cast<int>(canvas.merge.remaining.size() + canvas.merge.queued.size()));
     }
 
@@ -674,27 +736,27 @@ void LayersWindow(Window window) noexcept {
         }
     }
 
-    if (ImGui::Button("+ Layer")) {
+    if (ImGui::Button(TextLabel(Text::LayerNew))) {
         AppLayerNew(window, false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("+ Folder")) {
+    if (ImGui::Button(TextLabel(Text::FolderNew))) {
         AppLayerNew(window, true);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Delete")) {
+    if (ImGui::Button(TextLabel(Text::LayerDelete))) {
         AppLayerDelete(window);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Up")) {
+    if (ImGui::Button(TextLabel(Text::LayerUp))) {
         AppLayerMove(window, true);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Down")) {
+    if (ImGui::Button(TextLabel(Text::LayerDown))) {
         AppLayerMove(window, false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Merge")) {
+    if (ImGui::Button(TextLabel(Text::LayerMerge))) {
         AppLayerMerge(window);
     }
     ImGui::End();
@@ -704,134 +766,322 @@ void LayersWindow(Window window) noexcept {
 void SettingsWindow(Window window) noexcept {
     ZoneScopedN("SettingsWindow");
     ImGui::SetNextWindowSize(ImVec2(360.0f, 200.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Settings", &gUiState.settingsShown[window])) {
+    if (!ImGui::Begin(TextLabel(Text::Settings), &gUiState.settingsShown[window])) {
         ImGui::End();
         return;
     }
-    ImGui::SeparatorText("Display");
-    constexpr std::array<const char*, std::to_underlying(CanvasFilter::Count_)> kFilterNames = {
-        "Nearest", "Bilinear", "Bicubic (Catmull-Rom)", "Mitchell", "Lanczos 2", "Lanczos 3",
-    };
-    int filter = std::to_underlying(gAppState.canvasFilter);
-    if (ImGui::Combo("Canvas filter", &filter, kFilterNames.data(), static_cast<int>(kFilterNames.size()))) {
-        gAppState.canvasFilter = static_cast<CanvasFilter>(filter);
+    ImGui::SeparatorText(TextGet(Text::SettingsDisplay));
+    const char* shown = TextGet(Text::LanguageSystem);
+    for (const LanguageInfo& language : kLanguages) {
+        if (gAppState.language == language.code) {
+            shown = language.name;
+        }
     }
-    ImGui::SetItemTooltip("How the canvas is drawn between its pixels: wider filters stay sharp when rotated or zoomed "
-                          "between steps, Nearest keeps hard pixels.");
+    if (ImGui::BeginCombo(TextLabel(Text::Language), shown)) {
+        if (ImGui::Selectable(TextGet(Text::LanguageSystem), gAppState.language.empty())) {
+            ActionRequestPush(window, ActionId::SettingsLanguage, 0);
+        }
+        for (std::size_t i = 0; i < kLanguages.size(); ++i) {
+            if (ImGui::Selectable(kLanguages[i].name, gAppState.language == kLanguages[i].code)) {
+                ActionRequestPush(window, ActionId::SettingsLanguage, static_cast<std::uint32_t>(i + 1));
+            }
+        }
+        ImGui::EndCombo();
+    }
+    const auto filterNames = TextsGet(kFilterTexts);
+    int filter = std::to_underlying(gAppState.canvasFilter);
+    if (ImGui::Combo(TextLabel(Text::CanvasFilter), &filter, filterNames.data(),
+                     static_cast<int>(filterNames.size()))) {
+        ActionRequestPush(window, ActionId::SettingsCanvasFilter, static_cast<std::uint32_t>(filter));
+    }
+    ImGui::SetItemTooltip("%s", TextGet(Text::CanvasFilterTip));
     ImGui::End();
 }
 
 struct HelpEntry {
-    const char* keys;
-    const char* action;
+    Text keys;
+    Text action;
 };
 
-constexpr std::array kHelpPaint = {
-    HelpEntry{.keys = "Left drag", .action = "Paint with the brush"},
-    HelpEntry{.keys = "E", .action = "Switch to the eraser"},
-};
-constexpr std::array kHelpErase = {
-    HelpEntry{.keys = "Left drag", .action = "Erase with the brush; its color picks the channels removed"},
-    HelpEntry{.keys = "B", .action = "Switch to the paint brush"},
-};
-constexpr std::array kHelpLayers = {
-    HelpEntry{.keys = "Ctrl+Shift+N", .action = "New layer above the active one"},
-    HelpEntry{.keys = "Ctrl+G", .action = "New folder above the active layer"},
-    HelpEntry{.keys = "Ctrl+E", .action = "Merge the active layer down, or a folder into one layer"},
-    HelpEntry{.keys = "Page Up, Page Down", .action = "Select the layer above, below"},
-    HelpEntry{.keys = "Ctrl+Page Up, Ctrl+Page Down", .action = "Move the active layer up, down"},
-    HelpEntry{.keys = "Ctrl+,", .action = "Hide or show the selected layers"},
-    HelpEntry{.keys = "Alt+Page Up, Alt+Page Down", .action = "Next, previous blend mode"},
-    HelpEntry{.keys = "O", .action = "Change the active layer's opacity, like Shift+F"},
-};
-constexpr std::array kHelpBrush = {
-    HelpEntry{.keys = "F", .action = "Change the brush radius"},
-    HelpEntry{.keys = "Shift+F", .action = "Change the brush opacity"},
-    HelpEntry{.keys = "Ctrl+F", .action = "Change the brush hardness"},
-    HelpEntry{.keys = "Space", .action = "Hold to move the view"},
-    HelpEntry{.keys = "Space+R", .action = "Reset zoom and rotation"},
-    HelpEntry{.keys = "Space+Z", .action = "Back to the previous view"},
-    HelpEntry{.keys = "Ctrl+Z", .action = "Undo the last stroke"},
-    HelpEntry{.keys = "Ctrl+Shift+Z, Ctrl+Y", .action = "Redo"},
-};
-constexpr std::array kHelpStroke = {
-    HelpEntry{.keys = "Release", .action = "Finish the stroke"},
-    HelpEntry{.keys = "Ctrl+Z", .action = "Undo it once finished"},
-};
+constexpr std::array kHelpPaint = {HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePaint}};
+constexpr std::array kHelpErase = {HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureErase}};
+constexpr std::array kHelpStroke = {HelpEntry{.keys = Text::GestureRelease, .action = Text::GestureFinishStroke}};
 constexpr std::array kHelpNavigate = {
-    HelpEntry{.keys = "Space + drag", .action = "Pan"},
-    HelpEntry{.keys = "Ctrl+Space + drag", .action = "Zoom, right or up zooms in"},
-    HelpEntry{.keys = "Shift+Space + drag", .action = "Rotate around the center"},
-    HelpEntry{.keys = "Alt", .action = "Snap the zoom to texel-friendly steps, the rotation to 15 degrees"},
-    HelpEntry{.keys = "Space+R", .action = "Reset zoom and rotation"},
-    HelpEntry{.keys = "Space+F", .action = "Flip the view horizontally"},
-    HelpEntry{.keys = "Space+Shift+F", .action = "Flip the view vertically"},
-    HelpEntry{.keys = "Space+Z", .action = "Back to the previous view"},
-    HelpEntry{.keys = "Space+Shift+Z", .action = "Forward to the next view"},
+    HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePan},
+    HelpEntry{.keys = Text::GestureCtrlDrag, .action = Text::GestureZoom},
+    HelpEntry{.keys = Text::GestureShiftDrag, .action = Text::GestureRotate},
+    HelpEntry{.keys = Text::GestureAlt, .action = Text::GestureSnapView},
 };
 constexpr std::array kHelpAdjust = {
-    HelpEntry{.keys = "Move", .action = "Away from the center raises the value, toward it lowers it"},
-    HelpEntry{.keys = "Shift", .action = "Change it 10 times slower"},
-    HelpEntry{.keys = "Alt", .action = "Snap it to powers of two, a layer opacity to multiples of 5%"},
-    HelpEntry{.keys = "Left click, Enter", .action = "Keep the value"},
-    HelpEntry{.keys = "Right click, Escape", .action = "Restore the previous value"},
-};
-constexpr std::array kHelpGeneral = {
-    HelpEntry{.keys = "Tab", .action = "Hide or show the UI"},
-    HelpEntry{.keys = "F11", .action = "Toggle fullscreen"},
-    HelpEntry{.keys = "Ctrl+N", .action = "New canvas"},
-    HelpEntry{.keys = "Ctrl+O", .action = "Open a canvas"},
-    HelpEntry{.keys = "Ctrl+S", .action = "Save"},
-    HelpEntry{.keys = "Ctrl+Shift+S", .action = "Save as"},
-    HelpEntry{.keys = "Ctrl+Q", .action = "Quit, closing every window"},
+    HelpEntry{.keys = Text::GestureMove, .action = Text::GestureAdjustMove},
+    HelpEntry{.keys = Text::GestureShift, .action = Text::GestureSlower},
+    HelpEntry{.keys = Text::GestureAlt, .action = Text::GestureSnapValue},
+    HelpEntry{.keys = Text::GestureKeep, .action = Text::GestureKeepValue},
+    HelpEntry{.keys = Text::GestureCancel, .action = Text::GestureRestore},
 };
 
-void HelpTable(const char* id, std::span<const HelpEntry> entries) noexcept {
+enum struct HelpBindings : std::uint8_t {
+    None,
+    All,
+    Layers, // layer.*
+    NotLayers,
+};
+
+// The gestures, then the bindings of `context` that `which` picks, as the keymap has them.
+void HelpTable(const char* id, std::span<const HelpEntry> gestures, ActionContext context,
+               HelpBindings which) noexcept {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
         return;
     }
-    for (const HelpEntry& entry : entries) {
+    const auto row = [](const char* keys, const char* action) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(entry.keys);
+        ImGui::TextUnformatted(keys);
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(entry.action);
+        ImGui::TextUnformatted(action);
+    };
+    for (const HelpEntry& entry : gestures) {
+        row(TextGet(entry.keys), TextGet(entry.action));
+    }
+    const KeymapState& keymap = gAppState.keymap;
+    for (std::size_t i = 0; i < keymap.bindings.size() && which != HelpBindings::None; ++i) {
+        const KeyBinding& binding = keymap.bindings[i];
+        const ActionInfo& info = kActions[std::to_underlying(binding.action)];
+        const bool layer = std::string_view(info.name).starts_with("layer.");
+        if (binding.context != context || (which == HelpBindings::Layers && !layer)
+            || (which == HelpBindings::NotLayers && layer)) {
+            continue;
+        }
+        if (info.argName) {
+            row(keymap.keys[i].c_str(), std::format("{} {}", TextAction(binding.action), binding.arg).c_str());
+        } else {
+            row(keymap.keys[i].c_str(), TextAction(binding.action));
+        }
     }
     ImGui::EndTable();
 }
 
 // Tips for what the user is doing right now: adjusting the brush, navigating, stroking, or else the current tool. The
-// shortcuts that work everywhere follow, folded.
+// bindings that work everywhere and the layer ones follow, folded.
 void HelpWindow(Window window, const ToolsState& tools) noexcept {
     ZoneScopedN("HelpWindow");
     ImGui::SetNextWindowSize(ImVec2(420.0f, 360.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Help", &gUiState.helpShown[window])) {
+    if (!ImGui::Begin(TextLabel(Text::Help), &gUiState.helpShown[window])) {
         ImGui::End();
         return;
     }
     const AppState& app = gAppState;
-    constexpr std::array kAdjustNames = {"", "brush radius", "brush opacity", "brush hardness", "layer opacity"};
+    constexpr std::array kAdjustTexts = {Text::HelpAdjustRadius, Text::HelpAdjustRadius, Text::HelpAdjustOpacity,
+                                         Text::HelpAdjustHardness, Text::HelpAdjustLayerOpacity};
     if (app.brushAdjust.mode != BrushAdjustMode::None) {
-        ImGui::Text("Adjusting the %s", kAdjustNames[std::to_underlying(app.brushAdjust.mode)]);
-        HelpTable("adjust", kHelpAdjust);
+        ImGui::TextUnformatted(TextGet(kAdjustTexts[std::to_underlying(app.brushAdjust.mode)]));
+        HelpTable("adjust", kHelpAdjust, ActionContext::Global, HelpBindings::None);
     } else if (app.spaceDown || app.navigate.mode != NavigateMode::None) {
-        ImGui::TextUnformatted("Moving the view");
-        HelpTable("navigate", kHelpNavigate);
+        ImGui::TextUnformatted(TextGet(Text::HelpNavigating));
+        HelpTable("navigate", kHelpNavigate, ActionContext::Navigate, HelpBindings::All);
     } else if (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended) {
-        ImGui::TextUnformatted(app.stroke.mode == StrokeMode::Erase ? "Erasing" : "Painting");
-        HelpTable("stroke", kHelpStroke);
+        ImGui::TextUnformatted(TextGet(app.stroke.mode == StrokeMode::Erase ? Text::HelpErasing : Text::HelpPainting));
+        HelpTable("stroke", kHelpStroke, ActionContext::Global, HelpBindings::None);
     } else {
-        ImGui::TextUnformatted(tools.tool == Tool::Erase ? "Eraser" : "Paint brush");
-        HelpTable("tool", tools.tool == Tool::Erase ? std::span<const HelpEntry>(kHelpErase)
-                                                    : std::span<const HelpEntry>(kHelpPaint));
-        HelpTable("brush", kHelpBrush);
+        ImGui::TextUnformatted(TextGet(tools.tool == Tool::Erase ? Text::HelpEraser : Text::HelpPaintBrush));
+        HelpTable("tool",
+                  tools.tool == Tool::Erase ? std::span<const HelpEntry>(kHelpErase)
+                                            : std::span<const HelpEntry>(kHelpPaint),
+                  ActionContext::Canvas, HelpBindings::NotLayers);
     }
     ImGui::Spacing();
-    if (ImGui::CollapsingHeader("Everywhere")) {
-        HelpTable("general", kHelpGeneral);
+    if (ImGui::CollapsingHeader(TextLabel(Text::HelpGeneral))) {
+        HelpTable("general", {}, ActionContext::Global, HelpBindings::All);
     }
-    if (ImGui::CollapsingHeader("Layers")) {
-        HelpTable("layers", kHelpLayers);
+    if (ImGui::CollapsingHeader(TextLabel(Text::HelpLayers))) {
+        HelpTable("layers", {}, ActionContext::Canvas, HelpBindings::Layers);
+    }
+    ImGui::End();
+}
+
+// Every action without an argument, the brush presets, the window's canvas layers and the recent files that match
+// the query: those that would run first, then the best match, then the most recently run.
+void SearchEntriesBuild(Window window) noexcept {
+    ZoneScopedN("SearchEntriesBuild");
+    const AppState& app = gAppState;
+    const std::string_view query(gUiState.searchQuery[window].data());
+    std::vector<SearchEntry>& entries = gUiState.searchEntries[window];
+    entries.clear();
+    const auto add = [&](ActionId action, std::uint32_t arg, std::string label) {
+        const ActionInfo& info = kActions[std::to_underlying(action)];
+        // English too, so a name read in a tutorial finds it in any language.
+        const std::string haystack = std::format("{} {} {} {}", info.name, label, TextAction(action), info.description);
+        const float score = FuzzyScoreTerms(query, haystack);
+        if (score != kFuzzyNone) {
+            entries.push_back(SearchEntry{.label = std::move(label),
+                                          .arg = arg,
+                                          .score = score,
+                                          .action = action,
+                                          .blocked = ActionBlocked(window, action, arg)});
+        }
+    };
+    for (std::size_t i = 0; i < kActions.size(); ++i) {
+        if (!kActions[i].argName) {
+            add(static_cast<ActionId>(i), 0, {});
+        }
+    }
+    for (std::size_t i = 0; i < app.tools.presets.size(); ++i) {
+        add(ActionId::BrushPreset, static_cast<std::uint32_t>(i + 1), app.tools.presets[i].name.data());
+    }
+    if (const auto view = std::ranges::find(app.canvasViews, window, &CanvasViewState::window);
+        view != app.canvasViews.end() && view->id != kCanvasViewInvalid) {
+        const CanvasState& canvas = app.canvases[view->canvas];
+        for (const Layer layer : canvas.layersOrder) {
+            if (!HasAnyFlag(canvas.layers[layer].flags, LayerFlags::Internal)) {
+                add(ActionId::LayerActivate, layer, canvas.layerNames[layer].data());
+            }
+        }
+    }
+    for (std::size_t i = 0; i < app.recentFiles.size(); ++i) {
+        add(ActionId::CanvasOpenRecent, static_cast<std::uint32_t>(i), PathUtf8(app.recentFiles[i].filename()));
+    }
+    add(ActionId::SettingsLanguage, 0, TextGet(Text::LanguageSystem));
+    for (std::size_t i = 0; i < kLanguages.size(); ++i) {
+        add(ActionId::SettingsLanguage, static_cast<std::uint32_t>(i + 1), kLanguages[i].name);
+    }
+    for (std::size_t i = 0; i < kFilterTexts.size(); ++i) {
+        add(ActionId::SettingsCanvasFilter, static_cast<std::uint32_t>(i), TextGet(kFilterTexts[i]));
+    }
+    const auto recency = [&](ActionId action) {
+        return std::ranges::find(app.recentActions, action) - app.recentActions.begin();
+    };
+    std::ranges::stable_sort(entries, [&](const SearchEntry& a, const SearchEntry& b) {
+        if ((a.blocked == Text::Count_) != (b.blocked == Text::Count_)) {
+            return a.blocked == Text::Count_;
+        }
+        if (a.score != b.score) {
+            return a.score > b.score;
+        }
+        return recency(a.action) < recency(b.action);
+    });
+}
+
+// F1: a query field over the matching entries, each shown as keybinds.json names it, what it does and its keys. Up and
+// Down pick, Enter or a click runs, Escape or a click elsewhere closes. An auto-sized window is hidden its first frame,
+// so the field is focused until it is active rather than only while the window appears.
+void SearchWindow(Window window) noexcept {
+    ZoneScopedN("SearchWindow");
+    constexpr int kRowsShown = 12;
+    constexpr int kEntriesMax = 100;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.12f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(std::max(io.DisplaySize.x * 0.5f, 320.0f), 0.0f), ImGuiCond_Always);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
+                                      | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+                                      | ImGuiWindowFlags_AlwaysAutoResize;
+    bool& focus = gUiState.searchFocus[window];
+    if (focus) {
+        ImGui::SetNextWindowFocus();
+    }
+    bool close = false;
+    if (ImGui::Begin("###search", nullptr, kFlags)) {
+        std::array<char, 128>& query = gUiState.searchQuery[window];
+        int& selected = gUiState.searchSelected[window];
+        if (focus) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputTextWithHint("##query", TextGet(Text::SearchHint), query.data(), query.size())) {
+            selected = 0;
+        }
+        if (ImGui::IsItemActive()) {
+            focus = false;
+        }
+        SearchEntriesBuild(window);
+        const std::vector<SearchEntry>& entries = gUiState.searchEntries[window];
+        const int count = std::min(static_cast<int>(entries.size()), kEntriesMax);
+        const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+        const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow);
+        selected = std::clamp(selected + (down ? 1 : 0) - (up ? 1 : 0), 0, std::max(count - 1, 0));
+        int run = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ? selected : -1;
+
+        const float height = ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(std::min(count, kRowsShown));
+        if (count > 0
+            && ImGui::BeginTable("results", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(0.0f, height))) {
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("description", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("keys", ImGuiTableColumnFlags_WidthFixed);
+            for (int i = 0; i < count; ++i) {
+                const SearchEntry& entry = entries[static_cast<std::size_t>(i)];
+                const ActionInfo& info = kActions[std::to_underlying(entry.action)];
+                const bool blocked = entry.blocked != Text::Count_;
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::BeginDisabled(blocked);
+                ImGui::PushID(i);
+                const std::string name =
+                    info.argName ? std::format("{}({})", info.name, entry.arg) : std::string(info.name);
+                if (ImGui::Selectable(name.c_str(), i == selected, ImGuiSelectableFlags_SpanAllColumns)) {
+                    run = i;
+                }
+                if (i == selected && (down || up)) {
+                    ImGui::SetScrollHereY();
+                }
+                ImGui::PopID();
+                ImGui::TableNextColumn();
+                const char* description = blocked ? TextGet(entry.blocked) : TextAction(entry.action);
+                if (entry.label.empty()) {
+                    ImGui::TextUnformatted(description);
+                } else {
+                    ImGui::Text("%s  %s", entry.label.c_str(), description);
+                }
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", BindingKeys(entry.action, entry.arg));
+                ImGui::EndDisabled();
+            }
+            ImGui::EndTable();
+        }
+        if (run >= 0 && run < count && entries[static_cast<std::size_t>(run)].blocked == Text::Count_) {
+            const SearchEntry& entry = entries[static_cast<std::size_t>(run)];
+            ActionRequestPush(window, entry.action, entry.arg);
+            close = true;
+        }
+        close = close || ImGui::IsKeyPressed(ImGuiKey_Escape)
+             || (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                 && !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows));
+    }
+    ImGui::End();
+    if (close) {
+        gUiState.searchShown[window] = false;
+    }
+}
+
+// While a key sequence waits for its next chord, in the bottom left corner: the bindings it may still become.
+void WhichKeyOverlay(const WindowState& windowState) noexcept {
+    const KeymapState& keymap = gAppState.keymap;
+    if (keymap.pendingLength == 0) {
+        return;
+    }
+    const float margin = 8.0f * windowState.dpiScale;
+    ImGui::SetNextWindowPos(ImVec2(margin, ImGui::GetIO().DisplaySize.y - margin), ImGuiCond_Always,
+                            ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
+                                      | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing
+                                      | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    if (ImGui::Begin("###whichKey", nullptr, kFlags) && ImGui::BeginTable("next", 2, ImGuiTableFlags_SizingFixedFit)) {
+        for (std::size_t i = 0; i < keymap.bindings.size(); ++i) {
+            const KeyBinding& binding = keymap.bindings[i];
+            if (!KeymapContinues(keymap, binding)) {
+                continue;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(keymap.keys[i].c_str());
+            ImGui::TableNextColumn();
+            if (kActions[std::to_underlying(binding.action)].argName) {
+                ImGui::Text("%s %u", TextAction(binding.action), binding.arg);
+            } else {
+                ImGui::TextUnformatted(TextAction(binding.action));
+            }
+        }
+        ImGui::EndTable();
     }
     ImGui::End();
 }
@@ -842,11 +1092,60 @@ void ApplyDpiScale(float dpiScale) noexcept {
     ImGuiStyle style{};
     ImGui::StyleColorsDark(&style);
     style.ScaleAllSizes(dpiScale);
+    style.FontSizeBase = kFontSize;
     style.FontScaleDpi = dpiScale;
     ImGui::GetStyle() = style;
 }
 
+[[nodiscard]] std::vector<std::byte> FontRead(FontScript script) noexcept {
+    const auto path = PlatformFontPath(script);
+    if (!path) {
+        return {};
+    }
+    std::ifstream file(*path, std::ios::binary | std::ios::ate);
+    const std::streamoff size = file ? static_cast<std::streamoff>(file.tellg()) : -1;
+    if (size <= 0) {
+        MIDORI_LOG_WARN("font {} not read", PathUtf8(*path));
+        return {};
+    }
+    std::vector<std::byte> data(static_cast<std::size_t>(size));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size))) {
+        MIDORI_LOG_WARN("font {} not read", PathUtf8(*path));
+        return {};
+    }
+    return data;
+}
+
+void FontsAdd(ImFontAtlas& atlas) noexcept {
+    ImFontConfig config;
+    config.FontDataOwnedByAtlas = false;
+    if (gUiState.fontLatin.empty()) {
+        atlas.AddFontDefault();
+    } else {
+        atlas.AddFontFromMemoryTTF(gUiState.fontLatin.data(), static_cast<int>(gUiState.fontLatin.size()), 0.0f,
+                                   &config);
+    }
+    if (!gUiState.fontJapanese.empty()) {
+        config.MergeMode = true;
+        atlas.AddFontFromMemoryTTF(gUiState.fontJapanese.data(), static_cast<int>(gUiState.fontJapanese.size()), 0.0f,
+                                   &config);
+    }
+}
+
 } // namespace
+
+void UiFontsLoad() noexcept {
+    ZoneScopedN("UiFontsLoad");
+    gUiState.fontLatin = FontRead(FontScript::Latin);
+    gUiState.fontJapanese = FontRead(FontScript::Japanese);
+    if (gUiState.fontLatin.empty()) {
+        MIDORI_LOG_WARN("no UI font installed, Dear ImGui's used");
+    }
+    if (gUiState.fontJapanese.empty()) {
+        MIDORI_LOG_WARN("no Japanese font installed, kana and kanji not shown");
+    }
+}
 
 Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     ZoneScopedN("UiWindowInit");
@@ -874,6 +1173,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     // No keyboard navigation: Space would press the focused widget instead of navigating the canvas.
     // imgui.cpp's default Win32 IME handler places the candidate window over this handle.
     ImGui::GetMainViewport()->PlatformHandleRaw = *hwnd;
+    FontsAdd(*io.Fonts);
     ApplyDpiScale(state->dpiScale);
 
     gUiState.contexts[window] = context;
@@ -991,12 +1291,12 @@ std::optional<WindowCursor> UiCursor(Window window) noexcept {
     }
 }
 
-UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept {
+void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept {
     ZoneScopedN("UiWindowFrame");
     MIDORI_ASSERT(window < kWindowMax && gUiState.contexts[window], "UiWindowFrame: no context for window {}", window);
     const auto state = WindowGetState(window);
     if (!state) {
-        return UiCommand::None;
+        return;
     }
     ImGui::SetCurrentContext(gUiState.contexts[window]);
     ImGuiIO& io = ImGui::GetIO();
@@ -1016,104 +1316,89 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
         viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid) {
         ViewInfoOverlay(*state, *viewport, gAppState.canvases[view->canvas]);
     }
+    WhichKeyOverlay(*state);
+    if (gUiState.searchShown[window]) {
+        SearchWindow(window);
+    }
     if (gUiState.hidden[window]) {
         BrushAdjustOverlay(window, *state, tools);
         ImGui::Render();
-        return UiCommand::None;
+        return;
     }
-    UiCommand command = UiCommand::None;
     if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New", "Ctrl+N")) {
-                command = UiCommand::CanvasNew;
-            }
-            if (ImGui::MenuItem("Open...", "Ctrl+O")) {
-                command = UiCommand::CanvasOpen;
-            }
+        if (ImGui::BeginMenu(TextLabel(Text::File))) {
+            MenuAction(window, Text::New, ActionId::CanvasNew);
+            MenuAction(window, Text::Open, ActionId::CanvasOpen);
             ImGui::Separator();
-            if (ImGui::MenuItem("Save", "Ctrl+S", false, viewport != nullptr)) {
-                command = UiCommand::CanvasSave;
-            }
-            if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, viewport != nullptr)) {
-                command = UiCommand::CanvasSaveAs;
-            }
+            MenuAction(window, Text::Save, ActionId::CanvasSave);
+            MenuAction(window, Text::SaveAs, ActionId::CanvasSaveAs);
             // The file name, its folder on the right.
-            std::vector<std::filesystem::path>& recent = gAppState.recentFiles;
-            if (ImGui::BeginMenu("Open Recent", !recent.empty())) {
+            const std::vector<std::filesystem::path>& recent = gAppState.recentFiles;
+            if (ImGui::BeginMenu(TextLabel(Text::OpenRecent), !recent.empty())) {
                 for (std::size_t i = 0; i < recent.size(); ++i) {
                     ImGui::PushID(static_cast<int>(i));
                     if (ImGui::MenuItem(PathUtf8(recent[i].filename()).c_str(),
                                         PathUtf8(recent[i].parent_path()).c_str())) {
-                        command = UiCommand::CanvasOpenRecent;
-                        gAppState.commandRecent = static_cast<std::uint8_t>(i);
+                        ActionRequestPush(window, ActionId::CanvasOpenRecent, static_cast<std::uint32_t>(i));
                     }
                     ImGui::PopID();
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Clear")) {
-                    recent.clear();
-                }
+                MenuAction(window, Text::RecentClear, ActionId::CanvasRecentClear);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Exit", "Ctrl+Q")) {
-                command = UiCommand::Exit;
-            }
+            MenuAction(window, Text::Exit, ActionId::AppQuit);
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, viewport != nullptr)) {
-                command = UiCommand::Undo;
-            }
-            if (ImGui::MenuItem("Redo", "Ctrl+Shift+Z", false, viewport != nullptr)) {
-                command = UiCommand::Redo;
-            }
+        if (ImGui::BeginMenu(TextLabel(Text::Edit))) {
+            MenuAction(window, Text::Undo, ActionId::HistoryUndo);
+            MenuAction(window, Text::Redo, ActionId::HistoryRedo);
             ImGui::Separator();
-            ImGui::MenuItem("Settings...", nullptr, &gUiState.settingsShown[window]);
+            MenuAction(window, Text::SettingsMenu, ActionId::PanelSettings, gUiState.settingsShown[window]);
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Window")) {
-            if (ImGui::MenuItem("Fullscreen", "F11", state->displayMode == WindowDisplayMode::Fullscreened)) {
-                command = UiCommand::ToggleFullscreen;
-            }
-            ImGui::MenuItem("Hide UI", "Tab", &gUiState.hidden[window]);
+        if (ImGui::BeginMenu(TextLabel(Text::WindowMenu))) {
+            MenuAction(window, Text::Fullscreen, ActionId::WindowFullscreen,
+                       state->displayMode == WindowDisplayMode::Fullscreened);
+            MenuAction(window, Text::HideUi, ActionId::UiToggle, gUiState.hidden[window]);
             ImGui::Separator();
-            ImGui::MenuItem("View", nullptr, &gUiState.viewShown[window]);
-            ImGui::MenuItem("Tool", nullptr, &gUiState.toolShown[window]);
-            ImGui::MenuItem("Layers", nullptr, &gUiState.layersShown[window]);
-            ImGui::MenuItem("Help", nullptr, &gUiState.helpShown[window]);
+            MenuAction(window, Text::View, ActionId::PanelView, gUiState.viewShown[window]);
+            MenuAction(window, Text::Tool, ActionId::PanelTool, gUiState.toolShown[window]);
+            MenuAction(window, Text::Layers, ActionId::PanelLayers, gUiState.layersShown[window]);
+            MenuAction(window, Text::Help, ActionId::PanelHelp, gUiState.helpShown[window]);
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Debug")) {
-            ImGui::MenuItem("Tile atlas", nullptr, &gUiState.tileAtlasShown[window]);
-            ImGui::MenuItem("Tile cells on canvas", nullptr, &gUiState.tileCellsShown[window]);
+        if (ImGui::BeginMenu(TextLabel(Text::Debug))) {
+            MenuAction(window, Text::TileAtlas, ActionId::DebugTileAtlas, gUiState.tileAtlasShown[window]);
+            MenuAction(window, Text::TileCells, ActionId::DebugTileCells, gUiState.tileCellsShown[window]);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
     }
     if (viewport && gUiState.viewShown[window]) {
-        if (ImGui::Begin("View", &gUiState.viewShown[window])) {
-            ImGui::Text("Zoom %.1f%%  Rotation %.1f deg", std::abs(viewport->zoomX) * 100.0f,
+        if (ImGui::Begin(TextLabel(Text::View), &gUiState.viewShown[window])) {
+            ImGui::Text(TextGet(Text::ViewZoom), std::abs(viewport->zoomX) * 100.0f,
                         viewport->rot * 180.0f / std::numbers::pi_v<float>);
             // The pointer in canvas units, as painting places it.
             const float centerX = std::floor(static_cast<float>(state->width) * 0.5f);
             const float centerY = std::floor(static_cast<float>(state->height) * 0.5f);
             const Viewport under = ViewportMove(*viewport, -(gAppState.pointerX - centerX) / state->dpiScale,
                                                 -(gAppState.pointerY - centerY) / state->dpiScale);
-            ImGui::Text("Center %.1f, %.1f", viewport->posX, viewport->posY);
-            ImGui::Text("Pointer %.1f, %.1f", under.posX, under.posY);
-            if (ImGui::Button("Flip X (Space+F)")) {
+            ImGui::Text(TextGet(Text::ViewCenter), viewport->posX, viewport->posY);
+            ImGui::Text(TextGet(Text::ViewPointer), under.posX, under.posY);
+            if (ImGui::Button(ShortcutLabel(Text::FlipX, ActionId::ViewFlipHorizontal).c_str())) {
                 *viewport = ViewportZoom(*viewport, -1.0f, 1.0f);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Flip Y (Space+Shift+F)")) {
+            if (ImGui::Button(ShortcutLabel(Text::FlipY, ActionId::ViewFlipVertical).c_str())) {
                 *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset (Space+R)")) {
+            if (ImGui::Button(ShortcutLabel(Text::Reset, ActionId::ViewReset).c_str())) {
                 *viewport = ViewportSnap(ViewportResetZoomRotation(*viewport), state->dpiScale);
             }
-            ImGui::ColorEdit4("Background", &backgroundColor->r);
+            ImGui::ColorEdit4(TextLabel(Text::Background), &backgroundColor->r);
         }
         ImGui::End();
     }
@@ -1147,7 +1432,6 @@ UiCommand UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgrou
         preferences.imguiSettings = ImGui::SaveIniSettingsToMemory();
         io.WantSaveIniSettings = false;
     }
-    return command;
 }
 
 } // namespace Midori

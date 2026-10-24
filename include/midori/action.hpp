@@ -1,9 +1,12 @@
 #pragma once
 
+#include "midori/base.hpp"
 #include "midori/input.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -44,6 +47,18 @@ enum struct ActionId : std::uint8_t {
     ViewFlipVertical,
     ViewBack,
     ViewForward,
+    LayerActivate,
+    CanvasOpenRecent,
+    CanvasRecentClear,
+    PanelSettings,
+    PanelView,
+    PanelTool,
+    PanelLayers,
+    PanelHelp,
+    DebugTileAtlas,
+    DebugTileCells,
+    SettingsLanguage,
+    SettingsCanvasFilter,
     Count_,
 };
 
@@ -98,13 +113,35 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "view.flipVertical", .description = "Flip the view vertically"},
     {.name = "view.back", .description = "Back to the previous view", .kind = ActionKind::Repeat},
     {.name = "view.forward", .description = "Forward to the next view", .kind = ActionKind::Repeat},
+    {.name = "layer.activate", .description = "Make a layer the active one", .argName = "id"},
+    {.name = "canvas.openRecent", .description = "Open a recent file", .argName = "index"},
+    {.name = "canvas.recentClear", .description = "Forget the recent files"},
+    {.name = "panel.settings", .description = "Show or hide the settings"},
+    {.name = "panel.view", .description = "Show or hide the view panel"},
+    {.name = "panel.tool", .description = "Show or hide the tool panel"},
+    {.name = "panel.layers", .description = "Show or hide the layers panel"},
+    {.name = "panel.help", .description = "Show or hide the help"},
+    {.name = "debug.tileAtlas", .description = "Show or hide the tile atlas"},
+    {.name = "debug.tileCells", .description = "Show or hide the tile cells on the canvas"},
+    {.name = "settings.language", .description = "Change the language, 0 follows the system", .argName = "index"},
+    {.name = "settings.canvasFilter",
+     .description = "Change how the canvas is drawn between its pixels",
+     .argName = "filter"},
 }};
 
-// Where a binding applies; the most specific active context wins.
+// Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
+// the innermost binding wins. Written in keybinds.json as kContextNames.
 enum struct ActionContext : std::uint8_t {
     Global,
     Canvas,   // a canvas view has the keyboard
     Navigate, // view.navigate is held
+    Count_,
+};
+
+constexpr std::array<std::string_view, std::to_underlying(ActionContext::Count_)> kContextNames = {
+    "global",
+    "canvas",
+    "navigate",
 };
 
 struct KeyChord {
@@ -179,17 +216,46 @@ constexpr std::array kDefaultBindings = {
 
 struct KeymapState {
     std::vector<KeyBinding> bindings;
+    std::vector<std::string> keys; // each binding as the keyboard layout names its keys: "Maj+B, &"
     std::array<KeyChord, kKeySequenceMax> pending;
-    std::uint32_t pendingFrame; // when the last chord came, for the which-key popup delay
-    KeyMod pendingHeld;         // held since the previous chord: ignored when matching the next
-    std::uint8_t pendingLength;
+    std::int32_t holding{-1};      // the Hold binding whose last key is down
+    std::int32_t repeating{-1};    // the Repeat binding its last key repeats while down
+    std::uint8_t pendingLength{};
 };
 
-struct SearchEntry {
-    std::string label; // dynamic entries only: the layer, region or file name
+// Picked in a UI frame, which runs inside the renderer's submit where no dialog can open: the next AppUpdate runs it.
+struct ActionRequest {
     std::uint32_t arg;
-    int score;
     ActionId action;
+    Window window;
 };
+
+constexpr std::size_t kRecentActionsMax = 32;
+
+// Chords split by commas, each its modifiers (Ctrl, Shift, Alt, Super) then its key, joined by +; names as kKeyNames
+// writes them, case ignored. Only the chords and length are set.
+[[nodiscard]] Result<KeyBinding> KeyBindingParse(std::string_view keys) noexcept;
+// From keybinds.json in the settings folder, written from kDefaultBindings when missing. Entries not understood, or
+// conflicting with an earlier one (the same chords, or a prefix of them, in the same context), are logged and skipped.
+// Each binding's keys are shown as the current keyboard layout names them.
+void KeymapLoad(KeymapState& keymap) noexcept;
+// The keys of the first binding of `action`, "" when it has none.
+[[nodiscard]] const char* KeymapKeys(const KeymapState& keymap, ActionId action) noexcept;
+// Adds a pressed chord to the sequence in progress, in `context` and those around it. Returns the binding it completes,
+// else -1, with `pendingLength` above 0 while a longer binding may still follow. Modifiers held since the previous
+// chord match whether a binding repeats them or not.
+[[nodiscard]] std::int32_t KeymapPress(KeymapState& keymap, KeyChord chord, ActionContext context) noexcept;
+// The binding goes on from the chords pressed so far, matched as KeymapPress matches them.
+[[nodiscard]] bool KeymapContinues(const KeymapState& keymap, const KeyBinding& binding) noexcept;
+
+constexpr float kFuzzyNone = -1e30f;
+constexpr std::size_t kFuzzyLengthMax = 256;
+
+// How well `needle` matches `haystack` in order, case ignored, kFuzzyNone when it does not: fzy's scoring
+// (github.com/jhawthorn/fzy, MIT), which favors consecutive letters and the starts of words, camelCase humps and dotted
+// names. Only the first kFuzzyLengthMax bytes of `haystack` count.
+[[nodiscard]] float FuzzyScore(std::string_view needle, std::string_view haystack) noexcept;
+// Every space-separated term of `query` must match; their scores add up.
+[[nodiscard]] float FuzzyScoreTerms(std::string_view query, std::string_view haystack) noexcept;
 
 } // namespace Midori

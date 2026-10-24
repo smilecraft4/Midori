@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 21 },
+  "cmakeMinimumRequired": { "major": 3, "minor": 26 },
   "configurePresets": [
     {
       "name": "windows",
@@ -10,7 +10,8 @@
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /D_HAS_EXCEPTIONS=0"
+        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /D_HAS_EXCEPTIONS=0",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "$<$<CONFIG:Debug>:Embedded>"
       },
       "condition": {
         "type": "equals",
@@ -34,7 +35,7 @@
       "inherits": "windows",
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "cl",
-        "CMAKE_CXX_FLAGS_DEBUG": "/Z7 /Ob0 /Od /fsanitize=address"
+        "CMAKE_CXX_FLAGS_DEBUG": "/Ob0 /Od /fsanitize=address"
       }
     }
   ],

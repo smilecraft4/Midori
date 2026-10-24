@@ -7,12 +7,14 @@
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
 #include "midori/stroke.hpp"
+#include "midori/text.hpp"
 #include "midori/tile.hpp"
 #include "midori/tool.hpp"
 #include "midori/ui.hpp"
 #include <array>
 #include <filesystem>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace Midori {
@@ -88,8 +90,10 @@ struct AppState {
     StrokeState stroke;
     ToolsState tools;
     KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
-    std::vector<ActionId> recentActions;            // the most recent first, ranks search ties
+    std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax
+    std::vector<ActionRequest> actionRequests;      // picked by the UI, run by the next AppUpdate
     std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
+    std::string language;                           // the preference, a code of kLanguages or empty for the system's
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible
@@ -98,12 +102,9 @@ struct AppState {
     float pointerX; // last pointer position, client-area physical pixels of the window it moved in
     float pointerY;
     float pointerPressure;
-    KeyMod keyMods;             // as of the last key event
-    Window commandWindow;
-    UiCommand command;          // picked during `commandWindow`'s frame, run by the next AppUpdate
-    std::uint8_t commandRecent; // CanvasOpenRecent: the index in `recentFiles`
+    KeyMod keyMods; // as of the last key event
     bool spaceDown;
-    bool modal;                 // a dialog is up: its message loop still delivers events, which are dropped
+    bool modal;     // a dialog is up: its message loop still delivers events, which are dropped
 };
 
 extern AppState gAppState;
@@ -113,7 +114,7 @@ extern AppState gAppState;
 // The renderer is about to draw this window: last chance to update what it shows. Runs inside the
 // renderer's submit, so it must not create or destroy windows.
 void AppWindowFrame(Window window) noexcept;
-// Once per main loop iteration, outside any submit: runs the UI command of the last frame.
+// Once per main loop iteration, outside any submit: runs the actions the UI picked.
 [[nodiscard]] Result<void> AppUpdate() noexcept;
 void AppTerminate() noexcept;
 
@@ -151,6 +152,10 @@ void AppLayerToggleHidden(Window window) noexcept;
 void AppLayerBlendMode(Window window, BlendMode blendMode) noexcept;
 // The blend mode after the active layer's, or before it, wrapping around.
 void AppLayerBlendModeCycle(Window window, bool next) noexcept;
+
+// Why `action` with `arg` would do nothing in `window` right now, Text::Count_ when it would run. The search and the
+// menus show it greyed out with the reason.
+[[nodiscard]] Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept;
 
 // Borderless over the window's monitor, or back to how it was.
 [[nodiscard]] Result<void> AppToggleFullscreen(Window window) noexcept;

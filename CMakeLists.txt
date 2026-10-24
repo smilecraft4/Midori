@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.26)
 
 project(Midori
     VERSION 0.1.0
@@ -70,6 +70,7 @@ add_library(qoi STATIC vendors/qoi/qoi.c)
 target_include_directories(qoi SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendors/qoi)
 
 set(MIDORI_SOURCES
+    src/action.cpp
     src/app.cpp
     src/base.cpp
     src/canvas.cpp
@@ -79,6 +80,7 @@ set(MIDORI_SOURCES
     src/layer.cpp
     src/preferences.cpp
     src/stroke.cpp
+    src/text.cpp
     src/tile.cpp
     src/ui.cpp
     src/viewport.cpp
@@ -143,7 +145,7 @@ target_include_directories(midori PRIVATE
 
 target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
 target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
-# Preferences are JSON; only preferences.cpp includes it. Exceptions are off: it aborts where it would throw.
+# Preferences and translations are JSON. Exceptions are off: it aborts where it would throw.
 target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/json)
 target_compile_definitions(midori PRIVATE JSON_NOEXCEPTION)
 
@@ -178,3 +180,8 @@ target_precompile_headers(midori PRIVATE
 target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32 ole32)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})
+
+# Translations are read from lang/ next to the exe.
+add_custom_command(TARGET midori POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/lang $<TARGET_FILE_DIR:midori>/lang
+)

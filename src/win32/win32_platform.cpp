@@ -20,7 +20,9 @@
 #include <shlobj.h>
 #include <windowsx.h>
 
+#include <array>
 #include <cmath>
+#include <filesystem>
 #include <iterator>
 #include <numbers>
 #include <span>
@@ -290,6 +292,120 @@ constexpr LPARAM kPenSignature = 0xFF515700;
             return Key::RightSuper;
         default:
             return Key::Unknown;
+    }
+}
+
+// The inverse of KeyFromMessage, with the side of each modifier. 0 for none.
+[[nodiscard]] UINT VirtualKeyFromKey(Key key) noexcept {
+    const auto offset = [key](Key first) {
+        return static_cast<UINT>(std::to_underlying(key) - std::to_underlying(first));
+    };
+    if (key >= Key::A && key <= Key::Z) {
+        return 'A' + offset(Key::A);
+    }
+    if (key >= Key::Num0 && key <= Key::Num9) {
+        return '0' + offset(Key::Num0);
+    }
+    if (key >= Key::F1 && key <= Key::F24) {
+        return VK_F1 + offset(Key::F1);
+    }
+    if (key >= Key::NumPad0 && key <= Key::NumPad9) {
+        return VK_NUMPAD0 + offset(Key::NumPad0);
+    }
+    switch (key) {
+        case Key::Escape:
+            return VK_ESCAPE;
+        case Key::Tab:
+            return VK_TAB;
+        case Key::CapsLock:
+            return VK_CAPITAL;
+        case Key::Backspace:
+            return VK_BACK;
+        case Key::Enter:
+        case Key::NumPadEnter:
+            return VK_RETURN;
+        case Key::Space:
+            return VK_SPACE;
+        case Key::Insert:
+            return VK_INSERT;
+        case Key::Delete:
+            return VK_DELETE;
+        case Key::Home:
+            return VK_HOME;
+        case Key::End:
+            return VK_END;
+        case Key::PageUp:
+            return VK_PRIOR;
+        case Key::PageDown:
+            return VK_NEXT;
+        case Key::Left:
+            return VK_LEFT;
+        case Key::Right:
+            return VK_RIGHT;
+        case Key::Up:
+            return VK_UP;
+        case Key::Down:
+            return VK_DOWN;
+        case Key::Minus:
+            return VK_OEM_MINUS;
+        case Key::Equal:
+            return VK_OEM_PLUS;
+        case Key::LeftBracket:
+            return VK_OEM_4;
+        case Key::RightBracket:
+            return VK_OEM_6;
+        case Key::Backslash:
+            return VK_OEM_5;
+        case Key::Semicolon:
+            return VK_OEM_1;
+        case Key::Apostrophe:
+            return VK_OEM_7;
+        case Key::Grave:
+            return VK_OEM_3;
+        case Key::Comma:
+            return VK_OEM_COMMA;
+        case Key::Period:
+            return VK_OEM_PERIOD;
+        case Key::Slash:
+            return VK_OEM_2;
+        case Key::NumPadDecimal:
+            return VK_DECIMAL;
+        case Key::NumPadDivide:
+            return VK_DIVIDE;
+        case Key::NumPadMultiply:
+            return VK_MULTIPLY;
+        case Key::NumPadSubtract:
+            return VK_SUBTRACT;
+        case Key::NumPadAdd:
+            return VK_ADD;
+        case Key::NumLock:
+            return VK_NUMLOCK;
+        case Key::ScrollLock:
+            return VK_SCROLL;
+        case Key::PrintScreen:
+            return VK_SNAPSHOT;
+        case Key::Pause:
+            return VK_PAUSE;
+        case Key::Menu:
+            return VK_APPS;
+        case Key::LeftShift:
+            return VK_LSHIFT;
+        case Key::RightShift:
+            return VK_RSHIFT;
+        case Key::LeftCtrl:
+            return VK_LCONTROL;
+        case Key::RightCtrl:
+            return VK_RCONTROL;
+        case Key::LeftAlt:
+            return VK_LMENU;
+        case Key::RightAlt:
+            return VK_RMENU;
+        case Key::LeftSuper:
+            return VK_LWIN;
+        case Key::RightSuper:
+            return VK_RWIN;
+        default:
+            return 0;
     }
 }
 
@@ -1001,6 +1117,88 @@ Result<std::filesystem::path> PlatformUserSettingsPath() noexcept {
     std::filesystem::path path(raw);
     CoTaskMemFree(raw);
     return path;
+}
+
+Result<std::filesystem::path> PlatformExecutableFolder() noexcept {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length == 0) {
+            MIDORI_LOG_ERROR("GetModuleFileNameW failed: {}", GetLastError());
+            return std::unexpected(Error::Unknown);
+        }
+        if (length < path.size()) {
+            path.resize(length);
+            return std::filesystem::path(path).parent_path();
+        }
+        path.resize(path.size() * 2);
+    }
+}
+
+std::string PlatformLanguage() noexcept {
+    ULONG count = 0;
+    std::array<wchar_t, 256> languages{};
+    auto size = static_cast<ULONG>(languages.size());
+    if (!GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, languages.data(), &size) || count == 0
+        || languages[0] == L'\0' || languages[1] == L'\0') {
+        return "en";
+    }
+    const auto lower = [](wchar_t c) {
+        return static_cast<char>(c >= L'A' && c <= L'Z' ? c - L'A' + L'a' : c);
+    };
+    return std::string{lower(languages[0]), lower(languages[1])};
+}
+
+std::string PlatformKeyName(Key key) noexcept {
+    const std::string_view fallback = key < Key::Count_ ? kKeyNames[std::to_underlying(key)] : kKeyNames[0];
+    const UINT vk = VirtualKeyFromKey(key);
+    // The E0 prefix marks the extended keys: without it PageUp would read as the keypad's 9.
+    UINT scancode = vk == 0 ? 0 : MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX);
+    if (key == Key::NumPadEnter) {
+        scancode |= 0xE000;
+    }
+    if ((scancode & 0xFF) == 0) {
+        return std::string(fallback);
+    }
+    auto lParam = static_cast<LONG>(scancode & 0xFF) << 16;
+    if ((scancode & 0xFF00) == 0xE000) {
+        lParam |= 1 << 24;
+    }
+    std::array<wchar_t, 64> name{};
+    const int length = GetKeyNameTextW(lParam, name.data(), static_cast<int>(name.size()));
+    if (length <= 0) {
+        return std::string(fallback);
+    }
+    std::array<char, 256> utf8{};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, name.data(), length, utf8.data(), static_cast<int>(utf8.size()),
+                                         nullptr, nullptr);
+    if (size <= 0) {
+        return std::string(fallback);
+    }
+    return {utf8.data(), static_cast<std::size_t>(size)};
+}
+
+Result<std::filesystem::path> PlatformFontPath(FontScript script) noexcept {
+    PWSTR raw = nullptr;
+    const HRESULT hr = SHGetKnownFolderPath(FOLDERID_Fonts, KF_FLAG_DEFAULT, nullptr, &raw);
+    if (FAILED(hr)) {
+        MIDORI_LOG_ERROR("SHGetKnownFolderPath failed: {:#010x}", static_cast<std::uint32_t>(hr));
+        CoTaskMemFree(raw);
+        return std::unexpected(Error::FontNotFound);
+    }
+    const std::filesystem::path folder(raw);
+    CoTaskMemFree(raw);
+    constexpr std::array<const wchar_t*, 1> kLatin = {L"segoeui.ttf"};
+    constexpr std::array<const wchar_t*, 3> kJapanese = {L"YuGothM.ttc", L"meiryo.ttc", L"msgothic.ttc"};
+    const std::span<const wchar_t* const> names =
+        script == FontScript::Japanese ? std::span<const wchar_t* const>(kJapanese) : kLatin;
+    for (const wchar_t* name : names) {
+        std::error_code error;
+        if (std::filesystem::path path = folder / name; std::filesystem::is_regular_file(path, error)) {
+            return path;
+        }
+    }
+    return std::unexpected(Error::FontNotFound);
 }
 
 Result<std::filesystem::path> DialogFileOpen(const DialogFileInfo& info) noexcept {

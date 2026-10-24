@@ -6,6 +6,7 @@
 #include "midori/log.hpp"
 #include "midori/preferences.hpp"
 #include "midori/stroke.hpp"
+#include "midori/text.hpp"
 #include "midori/tile.hpp"
 #include "midori/ui.hpp"
 
@@ -80,7 +81,7 @@ void CanvasViewDetach(CanvasView view) noexcept {
 }
 
 [[nodiscard]] std::string CanvasName(const CanvasState& canvas) noexcept {
-    return canvas.path.empty() ? std::string("Untitled") : PathUtf8(canvas.path.filename());
+    return canvas.path.empty() ? std::string(TextGet(Text::Untitled)) : PathUtf8(canvas.path.filename());
 }
 
 void CanvasTitlesUpdate(Canvas canvas) noexcept {
@@ -147,14 +148,14 @@ void WindowShowCanvas(Window window, Canvas canvas) noexcept {
 // Dialogs run their own message loop; AppEvent drops what arrives meanwhile.
 [[nodiscard]] DialogChoice AppAskSave(Window window, std::string_view name) noexcept {
     ZoneScopedN("AppAskSave");
-    const std::string instruction = std::format("Do you want to save changes to {}?", name);
+    const std::string instruction = TextFormat(Text::AskSave, std::string(name).c_str());
     gAppState.modal = true;
     const DialogChoice choice = DialogAsk(DialogAskInfo{
         .title = MIDORI_NAME,
         .instruction = instruction,
-        .content = "Your changes will be lost if you don't save them.",
-        .yes = "Save",
-        .no = "Don't Save",
+        .content = TextGet(Text::AskSaveContent),
+        .yes = TextGet(Text::AskSaveYes),
+        .no = TextGet(Text::AskSaveNo),
         .window = window,
     });
     gAppState.modal = false;
@@ -163,7 +164,7 @@ void WindowShowCanvas(Window window, Canvas canvas) noexcept {
 
 void AppError(Window window, std::string_view instruction, Error error) noexcept {
     ZoneScopedN("AppError");
-    const std::string content = std::format("Reason: {}.", ErrorMessage(error));
+    const std::string content = TextFormat(Text::ErrorReason, std::string(ErrorMessage(error)).c_str());
     gAppState.modal = true;
     DialogError(window, MIDORI_NAME, instruction, content);
     gAppState.modal = false;
@@ -182,7 +183,7 @@ void AppError(Window window, std::string_view instruction, Error error) noexcept
     auto path = save ? DialogFileSave(info) : DialogFileOpen(info);
     gAppState.modal = false;
     if (!path) {
-        AppError(window, "Could not show the file dialog", path.error());
+        AppError(window, TextGet(Text::ErrorFileDialog), path.error());
     }
     return path;
 }
@@ -210,7 +211,7 @@ void WindowPlacementKeep(Window window) noexcept {
     const CanvasState& state = gAppState.canvases[canvas];
     if (!saveAs && state.file.env) {
         if (const auto res = CanvasSave(canvas); !res) {
-            AppError(window, std::format("Could not save {}", CanvasName(state)), res.error());
+            AppError(window, TextFormat(Text::ErrorSave, CanvasName(state).c_str()), res.error());
             return std::unexpected(res.error());
         }
         CanvasTitlesUpdate(canvas);
@@ -219,7 +220,7 @@ void WindowPlacementKeep(Window window) noexcept {
 
     std::filesystem::path initial = state.path;
     if (initial.empty()) {
-        initial = "Untitled";
+        initial = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(TextGet(Text::Untitled))));
         initial.replace_extension(kCanvasExtension);
     }
     const auto path = AppFileDialog(window, true, initial);
@@ -230,7 +231,7 @@ void WindowPlacementKeep(Window window) noexcept {
         return false;
     }
     if (const auto res = CanvasSaveAs(canvas, *path); !res) {
-        AppError(window, std::format("Could not save {}", PathUtf8(path->filename())), res.error());
+        AppError(window, TextFormat(Text::ErrorSave, PathUtf8(path->filename()).c_str()), res.error());
         return std::unexpected(res.error());
     }
     RecentFilesAdd(*path);
@@ -286,88 +287,12 @@ void WindowPlacementKeep(Window window) noexcept {
     }
     const auto canvas = CanvasOpen(path);
     if (!canvas) {
-        AppError(window, std::format("Could not open {}", PathUtf8(path.filename())), canvas.error());
+        AppError(window, TextFormat(Text::ErrorOpen, PathUtf8(path.filename()).c_str()), canvas.error());
         return std::unexpected(canvas.error());
     }
     WindowShowCanvas(window, *canvas);
     RecentFilesAdd(path);
     return {};
-}
-
-// Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Q quit (Alt+F4 still closes a window). Ctrl+Z
-// undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating while held. B paints, E erases, F11 toggles fullscreen, Tab hides or
-// shows the UI. Layers: Ctrl+Shift+N new layer, Ctrl+G new folder, Ctrl+E merge down or flatten a folder, Ctrl+, hide
-// or show. Page Up and Page Down select above and below, with Ctrl move up and down, as in Krita:
-// keys at the same place on every layout, unlike Photoshop's brackets. With Alt they step the blend mode.
-[[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
-    ZoneScopedN("KeyShortcut");
-    const bool repeats = key.key == Key::Z || key.key == Key::Y;
-    if (key.inputState != InputState::Press && !(repeats && key.inputState == InputState::Hold)) {
-        return {};
-    }
-    if (key.keyMods == KeyMod::None && key.inputState == InputState::Press) {
-        switch (key.key) {
-            case Key::B:
-                return AppPaintMode();
-            case Key::E:
-                return AppEraseMode();
-            case Key::F11:
-                return AppToggleFullscreen(key.window);
-            case Key::PageUp:
-            case Key::PageDown:
-                AppLayerSelect(key.window, key.key == Key::PageUp);
-                return {};
-            case Key::Tab:
-                if (key.window < kWindowMax) {
-                    gUiState.hidden[key.window] = !gUiState.hidden[key.window];
-                }
-                return {};
-            default:
-                return {};
-        }
-    }
-    // Not with Ctrl: AltGr comes as Ctrl+Alt.
-    if (HasAnyFlag(key.keyMods, KeyMod::Alt) && !HasAnyFlag(key.keyMods, KeyMod::Ctrl | KeyMod::Shift)
-        && key.inputState == InputState::Press && (key.key == Key::PageUp || key.key == Key::PageDown)) {
-        AppLayerBlendModeCycle(key.window, key.key == Key::PageUp);
-        return {};
-    }
-    if (!HasAnyFlag(key.keyMods, KeyMod::Ctrl)) {
-        return {};
-    }
-    switch (key.key) {
-        case Key::N:
-            if (HasAnyFlag(key.keyMods, KeyMod::Shift)) {
-                AppLayerNew(key.window, false);
-                return {};
-            }
-            return AppCanvasNew(key.window);
-        case Key::G:
-            AppLayerNew(key.window, true);
-            return {};
-        case Key::E:
-            AppLayerMerge(key.window);
-            return {};
-        case Key::PageUp:
-        case Key::PageDown:
-            AppLayerMove(key.window, key.key == Key::PageUp);
-            return {};
-        case Key::Comma:
-            AppLayerToggleHidden(key.window);
-            return {};
-        case Key::O:
-            return AppCanvasOpen(key.window);
-        case Key::S:
-            return HasAnyFlag(key.keyMods, KeyMod::Shift) ? AppCanvasSaveAs(key.window) : AppCanvasSave(key.window);
-        case Key::Z:
-            return HasAnyFlag(key.keyMods, KeyMod::Shift) ? AppRedo(key.window) : AppUndo(key.window);
-        case Key::Y:
-            return AppRedo(key.window);
-        case Key::Q:
-            return AppQuit();
-        default:
-            return {};
-    }
 }
 
 struct ViewPoint {
@@ -602,66 +527,58 @@ void NavigateEnd() noexcept {
     gAppState.navigate = {};
 }
 
-// Space + left drag pans, Ctrl+Space + drag zooms and Shift+Space + drag rotates, around the view center. Holding Alt
-// snaps the zoom (ZoomSnap) and the rotation to 15 degrees. Space+R resets zoom and rotation, Space+F flips the view
-// horizontally and Space+Shift+F vertically. Space+Z steps back
-// through the navigation history and Space+Shift+Z forward, repeating while held, when no drag is in progress.
-// Pressing or releasing Ctrl or Shift mid-drag switches mode from where the pointer is. Returns true when
-// the event belongs to navigation. Releases and focus loss are handled even when the UI wants them, so a
-// drag never sticks.
+// view.reset: one step on its own, or part of the drag in progress, which goes on from the reset view.
+void ViewReset(Window window) noexcept {
+    AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return;
+    }
+    const auto windowState = WindowGetState(window);
+    const float dpiScale = windowState ? windowState->dpiScale : 1.0f;
+    if (app.navigate.mode == NavigateMode::None) {
+        NavigationPush(view, app.canvasViews[view].viewport);
+    }
+    app.canvasViews[view].viewport = ViewportSnap(ViewportResetZoomRotation(app.canvasViews[view].viewport), dpiScale);
+    if (app.navigate.mode != NavigateMode::None) {
+        NavigateBegin(app.navigate.view, app.navigate.mode);
+    }
+}
+
+// Like the reset.
+void ViewFlip(Window window, bool vertical) noexcept {
+    AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return;
+    }
+    if (app.navigate.mode == NavigateMode::None) {
+        NavigationPush(view, app.canvasViews[view].viewport);
+    }
+    app.canvasViews[view].viewport =
+        ViewportZoom(app.canvasViews[view].viewport, vertical ? 1.0f : -1.0f, vertical ? -1.0f : 1.0f);
+    if (app.navigate.mode != NavigateMode::None) {
+        NavigateBegin(app.navigate.view, app.navigate.mode);
+    }
+}
+
+// Through the navigation history, when no drag is in progress.
+void ViewStep(Window window, bool forward) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    if (view != kCanvasViewInvalid && gAppState.navigate.mode == NavigateMode::None) {
+        NavigationStep(view, forward);
+    }
+}
+
+// While view.navigate is held: left drag pans, with Ctrl zooms and with Shift rotates, around the view center. Holding
+// Alt snaps the zoom (ZoomSnap) and the rotation to 15 degrees. Pressing or releasing Ctrl or Shift mid-drag switches
+// mode from where the pointer is. Returns true when the event belongs to navigation. Releases and focus loss are
+// handled even when the UI wants them, so a drag never sticks.
 [[nodiscard]] bool Navigate(const Event& event, bool uiWants) noexcept {
     ZoneScopedN("Navigate");
     AppState& app = gAppState;
     switch (event.type) {
         case EventType::Key: {
-            const bool space = event.key.key == Key::Space;
-            const bool wasDown = app.spaceDown;
-            if (space && event.key.inputState == InputState::Press && !uiWants) {
-                app.spaceDown = true;
-            } else if (space && event.key.inputState == InputState::Release) {
-                app.spaceDown = false;
-                NavigateEnd();
-            }
-            if (const CanvasView view = WindowCanvasView(event.key.window);
-                event.key.key == Key::R && event.key.inputState == InputState::Press && app.spaceDown
-                && view != kCanvasViewInvalid && !uiWants) {
-                const auto windowState = WindowGetState(event.key.window);
-                const float dpiScale = windowState ? windowState->dpiScale : 1.0f;
-                // During a drag the reset is part of its step.
-                if (app.navigate.mode == NavigateMode::None) {
-                    NavigationPush(view, app.canvasViews[view].viewport);
-                }
-                app.canvasViews[view].viewport =
-                    ViewportSnap(ViewportResetZoomRotation(app.canvasViews[view].viewport), dpiScale);
-                // A drag in progress continues from the reset view instead of undoing it.
-                if (app.navigate.mode != NavigateMode::None) {
-                    NavigateBegin(app.navigate.view, app.navigate.mode);
-                }
-                return true;
-            }
-            if (const CanvasView view = WindowCanvasView(event.key.window);
-                event.key.key == Key::F && event.key.inputState == InputState::Press && app.spaceDown
-                && view != kCanvasViewInvalid && !uiWants) {
-                // Like the reset: one step on its own, or part of the drag in progress, which goes on from the flip.
-                if (app.navigate.mode == NavigateMode::None) {
-                    NavigationPush(view, app.canvasViews[view].viewport);
-                }
-                const bool vertical = HasAnyFlag(app.keyMods, KeyMod::Shift);
-                app.canvasViews[view].viewport =
-                    ViewportZoom(app.canvasViews[view].viewport, vertical ? 1.0f : -1.0f, vertical ? -1.0f : 1.0f);
-                if (app.navigate.mode != NavigateMode::None) {
-                    NavigateBegin(app.navigate.view, app.navigate.mode);
-                }
-                return true;
-            }
-            if (const CanvasView view = WindowCanvasView(event.key.window);
-                event.key.key == Key::Z && event.key.inputState != InputState::Release && app.spaceDown
-                && view != kCanvasViewInvalid && !uiWants) {
-                if (app.navigate.mode == NavigateMode::None) {
-                    NavigationStep(view, HasAnyFlag(app.keyMods, KeyMod::Shift));
-                }
-                return true;
-            }
             const NavigateMode mode = NavigateModeFromMods(app.keyMods);
             if (app.navigate.mode != NavigateMode::None && app.navigate.mode != mode) {
                 NavigateBegin(app.navigate.view, mode);
@@ -669,7 +586,7 @@ void NavigateEnd() noexcept {
                 // Alt pressed or released snaps or frees the view right away.
                 NavigateUpdate();
             }
-            return space && (wasDown || app.spaceDown);
+            return false;
         }
         case EventType::Button: {
             if (event.button.button != Button::Left) {
@@ -696,9 +613,13 @@ void NavigateEnd() noexcept {
             return true;
         }
         case EventType::WindowFocus:
+            // Keys held are released without an event.
             if (!event.windowFocus.focused) {
                 app.spaceDown = false;
                 NavigateEnd();
+                app.keymap.holding = -1;
+                app.keymap.repeating = -1;
+                app.keymap.pendingLength = 0;
             }
             return false;
         default:
@@ -787,48 +708,44 @@ void BrushAdjustCancel() noexcept {
     adjust = {};
 }
 
-// F sets the current tool's brush radius, Shift+F its opacity and Ctrl+F its hardness, and O the active layer's
-// opacity, from the pointer's distance to a center placed so the current value starts under the pointer. Holding
-// Shift moves it 10 times slower and Alt snaps it to powers of two, a layer opacity to multiples of 5%, together or
-// not. Left click or Enter keeps the value, right click or Escape restores it. While adjusting, every input event
-// belongs to it.
-[[nodiscard]] bool BrushAdjust(const Event& event, bool uiWants) noexcept {
+// brush.radius, brush.opacity and brush.hardness set the current tool's brush, layer.opacity the active layer's
+// opacity, from the pointer's distance to a center placed so the current value starts under the pointer. Not while
+// navigating or stroking.
+void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
+    ZoneScopedN("BrushAdjustBegin");
+    AppState& app = gAppState;
+    if (app.brushAdjust.mode != BrushAdjustMode::None || app.spaceDown || app.navigate.mode != NavigateMode::None
+        || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
+        return;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    const auto windowState = WindowGetState(window);
+    if (view == kCanvasViewInvalid || !windowState) {
+        return;
+    }
+    const CanvasState& canvas = app.canvases[app.canvasViews[view].canvas];
+    if (mode == BrushAdjustMode::LayerOpacity
+        && (canvas.activeLayer == kLayerInvalid || canvas.merge.result != kLayerInvalid)) {
+        return;
+    }
+    BrushAdjustState& adjust = app.brushAdjust;
+    adjust = BrushAdjustState{.layer = canvas.activeLayer, .view = view, .tool = app.tools.tool, .mode = mode};
+    adjust.startValue = BrushAdjustValue(adjust);
+    adjust.value = adjust.startValue;
+    adjust.distance = adjust.value * BrushAdjustPixelsPerUnit(adjust, windowState->dpiScale);
+    adjust.centerX = app.pointerX - adjust.distance;
+    adjust.centerY = app.pointerY;
+}
+
+// Holding Shift moves the value 10 times slower and Alt snaps it to powers of two, a layer opacity to multiples of 5%,
+// together or not. Left click or Enter keeps the value, right click or Escape restores it. While adjusting, every
+// input event belongs to it.
+[[nodiscard]] bool BrushAdjust(const Event& event) noexcept {
     ZoneScopedN("BrushAdjust");
     AppState& app = gAppState;
     BrushAdjustState& adjust = app.brushAdjust;
     if (adjust.mode == BrushAdjustMode::None) {
-        if (event.type != EventType::Key || (event.key.key != Key::F && event.key.key != Key::O)
-            || event.key.inputState != InputState::Press || uiWants || app.spaceDown
-            || app.navigate.mode != NavigateMode::None || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
-            return false;
-        }
-        BrushAdjustMode mode = BrushAdjustMode::None;
-        if (event.key.key == Key::O) {
-            mode = event.key.keyMods == KeyMod::None ? BrushAdjustMode::LayerOpacity : BrushAdjustMode::None;
-        } else if (event.key.keyMods == KeyMod::None) {
-            mode = BrushAdjustMode::Radius;
-        } else if (HasAnyFlag(event.key.keyMods, KeyMod::Shift) && !HasAnyFlag(event.key.keyMods, ~KeyMod::Shift)) {
-            mode = BrushAdjustMode::Opacity;
-        } else if (HasAnyFlag(event.key.keyMods, KeyMod::Ctrl) && !HasAnyFlag(event.key.keyMods, ~KeyMod::Ctrl)) {
-            mode = BrushAdjustMode::Hardness;
-        }
-        const CanvasView view = WindowCanvasView(event.key.window);
-        const auto windowState = WindowGetState(event.key.window);
-        if (mode == BrushAdjustMode::None || view == kCanvasViewInvalid || !windowState) {
-            return false;
-        }
-        const CanvasState& canvas = app.canvases[app.canvasViews[view].canvas];
-        if (mode == BrushAdjustMode::LayerOpacity
-            && (canvas.activeLayer == kLayerInvalid || canvas.merge.result != kLayerInvalid)) {
-            return false;
-        }
-        adjust = BrushAdjustState{.layer = canvas.activeLayer, .view = view, .tool = app.tools.tool, .mode = mode};
-        adjust.startValue = BrushAdjustValue(adjust);
-        adjust.value = adjust.startValue;
-        adjust.distance = adjust.value * BrushAdjustPixelsPerUnit(adjust, windowState->dpiScale);
-        adjust.centerX = app.pointerX - adjust.distance;
-        adjust.centerY = app.pointerY;
-        return true;
+        return false;
     }
 
     switch (event.type) {
@@ -1019,6 +936,220 @@ void BrushAdjustCancel() noexcept {
     }
 }
 
+[[nodiscard]] Result<void> ActionRun(Window window, ActionId action, std::uint32_t arg) noexcept {
+    ZoneScopedN("ActionRun");
+    AppState& app = gAppState;
+    std::erase(app.recentActions, action);
+    app.recentActions.insert(app.recentActions.begin(), action);
+    if (app.recentActions.size() > kRecentActionsMax) {
+        app.recentActions.pop_back();
+    }
+    switch (action) {
+        case ActionId::AppQuit:
+            return AppQuit();
+        case ActionId::AppSearch:
+            if (window < kWindowMax) {
+                gUiState.searchShown[window] = true;
+                gUiState.searchQuery[window] = {};
+                gUiState.searchSelected[window] = 0;
+                gUiState.searchFocus[window] = true;
+            }
+            return {};
+        case ActionId::CanvasNew:
+            return AppCanvasNew(window);
+        case ActionId::CanvasOpen:
+            return AppCanvasOpen(window);
+        case ActionId::CanvasSave:
+            return AppCanvasSave(window);
+        case ActionId::CanvasSaveAs:
+            return AppCanvasSaveAs(window);
+        case ActionId::HistoryUndo:
+            return AppUndo(window);
+        case ActionId::HistoryRedo:
+            return AppRedo(window);
+        case ActionId::WindowFullscreen:
+            return AppToggleFullscreen(window);
+        case ActionId::UiToggle:
+            if (window < kWindowMax) {
+                gUiState.hidden[window] = !gUiState.hidden[window];
+            }
+            return {};
+        case ActionId::ToolPaint:
+            return AppPaintMode();
+        case ActionId::ToolErase:
+            return AppEraseMode();
+        case ActionId::BrushPreset:
+            if (arg >= 1 && arg <= app.tools.presets.size()) {
+                ToolBrush(app.tools, app.tools.tool) = app.tools.presets[arg - 1].brush;
+            }
+            return {};
+        case ActionId::BrushRadius:
+            BrushAdjustBegin(window, BrushAdjustMode::Radius);
+            return {};
+        case ActionId::BrushOpacity:
+            BrushAdjustBegin(window, BrushAdjustMode::Opacity);
+            return {};
+        case ActionId::BrushHardness:
+            BrushAdjustBegin(window, BrushAdjustMode::Hardness);
+            return {};
+        case ActionId::LayerNew:
+            AppLayerNew(window, false);
+            return {};
+        case ActionId::LayerNewFolder:
+            AppLayerNew(window, true);
+            return {};
+        case ActionId::LayerDelete:
+            AppLayerDelete(window);
+            return {};
+        case ActionId::LayerMerge:
+            AppLayerMerge(window);
+            return {};
+        case ActionId::LayerSelectAbove:
+        case ActionId::LayerSelectBelow:
+            AppLayerSelect(window, action == ActionId::LayerSelectAbove);
+            return {};
+        case ActionId::LayerMoveUp:
+        case ActionId::LayerMoveDown:
+            AppLayerMove(window, action == ActionId::LayerMoveUp);
+            return {};
+        case ActionId::LayerToggleHidden:
+            AppLayerToggleHidden(window);
+            return {};
+        case ActionId::LayerBlendNext:
+        case ActionId::LayerBlendPrevious:
+            AppLayerBlendModeCycle(window, action == ActionId::LayerBlendNext);
+            return {};
+        case ActionId::LayerOpacity:
+            BrushAdjustBegin(window, BrushAdjustMode::LayerOpacity);
+            return {};
+        case ActionId::ViewNavigate:
+            app.spaceDown = true;
+            return {};
+        case ActionId::ViewReset:
+            ViewReset(window);
+            return {};
+        case ActionId::ViewFlipHorizontal:
+        case ActionId::ViewFlipVertical:
+            ViewFlip(window, action == ActionId::ViewFlipVertical);
+            return {};
+        case ActionId::ViewBack:
+        case ActionId::ViewForward:
+            ViewStep(window, action == ActionId::ViewForward);
+            return {};
+        case ActionId::LayerActivate:
+            if (CanvasState* canvas = WindowCanvas(window);
+                canvas && arg < kLayerMax && canvas->layerHeights[arg] != kLayerInvalid
+                && !HasAnyFlag(canvas->layers[arg].flags, LayerFlags::Internal)) {
+                canvas->activeLayer = static_cast<Layer>(arg);
+                canvas->selectedLayers.assign(1, canvas->activeLayer);
+            }
+            return {};
+        case ActionId::CanvasOpenRecent:
+            return AppCanvasOpenRecent(window, arg);
+        case ActionId::CanvasRecentClear:
+            app.recentFiles.clear();
+            return {};
+        case ActionId::PanelSettings:
+        case ActionId::PanelView:
+        case ActionId::PanelTool:
+        case ActionId::PanelLayers:
+        case ActionId::PanelHelp:
+        case ActionId::DebugTileAtlas:
+        case ActionId::DebugTileCells:
+            if (window < kWindowMax) {
+                bool& shown = action == ActionId::PanelSettings  ? gUiState.settingsShown[window]
+                            : action == ActionId::PanelView      ? gUiState.viewShown[window]
+                            : action == ActionId::PanelTool      ? gUiState.toolShown[window]
+                            : action == ActionId::PanelLayers    ? gUiState.layersShown[window]
+                            : action == ActionId::PanelHelp      ? gUiState.helpShown[window]
+                            : action == ActionId::DebugTileAtlas ? gUiState.tileAtlasShown[window]
+                                                                 : gUiState.tileCellsShown[window];
+                shown = !shown;
+            }
+            return {};
+        case ActionId::SettingsLanguage:
+            if (arg == 0) {
+                app.language.clear();
+                TextLoad(PlatformLanguage());
+            } else if (arg <= kLanguages.size()) {
+                app.language = kLanguages[arg - 1].code;
+                TextLoad(app.language);
+            }
+            return {};
+        case ActionId::SettingsCanvasFilter:
+            if (arg < std::to_underlying(CanvasFilter::Count_)) {
+                app.canvasFilter = static_cast<CanvasFilter>(arg);
+            }
+            return {};
+        case ActionId::Count_:
+            break;
+    }
+    return {};
+}
+
+// A Hold action lets go once the last key of its binding is up.
+void ActionEnd(ActionId action) noexcept {
+    if (action == ActionId::ViewNavigate) {
+        gAppState.spaceDown = false;
+        NavigateEnd();
+    }
+}
+
+// Releases reach the keymap even when the UI wants the keyboard, so a Hold action never sticks.
+[[nodiscard]] Result<void> KeyDispatch(const KeyEvent& key, bool uiWants) noexcept {
+    ZoneScopedN("KeyDispatch");
+    AppState& app = gAppState;
+    KeymapState& keymap = app.keymap;
+    const auto lastKey = [&](std::int32_t binding) {
+        const KeyBinding& b = keymap.bindings[static_cast<std::size_t>(binding)];
+        return b.chords[b.length - 1].key;
+    };
+    if (key.inputState == InputState::Release) {
+        if (keymap.holding >= 0 && lastKey(keymap.holding) == key.key) {
+            ActionEnd(keymap.bindings[static_cast<std::size_t>(keymap.holding)].action);
+            keymap.holding = -1;
+        }
+        if (keymap.repeating >= 0 && lastKey(keymap.repeating) == key.key) {
+            keymap.repeating = -1;
+        }
+        return {};
+    }
+    if (uiWants || key.key >= Key::LeftShift) {
+        return {};
+    }
+    if (key.inputState == InputState::Hold) {
+        if (keymap.repeating < 0 || lastKey(keymap.repeating) != key.key) {
+            return {};
+        }
+        const KeyBinding& binding = keymap.bindings[static_cast<std::size_t>(keymap.repeating)];
+        return ActionRun(key.window, binding.action, binding.arg);
+    }
+
+    keymap.repeating = -1;
+    ActionContext context = ActionContext::Global;
+    if (app.spaceDown) {
+        context = ActionContext::Navigate;
+    } else if (WindowCanvasView(key.window) != kCanvasViewInvalid) {
+        context = ActionContext::Canvas;
+    }
+    const std::int32_t index = KeymapPress(keymap, KeyChord{.key = key.key, .mods = key.keyMods}, context);
+    if (index < 0) {
+        return {};
+    }
+    const KeyBinding& binding = keymap.bindings[static_cast<std::size_t>(index)];
+    switch (kActions[std::to_underlying(binding.action)].kind) {
+        case ActionKind::Hold:
+            keymap.holding = index;
+            break;
+        case ActionKind::Repeat:
+            keymap.repeating = index;
+            break;
+        case ActionKind::Trigger:
+            break;
+    }
+    return ActionRun(key.window, binding.action, binding.arg);
+}
+
 } // namespace
 
 Result<void> AppInit(AppInitInfo initInfo) noexcept {
@@ -1033,9 +1164,13 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gAppState.windowPlacement = preferences->window;
         gAppState.canvasFilter = preferences->canvasFilter;
         gAppState.recentFiles = preferences->recentFiles;
+        gAppState.language = preferences->language;
     } else {
         MIDORI_LOG_WARN("preferences not loaded, defaults used: {}", ErrorMessage(preferences.error()));
     }
+    TextLoad(gAppState.language.empty() ? PlatformLanguage() : gAppState.language);
+    KeymapLoad(gAppState.keymap);
+    UiFontsLoad();
 
     // GraphicsInit created atlas 0. The clear page is held by no tile.
     gAppState.atlas.count = 1;
@@ -1086,7 +1221,15 @@ Result<void> AppEvent(Event event) noexcept {
         gAppState.pointerPressure = event.pointer.pressure;
     }
     const bool uiWants = UiEvent(event);
-    if (BrushAdjust(event, uiWants) || Navigate(event, uiWants) || Paint(event, uiWants) || uiWants) {
+    if (BrushAdjust(event) || Navigate(event, uiWants) || Paint(event, uiWants)) {
+        return {};
+    }
+    if (event.type == EventType::Key) {
+        MIDORI_LOG_TRACE("window {}: key {} state {} mods {:#04x}", event.key.window, std::to_underlying(event.key.key),
+                         std::to_underlying(event.key.inputState), std::to_underlying(event.key.keyMods));
+        return KeyDispatch(event.key, uiWants);
+    }
+    if (uiWants) {
         return {};
     }
     switch (event.type) {
@@ -1108,10 +1251,7 @@ Result<void> AppEvent(Event event) noexcept {
             }
             break;
         case EventType::Key:
-            MIDORI_LOG_TRACE("window {}: key {} state {} mods {:#04x}", event.key.window,
-                             std::to_underlying(event.key.key), std::to_underlying(event.key.inputState),
-                             std::to_underlying(event.key.keyMods));
-            return KeyShortcut(event.key);
+            break;
         case EventType::Text:
             MIDORI_LOG_TRACE("window {}: text U+{:04X}", event.text.window,
                              static_cast<std::uint32_t>(event.text.codepoint));
@@ -1148,11 +1288,7 @@ void AppWindowFrame(Window window) noexcept {
     const Viewport before = viewport ? *viewport : Viewport{};
     const bool wasModified =
         view != kCanvasViewInvalid && gAppState.canvases[gAppState.canvasViews[view].canvas].modified;
-    if (const UiCommand command = UiWindowFrame(window, viewport, backgroundColor, gAppState.tools);
-        command != UiCommand::None) {
-        gAppState.command = command;
-        gAppState.commandWindow = window;
-    }
+    UiWindowFrame(window, viewport, backgroundColor, gAppState.tools);
     // The layers window edits the canvas.
     if (view != kCanvasViewInvalid) {
         CanvasEdited(gAppState.canvasViews[view].canvas, wasModified);
@@ -1181,32 +1317,14 @@ Result<void> AppUpdate() noexcept {
         }
     }
     CanvasTilesStream();
-    const UiCommand command = std::exchange(gAppState.command, UiCommand::None);
-    const Window window = gAppState.commandWindow;
-    if (command == UiCommand::None || !WindowGetState(window)) {
-        return {};
-    }
-    switch (command) {
-        case UiCommand::CanvasNew:
-            return AppCanvasNew(window);
-        case UiCommand::CanvasOpen:
-            return AppCanvasOpen(window);
-        case UiCommand::CanvasSave:
-            return AppCanvasSave(window);
-        case UiCommand::CanvasSaveAs:
-            return AppCanvasSaveAs(window);
-        case UiCommand::CanvasOpenRecent:
-            return AppCanvasOpenRecent(window, gAppState.commandRecent);
-        case UiCommand::Undo:
-            return AppUndo(window);
-        case UiCommand::Redo:
-            return AppRedo(window);
-        case UiCommand::ToggleFullscreen:
-            return AppToggleFullscreen(window);
-        case UiCommand::Exit:
-            return AppQuit();
-        case UiCommand::None:
-            break;
+    // A dialog an action opens may close windows, so each request checks its own.
+    for (const ActionRequest& request : std::exchange(gAppState.actionRequests, {})) {
+        if (!WindowGetState(request.window)) {
+            continue;
+        }
+        if (const auto res = ActionRun(request.window, request.action, request.arg); !res) {
+            return res;
+        }
     }
     return {};
 }
@@ -1227,6 +1345,7 @@ void AppTerminate() noexcept {
         .window = gAppState.windowPlacement,
         .canvasFilter = gAppState.canvasFilter,
         .recentFiles = gAppState.recentFiles,
+        .language = gAppState.language,
     };
     if (const auto res = PreferencesSave(preferences); !res) {
         MIDORI_LOG_ERROR("PreferencesSave failed: {}", ErrorMessage(res.error()));
@@ -1248,7 +1367,7 @@ Result<void> AppCanvasNew(Window window) noexcept {
     }
     const auto canvas = CanvasNew();
     if (!canvas) {
-        AppError(window, "Could not create a canvas", canvas.error());
+        AppError(window, TextGet(Text::ErrorCreate), canvas.error());
         return std::unexpected(canvas.error());
     }
     WindowShowCanvas(window, *canvas);
@@ -1330,6 +1449,100 @@ Result<void> AppRedo(Window window) noexcept {
         ++history.pending;
     }
     return {};
+}
+
+Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
+    const AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    const CanvasState* canvas = view == kCanvasViewInvalid ? nullptr : &app.canvases[app.canvasViews[view].canvas];
+    const bool painting = app.stroke.canvas != kCanvasInvalid && !app.stroke.ended;
+    const auto needsCanvas = [&] {
+        return canvas ? Text::Count_ : Text::ReasonNoCanvas;
+    };
+    const auto needsEdit = [&] {
+        if (!canvas) {
+            return Text::ReasonNoCanvas;
+        }
+        return canvas->merge.result != kLayerInvalid ? Text::ReasonMerging : Text::Count_;
+    };
+    const auto needsLayer = [&] {
+        const Text blocked = needsEdit();
+        if (blocked != Text::Count_) {
+            return blocked;
+        }
+        return canvas->activeLayer == kLayerInvalid ? Text::ReasonNoLayer : Text::Count_;
+    };
+    switch (action) {
+        case ActionId::CanvasSave:
+        case ActionId::CanvasSaveAs:
+        case ActionId::LayerNew:
+        case ActionId::LayerNewFolder:
+            return needsEdit();
+        case ActionId::HistoryUndo:
+        case ActionId::HistoryRedo: {
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            const std::int32_t at = static_cast<std::int32_t>(canvas->history.current) + canvas->history.pending;
+            if (action == ActionId::HistoryUndo) {
+                return at > 0 ? Text::Count_ : Text::ReasonNoUndo;
+            }
+            return at < static_cast<std::int32_t>(canvas->history.records.size()) ? Text::Count_ : Text::ReasonNoRedo;
+        }
+        case ActionId::BrushPreset:
+            return arg >= 1 && arg <= app.tools.presets.size() ? Text::Count_ : Text::ReasonNoPreset;
+        case ActionId::BrushRadius:
+        case ActionId::BrushOpacity:
+        case ActionId::BrushHardness:
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            return painting ? Text::ReasonPainting : Text::Count_;
+        case ActionId::LayerOpacity:
+            if (painting) {
+                return Text::ReasonPainting;
+            }
+            return needsLayer();
+        case ActionId::LayerDelete:
+        case ActionId::LayerMerge:
+        case ActionId::LayerMoveUp:
+        case ActionId::LayerMoveDown:
+        case ActionId::LayerToggleHidden:
+        case ActionId::LayerBlendNext:
+        case ActionId::LayerBlendPrevious:
+            return needsLayer();
+        case ActionId::LayerSelectAbove:
+        case ActionId::LayerSelectBelow:
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            // The root folder is always last in the order.
+            return canvas->layersOrder.size() > 2 ? Text::Count_ : Text::ReasonOneLayer;
+        case ActionId::LayerActivate:
+        case ActionId::ViewReset:
+        case ActionId::ViewFlipHorizontal:
+        case ActionId::ViewFlipVertical:
+            return needsCanvas();
+        case ActionId::ViewBack:
+        case ActionId::ViewForward: {
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            const CanvasViewState& state = app.canvasViews[view];
+            if (action == ActionId::ViewBack) {
+                return state.viewportUndo.empty() ? Text::ReasonNoViewBack : Text::Count_;
+            }
+            return state.viewportRedo.empty() ? Text::ReasonNoViewForward : Text::Count_;
+        }
+        case ActionId::ViewNavigate:
+            return Text::ReasonHold;
+        case ActionId::CanvasOpenRecent:
+            return arg < app.recentFiles.size() ? Text::Count_ : Text::ReasonNoRecent;
+        case ActionId::CanvasRecentClear:
+            return app.recentFiles.empty() ? Text::ReasonNoRecent : Text::Count_;
+        default:
+            return Text::Count_;
+    }
 }
 
 Result<void> AppToggleFullscreen(Window window) noexcept {
