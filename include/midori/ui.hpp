@@ -1,5 +1,6 @@
 #pragma once
 
+#include "midori/action.hpp"
 #include "midori/base.hpp"
 #include "midori/color.hpp"
 #include "midori/input.hpp"
@@ -48,6 +49,10 @@ struct UiState {
     std::array<std::vector<std::uint16_t>, kWindowMax> layerFoldersClosed; // folder layer ids
     std::array<int, kWindowMax> layerRenaming; // the layer whose name is being edited, -1 for none
     std::array<std::array<char, 64>, kWindowMax> layerRename;
+    std::array<bool, kWindowMax> searchShown;
+    std::array<std::array<char, 128>, kWindowMax> searchQuery;
+    std::array<std::vector<SearchEntry>, kWindowMax> searchEntries; // matching ones, best first
+    std::array<int, kWindowMax> searchSelected;
 };
 
 extern UiState gUiState;

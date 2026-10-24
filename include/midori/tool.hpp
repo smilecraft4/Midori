@@ -1,7 +1,10 @@
 #pragma once
 
 #include "midori/color.hpp"
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace Midori {
 
@@ -48,8 +51,16 @@ struct EraseToolState {
     Color::Srgb color{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f};
 };
 
-// Each tool keeps its own brush.
+constexpr std::size_t kBrushPresetNameLenMax = 32;
+
+struct BrushPreset {
+    BrushState brush;
+    std::array<char, kBrushPresetNameLenMax> name;
+};
+
+// Each tool keeps its own brush. brush.preset(number) copies presets[number - 1] into the current tool's.
 struct ToolsState {
+    std::vector<BrushPreset> presets;
     PaintToolState paint;
     EraseToolState erase;
     Tool tool{};

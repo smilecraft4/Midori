@@ -737,7 +737,6 @@ constexpr std::array kHelpErase = {
 constexpr std::array kHelpLayers = {
     HelpEntry{.keys = "Ctrl+Shift+N", .action = "New layer above the active one"},
     HelpEntry{.keys = "Ctrl+G", .action = "New folder above the active layer"},
-    HelpEntry{.keys = "Ctrl+Delete", .action = "Delete the selected layers, a folder with its layers"},
     HelpEntry{.keys = "Ctrl+E", .action = "Merge the active layer down, or a folder into one layer"},
     HelpEntry{.keys = "Page Up, Page Down", .action = "Select the layer above, below"},
     HelpEntry{.keys = "Ctrl+Page Up, Ctrl+Page Down", .action = "Move the active layer up, down"},

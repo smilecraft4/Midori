@@ -1,5 +1,6 @@
 #pragma once
 
+#include "midori/action.hpp"
 #include "midori/base.hpp"
 #include "midori/canvas.hpp"
 #include "midori/history.hpp"
@@ -86,6 +87,8 @@ struct AppState {
     std::array<BrushOutlineState, kWindowMax> brushOutlines; // indexed by window
     StrokeState stroke;
     ToolsState tools;
+    KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
+    std::vector<ActionId> recentActions;            // the most recent first, ranks search ties
     std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's

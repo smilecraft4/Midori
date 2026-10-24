@@ -296,8 +296,8 @@ void WindowPlacementKeep(Window window) noexcept {
 
 // Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Q quit (Alt+F4 still closes a window). Ctrl+Z
 // undoes, Ctrl+Shift+Z and Ctrl+Y redo, repeating while held. B paints, E erases, F11 toggles fullscreen, Tab hides or
-// shows the UI. Layers: Ctrl+Shift+N new layer, Ctrl+G new folder, Ctrl+Delete delete, Ctrl+E merge down or flatten a
-// folder, Ctrl+, hide or show. Page Up and Page Down select above and below, with Ctrl move up and down, as in Krita:
+// shows the UI. Layers: Ctrl+Shift+N new layer, Ctrl+G new folder, Ctrl+E merge down or flatten a folder, Ctrl+, hide
+// or show. Page Up and Page Down select above and below, with Ctrl move up and down, as in Krita:
 // keys at the same place on every layout, unlike Photoshop's brackets. With Alt they step the blend mode.
 [[nodiscard]] Result<void> KeyShortcut(const KeyEvent& key) noexcept {
     ZoneScopedN("KeyShortcut");
@@ -347,9 +347,6 @@ void WindowPlacementKeep(Window window) noexcept {
             return {};
         case Key::E:
             AppLayerMerge(key.window);
-            return {};
-        case Key::Delete:
-            AppLayerDelete(key.window);
             return {};
         case Key::PageUp:
         case Key::PageDown:
