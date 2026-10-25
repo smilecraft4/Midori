@@ -1356,9 +1356,11 @@ void SearchWindow(Window window) noexcept {
             ActionRequestPush(window, entry.action, entry.arg);
             close = true;
         }
+        // A click inside makes its item active, the scrollbar too, which would otherwise count as not hovered.
         close = close || ImGui::IsKeyPressed(ImGuiKey_Escape)
              || (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
-                 && !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows));
+                 && !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows
+                                            | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem));
     }
     ImGui::End();
     if (close) {
