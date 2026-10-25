@@ -37,6 +37,7 @@ enum struct Tool : std::uint8_t {
     Paint,
     Erase,
     Select, // a rectangle combined with the selection by ToolsState::selectionOp, or Shift, Alt, Shift+Alt
+    Lasso,  // a freehand shape, combined the same way
 };
 
 // How a new selection combines with the one before it.

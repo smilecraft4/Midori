@@ -176,6 +176,12 @@ enum struct Text : std::uint8_t {
     GestureCtrlHold,
     GestureAltDragHandle,
     GestureTransformDistort,
+    Lasso,
+    HelpLasso,
+    GestureLasso,
+    GestureShiftLasso,
+    GestureAltLasso,
+    GestureShiftAltLasso,
     Count_,
 };
 
@@ -353,6 +359,12 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "gestureCtrlHold", .english = "Hold Ctrl + drag"},
     {.key = "gestureAltDragHandle", .english = "Alt + drag a handle"},
     {.key = "gestureTransformDistort", .english = "Move its corner or edge alone, in perspective"},
+    {.key = "lasso", .english = "Lasso"},
+    {.key = "helpLasso", .english = "Lasso selection"},
+    {.key = "gestureLasso", .english = "Select a freehand shape by the operation"},
+    {.key = "gestureShiftLasso", .english = "Add a freehand shape to the selection"},
+    {.key = "gestureAltLasso", .english = "Remove a freehand shape from the selection"},
+    {.key = "gestureShiftAltLasso", .english = "Keep only what a freehand shape selects of the selection"},
 }};
 
 struct LanguageInfo {

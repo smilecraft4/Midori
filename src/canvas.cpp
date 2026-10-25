@@ -132,8 +132,9 @@ void CanvasFileClose(CanvasFile& file) noexcept {
     const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
     if (!ec) {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        const auto cache = CanvasFileOpen(dir / std::format("midori-{}-{}.cache", stamp, canvas), true,
-                                          Error::TileCacheFailed, MDBX_UTTERLY_NOSYNC);
+        std::array<char, 64> name{};
+        std::format_to_n(name.data(), name.size() - 1, "midori-{}-{}.cache", stamp, canvas);
+        const auto cache = CanvasFileOpen(dir / name.data(), true, Error::TileCacheFailed, MDBX_UTTERLY_NOSYNC);
         if (cache) {
             return *cache;
         }
@@ -1333,7 +1334,7 @@ void CanvasDestroy(Canvas canvas) noexcept {
     std::construct_at(&state);
 }
 
-void CanvasTilesStream() noexcept {
+bool CanvasTilesStream() noexcept {
     ZoneScopedN("CanvasTilesStream");
     TileJobsFinish();
     TileSlotsAdvance();
@@ -1352,6 +1353,7 @@ void CanvasTilesStream() noexcept {
         }
     }
     TileAtlasRelieve();
+    return mipBudget == 0 || compositeBudget == 0 || mergeBudget == 0;
 }
 
 Result<void> CanvasJobExecute(Job& job) noexcept {

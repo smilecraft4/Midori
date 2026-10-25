@@ -207,6 +207,7 @@
     "gestureTransformSnap": "Tourner par pas de 15°",
     "gestureCtrlTransform": "Transformer la sélection, appliqué au relâchement de Ctrl",
     "tool.select": "Passer à la sélection rectangulaire",
+    "tool.lasso": "Passer à la sélection au lasso",
     "selection.clear": "Ne rien sélectionner",
     "selection.delete": "Supprimer les pixels du calque actif dans la sélection",
     "selection.op": "Changer comment une nouvelle sélection se combine avec la précédente",
@@ -215,5 +216,11 @@
     "transform.cancel": "Remettre la sélection et ses pixels comme avant",
     "gestureCtrlHold": "Maintenir Ctrl + glisser",
     "gestureTransformDistort": "Déplacer son coin ou son bord seul, en perspective",
-    "gestureAltDragHandle": "Alt + glisser une poignée"
+    "gestureAltDragHandle": "Alt + glisser une poignée",
+    "lasso": "Lasso",
+    "helpLasso": "Sélection au lasso",
+    "gestureLasso": "Sélectionner une forme libre selon l'opération",
+    "gestureShiftLasso": "Ajouter une forme libre à la sélection",
+    "gestureAltLasso": "Retirer une forme libre de la sélection",
+    "gestureShiftAltLasso": "Ne garder de la sélection que ce qu'une forme libre sélectionne"
 }

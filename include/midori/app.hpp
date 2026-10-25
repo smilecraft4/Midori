@@ -68,10 +68,10 @@ struct BrushAdjustState {
 
 enum struct TransformDrag : std::uint8_t {
     None,
-    Move,        // inside the box
-    Rotate,      // outside it
-    Scale,       // a corner, or an edge along one axis
-    Distort,     // a handle with Alt: its corner, or the two of its edge, alone; the box to any convex quad
+    Move,    // inside the box
+    Rotate,  // outside it
+    Scale,   // a corner, or an edge along one axis
+    Distort, // a handle with Alt: its corner, or the two of its edge, alone; the box to any convex quad
 };
 
 // Around the center of the box under the selection's bounds as the transform began: distorted, scaled, turned
@@ -81,7 +81,7 @@ struct TransformParams {
     double offsetY{};
     double scaleX{1.0};
     double scaleY{1.0};
-    double rotation{}; // radians
+    double rotation{};       // radians
     StrokeTransform distort; // canvas units, before the rest: where the corners dragged alone put the box
 };
 
@@ -205,6 +205,7 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept;
 [[nodiscard]] Result<void> AppPaintMode() noexcept;
 [[nodiscard]] Result<void> AppEraseMode() noexcept;
 [[nodiscard]] Result<void> AppSelectMode() noexcept;
+[[nodiscard]] Result<void> AppLassoMode() noexcept;
 // The window's selection and the active layer's pixels under it follow handles over the canvas until applied, as one
 // undo step, or canceled.
 [[nodiscard]] Result<void> AppTransformMode(Window window) noexcept;

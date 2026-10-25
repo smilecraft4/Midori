@@ -114,12 +114,13 @@ struct StrokeConstants {
     std::uint32_t blendMode;
     std::uint32_t mode;
     std::uint32_t maskPage; // the selection's mask tile, or kStrokeMask*
+    std::uint32_t shape;
 };
 constexpr UINT kStrokeConstantsRootParameter = 0;
 constexpr UINT kStrokeDabsRootParameter = 1;
 constexpr UINT kStrokeTilePoolRootParameter = 2;
 constexpr UINT kStrokeConstantCount = sizeof(StrokeConstants) / sizeof(std::uint32_t);
-static_assert(kStrokeConstantCount == 15, "must match num32BitConstants in STROKE_ROOT_SIGNATURE");
+static_assert(kStrokeConstantCount == 16, "must match num32BitConstants in STROKE_ROOT_SIGNATURE");
 // Mirror kStrokeMask* in stroke.cs.hlsl: nothing is selected, so nothing clips; nothing is selected in this tile.
 constexpr std::uint32_t kStrokeMaskNone = 0xFFFFFFFF;
 constexpr std::uint32_t kStrokeMaskEmpty = 0xFFFFFFFE;
@@ -643,6 +644,7 @@ void RecordStroke() noexcept {
         .blendMode = std::to_underlying(BlendMode::Normal),
         .mode = std::to_underlying(StrokeMode::Paint),
         .maskPage = kStrokeMaskNone,
+        .shape = std::to_underlying(StrokeShape::Brush),
     };
     // Without dabs a normal paint copies the source.
     bool backedUp = false;
@@ -665,6 +667,7 @@ void RecordStroke() noexcept {
     constants.dabEnd = static_cast<std::uint32_t>(stroke.dabs.size());
     constants.blendMode = std::to_underlying(stroke.blendMode);
     constants.mode = std::to_underlying(stroke.mode);
+    constants.shape = std::to_underlying(stroke.shape);
     // Every stroke but the selection's own paints only where it is selected. A tile whose mask is still streaming in
     // keeps its dirty texels for a later frame.
     const CanvasState& strokeCanvas = gAppState.canvases[stroke.canvas];
@@ -1922,9 +1925,11 @@ Result<void> GraphicsWindowTerminate(Window window) noexcept {
     return {};
 }
 
+// A window without its swap chain yet, or anymore, takes none: GraphicsWindowInit asks for its first.
 void GraphicsWindowRequestFrame(Window window) noexcept {
-    MIDORI_ASSERT(WindowValid(window), "frame requested for invalid window {}", window);
-    gGraphicsState.windows[window].needsFrame = true;
+    if (WindowValid(window)) {
+        gGraphicsState.windows[window].needsFrame = true;
+    }
 }
 
 std::byte* GraphicsTileUploadMemory(TileTransferSlot slot) noexcept {

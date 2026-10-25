@@ -207,6 +207,7 @@
     "gestureTransformSnap": "15°刻みで回転",
     "gestureCtrlTransform": "選択範囲を変形し、Ctrl を離すと適用",
     "tool.select": "矩形選択に切り替え",
+    "tool.lasso": "投げ縄選択に切り替え",
     "selection.clear": "選択を解除",
     "selection.delete": "選択範囲内のアクティブレイヤーのピクセルを削除",
     "selection.op": "新しい選択範囲と前の選択範囲の組み合わせ方を変更",
@@ -215,5 +216,11 @@
     "transform.cancel": "選択範囲とピクセルを元に戻す",
     "gestureCtrlHold": "Ctrl を押しながらドラッグ",
     "gestureTransformDistort": "その角または辺だけを動かす（遠近法）",
-    "gestureAltDragHandle": "Alt + ハンドルをドラッグ"
+    "gestureAltDragHandle": "Alt + ハンドルをドラッグ",
+    "lasso": "投げ縄",
+    "helpLasso": "投げ縄選択",
+    "gestureLasso": "操作に従って自由な形を選択",
+    "gestureShiftLasso": "自由な形を選択範囲に追加",
+    "gestureAltLasso": "自由な形を選択範囲から削除",
+    "gestureShiftAltLasso": "選択範囲を自由な形との重なりだけにする"
 }

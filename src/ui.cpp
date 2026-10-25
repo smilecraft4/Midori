@@ -35,6 +35,8 @@ UiState gUiState{};
 namespace {
 
 constexpr float kFirstFrameSeconds = 1.0f / 60.0f;
+// Past Dear ImGui's tooltip delay, so a tooltip shows under a pointer that stopped.
+constexpr std::chrono::milliseconds kUiSettle{600};
 constexpr float kFontSize = 15.0f; // DIPs
 
 constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
@@ -85,13 +87,18 @@ void MenuAction(Window window, Text label, ActionId action, bool selected = fals
     }
 }
 
-// "Radius (F)###radius": the text with the keys of the action's first binding, its id the text's.
-[[nodiscard]] std::string ShortcutLabel(Text text, ActionId action) noexcept {
+// "Radius (F)###radius": the text with the keys of the action's first binding, its id the text's. On the stack, as it
+// is made every frame.
+[[nodiscard]] std::array<char, 256> ShortcutLabel(Text text, ActionId action) noexcept {
+    std::array<char, 256> label{};
     const char* keys = KeymapKeys(gAppState.keymap, action);
     if (*keys == '\0') {
-        return TextLabel(text);
+        std::format_to_n(label.data(), label.size() - 1, "{}", TextLabel(text));
+    } else {
+        std::format_to_n(label.data(), label.size() - 1, "{} ({})###{}", TextGet(text), keys,
+                         kTexts[std::to_underlying(text)].key);
     }
-    return std::format("{} ({})###{}", TextGet(text), keys, kTexts[std::to_underlying(text)].key);
+    return label;
 }
 
 [[nodiscard]] ImGuiKey ImGuiKeyOffset(ImGuiKey first, Key key, Key firstKey) noexcept {
@@ -267,11 +274,11 @@ void PressureEdit(Text label, bool& enabled, float& min, float& max) noexcept {
 
 void BrushEdit(BrushState& brush) noexcept {
     ZoneScopedN("BrushEdit");
-    ImGui::SliderFloat(ShortcutLabel(Text::Radius, ActionId::BrushRadius).c_str(), &brush.radius, kBrushRadiusMin,
+    ImGui::SliderFloat(ShortcutLabel(Text::Radius, ActionId::BrushRadius).data(), &brush.radius, kBrushRadiusMin,
                        kBrushRadiusMax, "%.1f", ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat(ShortcutLabel(Text::Hardness, ActionId::BrushHardness).c_str(), &brush.hardness, 0.0f, 1.0f);
+    ImGui::SliderFloat(ShortcutLabel(Text::Hardness, ActionId::BrushHardness).data(), &brush.hardness, 0.0f, 1.0f);
     ImGui::SliderFloat(TextLabel(Text::Flow), &brush.flow, 0.0f, 1.0f);
-    ImGui::SliderFloat(ShortcutLabel(Text::Opacity, ActionId::BrushOpacity).c_str(), &brush.opacity, 0.0f, 1.0f);
+    ImGui::SliderFloat(ShortcutLabel(Text::Opacity, ActionId::BrushOpacity).data(), &brush.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat(TextLabel(Text::Spacing), &brush.spacing, 0.01f, 1.0f);
     PressureEdit(Text::PressureRadius, brush.pressureRadius, brush.pressureRadiusMin, brush.pressureRadiusMax);
     PressureEdit(Text::PressureHardness, brush.pressureHardness, brush.pressureHardnessMin, brush.pressureHardnessMax);
@@ -283,14 +290,17 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
     ZoneScopedN("ToolWindow");
     if (ImGui::Begin(TextLabel(Text::Tool), &gUiState.toolShown[window])) {
         int tool = std::to_underlying(tools.tool);
-        ImGui::RadioButton(ShortcutLabel(Text::Paint, ActionId::ToolPaint).c_str(), &tool,
+        ImGui::RadioButton(ShortcutLabel(Text::Paint, ActionId::ToolPaint).data(), &tool,
                            std::to_underlying(Tool::Paint));
         ImGui::SameLine();
-        ImGui::RadioButton(ShortcutLabel(Text::Erase, ActionId::ToolErase).c_str(), &tool,
+        ImGui::RadioButton(ShortcutLabel(Text::Erase, ActionId::ToolErase).data(), &tool,
                            std::to_underlying(Tool::Erase));
         ImGui::SameLine();
-        ImGui::RadioButton(ShortcutLabel(Text::Select, ActionId::ToolSelect).c_str(), &tool,
+        ImGui::RadioButton(ShortcutLabel(Text::Select, ActionId::ToolSelect).data(), &tool,
                            std::to_underlying(Tool::Select));
+        ImGui::SameLine();
+        ImGui::RadioButton(ShortcutLabel(Text::Lasso, ActionId::ToolLasso).data(), &tool,
+                           std::to_underlying(Tool::Lasso));
         tools.tool = static_cast<Tool>(tool);
         ImGui::Separator();
         if (tools.tool == Tool::Paint) {
@@ -305,7 +315,7 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
         } else if (tools.tool == Tool::Erase) {
             ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.erase.color.r);
             BrushEdit(tools.erase.brush);
-        } else if (tools.tool == Tool::Select) {
+        } else if (tools.tool == Tool::Select || tools.tool == Tool::Lasso) {
             const auto opNames = TextsGet(kSelectionOpTexts);
             int op = std::to_underlying(tools.selectionOp);
             if (ImGui::Combo(TextLabel(Text::SelectionOpLabel), &op, opNames.data(),
@@ -871,6 +881,13 @@ constexpr std::array kHelpSelect = {
     HelpEntry{.keys = Text::GestureShiftAltDrag, .action = Text::GestureShiftAltSelect},
     HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
 };
+constexpr std::array kHelpLasso = {
+    HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureLasso},
+    HelpEntry{.keys = Text::GestureShiftDragOnly, .action = Text::GestureShiftLasso},
+    HelpEntry{.keys = Text::GestureAltDrag, .action = Text::GestureAltLasso},
+    HelpEntry{.keys = Text::GestureShiftAltDrag, .action = Text::GestureShiftAltLasso},
+    HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
+};
 constexpr std::array kHelpTransform = {
     HelpEntry{.keys = Text::GestureDragInside, .action = Text::GestureTransformMove},
     HelpEntry{.keys = Text::GestureDragHandle, .action = Text::GestureTransformScale},
@@ -930,7 +947,9 @@ void HelpTable(const char* id, std::span<const HelpEntry> gestures, ActionContex
             continue;
         }
         if (info.argName) {
-            row(keymap.keys[i].c_str(), std::format("{} {}", TextAction(binding.action), binding.arg).c_str());
+            std::array<char, 256> action{};
+            std::format_to_n(action.data(), action.size() - 1, "{} {}", TextAction(binding.action), binding.arg);
+            row(keymap.keys[i].c_str(), action.data());
         } else {
             row(keymap.keys[i].c_str(), TextAction(binding.action));
         }
@@ -961,7 +980,7 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
         HelpTable("transform", kHelpTransform, ActionContext::Canvas, HelpBindings::Transform);
     } else if (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended) {
         Text title = app.stroke.mode == StrokeMode::Erase ? Text::HelpErasing : Text::HelpPainting;
-        if (app.stroke.shape == StrokeShape::Rect) {
+        if (app.stroke.shape == StrokeShape::Rect || app.stroke.shape == StrokeShape::Lasso) {
             title = Text::HelpSelecting;
         }
         ImGui::TextUnformatted(TextGet(title));
@@ -975,6 +994,9 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
         } else if (tools.tool == Tool::Select) {
             title = Text::HelpSelect;
             gestures = kHelpSelect;
+        } else if (tools.tool == Tool::Lasso) {
+            title = Text::HelpLasso;
+            gestures = kHelpLasso;
         }
         ImGui::TextUnformatted(TextGet(title));
         HelpTable("tool", gestures, ActionContext::Canvas, HelpBindings::NotLayers);
@@ -997,17 +1019,22 @@ void SearchEntriesBuild(Window window) noexcept {
     const std::string_view query(gUiState.searchQuery[window].data());
     std::vector<SearchEntry>& entries = gUiState.searchEntries[window];
     entries.clear();
-    const auto add = [&](ActionId action, std::uint32_t arg, std::string label) {
+    const auto add = [&](ActionId action, std::uint32_t arg, std::string_view label) {
         const ActionInfo& info = kActions[std::to_underlying(action)];
         // English too, so a name read in a tutorial finds it in any language.
-        const std::string haystack = std::format("{} {} {} {}", info.name, label, TextAction(action), info.description);
-        const float score = FuzzyScoreTerms(query, haystack);
+        std::array<char, 1024> haystack{};
+        const auto end = std::format_to_n(haystack.data(), haystack.size() - 1, "{} {} {} {}", info.name, label,
+                                          TextAction(action), info.description)
+                             .out;
+        const float score = FuzzyScoreTerms(query, std::string_view(haystack.data(), end));
         if (score != kFuzzyNone) {
-            entries.push_back(SearchEntry{.label = std::move(label),
-                                          .arg = arg,
-                                          .score = score,
-                                          .action = action,
-                                          .blocked = ActionBlocked(window, action, arg)});
+            SearchEntry entry{.label = {},
+                              .arg = arg,
+                              .score = score,
+                              .action = action,
+                              .blocked = ActionBlocked(window, action, arg)};
+            std::format_to_n(entry.label.data(), entry.label.size() - 1, "{}", label);
+            entries.push_back(entry);
         }
     };
     for (std::size_t i = 0; i < kActions.size(); ++i) {
@@ -1108,9 +1135,13 @@ void SearchWindow(Window window) noexcept {
                 ImGui::TableNextColumn();
                 ImGui::BeginDisabled(blocked);
                 ImGui::PushID(i);
-                const std::string name =
-                    info.argName ? std::format("{}({})", info.name, entry.arg) : std::string(info.name);
-                if (ImGui::Selectable(name.c_str(), i == selected, ImGuiSelectableFlags_SpanAllColumns)) {
+                std::array<char, 128> name{};
+                if (info.argName) {
+                    std::format_to_n(name.data(), name.size() - 1, "{}({})", info.name, entry.arg);
+                } else {
+                    std::format_to_n(name.data(), name.size() - 1, "{}", info.name);
+                }
+                if (ImGui::Selectable(name.data(), i == selected, ImGuiSelectableFlags_SpanAllColumns)) {
                     run = i;
                 }
                 if (i == selected && (down || up)) {
@@ -1119,10 +1150,10 @@ void SearchWindow(Window window) noexcept {
                 ImGui::PopID();
                 ImGui::TableNextColumn();
                 const char* description = blocked ? TextGet(entry.blocked) : TextAction(entry.action);
-                if (entry.label.empty()) {
+                if (entry.label[0] == '\0') {
                     ImGui::TextUnformatted(description);
                 } else {
-                    ImGui::Text("%s  %s", entry.label.c_str(), description);
+                    ImGui::Text("%s  %s", entry.label.data(), description);
                 }
                 ImGui::TableNextColumn();
                 ImGui::TextDisabled("%s", BindingKeys(entry.action, entry.arg));
@@ -1285,6 +1316,15 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     return context;
 }
 
+bool UiWantsFrame(Window window) noexcept {
+    if (window >= kWindowMax || !gUiState.contexts[window]) {
+        return false;
+    }
+    ImGui::SetCurrentContext(gUiState.contexts[window]);
+    return ImGui::GetIO().WantTextInput
+        || std::chrono::steady_clock::now().time_since_epoch().count() < gUiState.settleUntil[window];
+}
+
 void UiWindowTerminate(Window window) noexcept {
     ZoneScopedN("UiWindowTerminate");
     if (window >= kWindowMax || !gUiState.contexts[window]) {
@@ -1301,6 +1341,11 @@ bool UiEvent(const Event& event) noexcept {
     if (window >= kWindowMax || !gUiState.contexts[window]) {
         return false;
     }
+    gUiState.settleUntil[window] =
+        (std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(kUiSettle))
+            .time_since_epoch()
+            .count();
+    GraphicsWindowRequestFrame(window);
     ImGui::SetCurrentContext(gUiState.contexts[window]);
     ImGuiIO& io = ImGui::GetIO();
 
@@ -1481,15 +1526,15 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
                                                 -(gAppState.pointerY - centerY) / state->dpiScale);
             ImGui::Text(TextGet(Text::ViewCenter), viewport->posX, viewport->posY);
             ImGui::Text(TextGet(Text::ViewPointer), under.posX, under.posY);
-            if (ImGui::Button(ShortcutLabel(Text::FlipX, ActionId::ViewFlipHorizontal).c_str())) {
+            if (ImGui::Button(ShortcutLabel(Text::FlipX, ActionId::ViewFlipHorizontal).data())) {
                 *viewport = ViewportZoom(*viewport, -1.0f, 1.0f);
             }
             ImGui::SameLine();
-            if (ImGui::Button(ShortcutLabel(Text::FlipY, ActionId::ViewFlipVertical).c_str())) {
+            if (ImGui::Button(ShortcutLabel(Text::FlipY, ActionId::ViewFlipVertical).data())) {
                 *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
             }
             ImGui::SameLine();
-            if (ImGui::Button(ShortcutLabel(Text::Reset, ActionId::ViewReset).c_str())) {
+            if (ImGui::Button(ShortcutLabel(Text::Reset, ActionId::ViewReset).data())) {
                 *viewport = ViewportSnap(ViewportResetZoomRotation(*viewport), state->dpiScale);
             }
             ImGui::ColorEdit4(TextLabel(Text::Background), &backgroundColor->r);

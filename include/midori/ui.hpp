@@ -21,7 +21,7 @@ namespace Midori {
 struct ToolsState;
 
 struct SearchEntry {
-    std::string label; // dynamic entries only: the preset, layer, file, language or filter name
+    std::array<char, 128> label; // dynamic entries only: the preset, layer, file, language or filter name
     std::uint32_t arg;
     float score;
     ActionId action;
@@ -43,10 +43,12 @@ struct UiPreferences {
 struct UiState {
     std::array<ImGuiContext*, kWindowMax> contexts;  // null marks the slot free
     std::array<std::int64_t, kWindowMax> frameTimes; // steady_clock ticks of the last frame, 0 before the first
-    std::array<bool, kWindowMax> tileAtlasShown;     // the tile atlas debug window is open
-    std::array<int, kWindowMax> tileAtlasIndex;      // the atlas it shows
-    std::array<bool, kWindowMax> tileCellsShown;     // the canvas view outlines its tiles with their atlas cell
-    std::array<bool, kWindowMax> hidden;             // no menu, panel or debug overlay, only the brush adjust
+    // steady_clock ticks: the window keeps presenting until then, for ImGui to finish what its last input started.
+    std::array<std::int64_t, kWindowMax> settleUntil;
+    std::array<bool, kWindowMax> tileAtlasShown; // the tile atlas debug window is open
+    std::array<int, kWindowMax> tileAtlasIndex;  // the atlas it shows
+    std::array<bool, kWindowMax> tileCellsShown; // the canvas view outlines its tiles with their atlas cell
+    std::array<bool, kWindowMax> hidden;         // no menu, panel or debug overlay, only the brush adjust
     // The panels each window shows, from `preferences` when it opens. The help window's tips follow what the user does.
     std::array<bool, kWindowMax> helpShown;
     std::array<bool, kWindowMax> viewShown;
@@ -83,6 +85,9 @@ void UiWindowTerminate(Window window) noexcept;
 // a UI window, or a text field has focus) and the canvas should not see it. The answer comes from the
 // window's last frame, so it lags the event by up to one frame.
 [[nodiscard]] bool UiEvent(const Event& event) noexcept;
+
+// The window's UI needs another frame: input came in shortly before, or a text field blinks its cursor.
+[[nodiscard]] bool UiWantsFrame(Window window) noexcept;
 
 // The cursor the UI asks for while it has the pointer, as of the window's last frame; nothing when the canvas has it.
 [[nodiscard]] std::optional<WindowCursor> UiCursor(Window window) noexcept;

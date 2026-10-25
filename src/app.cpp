@@ -88,7 +88,11 @@ void CanvasViewDetach(CanvasView view) noexcept {
 void CanvasTitlesUpdate(Canvas canvas) noexcept {
     ZoneScopedN("CanvasTitlesUpdate");
     const CanvasState& state = gAppState.canvases[canvas];
-    const std::string title = std::format("{}{} - {}", CanvasName(state), state.modified ? "*" : "", MIDORI_NAME);
+    std::array<char, 512> buffer{};
+    const std::string_view title(buffer.data(),
+                                 std::format_to_n(buffer.data(), buffer.size() - 1, "{}{} - {}", CanvasName(state),
+                                                  state.modified ? "*" : "", MIDORI_NAME)
+                                     .out);
     for (const CanvasViewState& view : gAppState.canvasViews) {
         if (view.id != kCanvasViewInvalid && view.canvas == canvas) {
             if (const auto res = WindowSetTitle(view.window, title); !res) {
@@ -856,7 +860,8 @@ struct CanvasPoint {
 }
 
 // The source box onto the quad of `to`, clockwise from the top left corner (Heckbert's square to quad).
-[[nodiscard]] StrokeTransform TransformQuad(const SelectionBounds& source, const std::array<CanvasPoint, 4>& to) noexcept {
+[[nodiscard]] StrokeTransform TransformQuad(const SelectionBounds& source,
+                                            const std::array<CanvasPoint, 4>& to) noexcept {
     const auto [x0, y0] = to[0];
     const auto [x1, y1] = to[1];
     const auto [x2, y2] = to[2];
@@ -961,8 +966,8 @@ struct TransformHit {
     const StrokeTransform inverse = TransformInverse(box.transform);
     const double w = (inverse.wx * point.x) + (inverse.wy * point.y) + inverse.w;
     const StrokeTransformPoint from = StrokeTransformApply(inverse, point.x, point.y);
-    const bool inside = w > 0.0 && from.x >= box.source.minX && from.x <= box.source.maxX
-                     && from.y >= box.source.minY && from.y <= box.source.maxY;
+    const bool inside = w > 0.0 && from.x >= box.source.minX && from.x <= box.source.maxX && from.y >= box.source.minY
+                     && from.y <= box.source.maxY;
     return TransformHit{.drag = inside ? TransformDrag::Move : TransformDrag::Rotate, .handleX = 0, .handleY = 0};
 }
 
@@ -1034,8 +1039,8 @@ void TransformDragTo(CanvasPoint point) noexcept {
     // The pointers taken out of the distortion, so the handles and the center are where they would be without it.
     const StrokeTransform unproject = TransformCompose(affine, TransformInverse(TransformMatrix(start, source)));
     const StrokeTransformPoint flatPoint = StrokeTransformApply(unproject, point.x, point.y);
-    const StrokeTransformPoint flatStart = StrokeTransformApply(unproject, transform.pointerStartX,
-                                                                transform.pointerStartY);
+    const StrokeTransformPoint flatStart =
+        StrokeTransformApply(unproject, transform.pointerStartX, transform.pointerStartY);
     const CanvasPoint center = TransformPoint(affine, source, 0.0, 0.0);
     const double c = std::cos(start.rotation);
     const double s = std::sin(start.rotation);
@@ -1205,8 +1210,8 @@ void TransformHoldEnd() noexcept {
 }
 
 // The UI's cursor over the UI. Over the canvas: navigation's while Space is held, the transform's over its box, the
-// arrow with the Select tool, else none, the brush outline showing where the paint or erase lands. Zoom drags right or up, like the NE-SW arrow;
-// rotation has no system cursor.
+// arrow with the Select tool, else none, the brush outline showing where the paint or erase lands. Zoom drags right or
+// up, like the NE-SW arrow; rotation has no system cursor.
 [[nodiscard]] WindowCursor AppCursor(Window window) noexcept {
     ZoneScopedN("AppCursor");
     const AppState& app = gAppState;
@@ -1236,7 +1241,7 @@ void TransformHoldEnd() noexcept {
     if (const auto box = AppTransformBox(window)) {
         return TransformCursor(*box);
     }
-    return app.tools.tool == Tool::Select ? WindowCursor::Arrow : WindowCursor::None;
+    return app.tools.tool == Tool::Select || app.tools.tool == Tool::Lasso ? WindowCursor::Arrow : WindowCursor::None;
 }
 
 // The current tool's brush under the pointer, over the canvas only: not over the UI, while navigating, or while
@@ -1249,7 +1254,7 @@ void TransformHoldEnd() noexcept {
     // A selection has no brush.
     if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
         || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None
-        || (app.tools.tool == Tool::Select && app.stroke.canvas == kCanvasInvalid)
+        || ((app.tools.tool == Tool::Select || app.tools.tool == Tool::Lasso) && app.stroke.canvas == kCanvasInvalid)
         || (app.stroke.canvas != kCanvasInvalid && app.stroke.shape != StrokeShape::Brush) || AppTransformBox(window)) {
         return {};
     }
@@ -1294,7 +1299,8 @@ void TransformHoldEnd() noexcept {
 
 // A rectangle into the canvas's selection by the tool's operation, or Shift's add, Alt's subtract, Shift+Alt's
 // intersect. Nothing when no layer id is left for the selection's mask.
-[[nodiscard]] std::optional<StrokeBeginInfo> SelectionBeginInfo(CanvasView view, StrokePoint point) noexcept {
+[[nodiscard]] std::optional<StrokeBeginInfo> SelectionBeginInfo(CanvasView view, StrokePoint point,
+                                                                StrokeShape shape) noexcept {
     CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
     const Layer layer = LayerSelectionTake(canvas);
     if (layer == kLayerInvalid) {
@@ -1322,25 +1328,38 @@ void TransformHoldEnd() noexcept {
         .view = view,
         .mode = mode,
         .blendMode = BlendMode::Normal,
-        .shape = StrokeShape::Rect,
+        .shape = shape,
     };
 }
 
-// While a stroke of the selection goes on, its canvas's bounds follow the rectangle: they are it in place of the
-// selection, grow to it when adding or excluding, shrink to it when intersecting, and stay as they were when removing,
-// which may leave them too wide.
+// While a stroke of the selection goes on, its canvas's bounds follow the rectangle, or the lasso's box: they are it in
+// place of the selection, grow to it when adding or excluding, shrink to it when intersecting, and stay as they were
+// when removing, which may leave them too wide. A lasso of fewer than 3 points selects nothing.
 void SelectionBoundsFollow() noexcept {
     const StrokeState& stroke = gAppState.stroke;
     CanvasState& canvas = gAppState.canvases[stroke.canvas];
     if (stroke.layer != canvas.selection) {
         return;
     }
-    const SelectionBounds rect{
+    SelectionBounds rect{
         .minX = std::min(stroke.first.x, stroke.last.x),
         .minY = std::min(stroke.first.y, stroke.last.y),
         .maxX = std::max(stroke.first.x, stroke.last.x),
         .maxY = std::max(stroke.first.y, stroke.last.y),
     };
+    if (stroke.shape == StrokeShape::Lasso) {
+        rect = {};
+        if (stroke.dabs.size() >= 3) {
+            const double originX = static_cast<double>(stroke.origin.x) * kTileSize;
+            const double originY = static_cast<double>(stroke.origin.y) * kTileSize;
+            rect = SelectionBounds{
+                .minX = originX + std::ranges::min(stroke.dabs, {}, &StrokeDab::x).x,
+                .minY = originY + std::ranges::min(stroke.dabs, {}, &StrokeDab::y).y,
+                .maxX = originX + std::ranges::max(stroke.dabs, {}, &StrokeDab::x).x,
+                .maxY = originY + std::ranges::max(stroke.dabs, {}, &StrokeDab::y).y,
+            };
+        }
+    }
     const SelectionBounds& before = stroke.selectionBefore;
     switch (stroke.mode) {
         case StrokeMode::Replace:
@@ -1455,7 +1474,8 @@ void SelectionDelete(Window window) noexcept {
                 || stroke.canvas != kCanvasInvalid) {
                 return false;
             }
-            const bool selecting = gAppState.tools.tool == Tool::Select;
+            const Tool tool = gAppState.tools.tool;
+            const bool selecting = tool == Tool::Select || tool == Tool::Lasso;
             if (const CanvasState& target = gAppState.canvases[gAppState.canvasViews[view].canvas];
                 target.history.pending != 0 || target.merge.result != kLayerInvalid
                 || (!selecting && !LayerPaintable(target, target.activeLayer))) {
@@ -1470,7 +1490,9 @@ void SelectionDelete(Window window) noexcept {
             const Canvas canvas = gAppState.canvasViews[view].canvas;
             const bool wasModified = gAppState.canvases[canvas].modified;
             const std::optional<StrokeBeginInfo> beginInfo =
-                selecting ? SelectionBeginInfo(view, *point) : StrokeBeginInfoFromTool(view, *point);
+                selecting
+                    ? SelectionBeginInfo(view, *point, tool == Tool::Lasso ? StrokeShape::Lasso : StrokeShape::Rect)
+                    : StrokeBeginInfoFromTool(view, *point);
             if (!beginInfo) {
                 return false;
             }
@@ -1653,6 +1675,8 @@ void SelectionDelete(Window window) noexcept {
             return {};
         case ActionId::ToolSelect:
             return AppSelectMode();
+        case ActionId::ToolLasso:
+            return AppLassoMode();
         case ActionId::SelectionOp:
             if (arg < std::to_underlying(SelectionOp::Count_)) {
                 app.tools.selectionOp = static_cast<SelectionOp>(arg);
@@ -1748,6 +1772,30 @@ void ActionEnd(ActionId action) noexcept {
         AppTransformEnd(true);
     }
     return ActionRun(key.window, binding.action, binding.arg);
+}
+
+// What an update leaves for the next ones, which present until it is done: a stroke the GPU has not recorded, undo
+// steps and transfers in flight, a merge, the GPU work the next submit records, or streaming that ran out of budget.
+[[nodiscard]] bool AppBusy(bool streaming) noexcept {
+    const AppState& app = gAppState;
+    const StrokeState& stroke = app.stroke;
+    if (streaming || !app.historyPool.ops.empty()
+        || (stroke.canvas != kCanvasInvalid
+            && (stroke.ended || std::ranges::any_of(stroke.tiles, StrokeTilePending)))) {
+        return true;
+    }
+    const auto inFlight = [](const TileSlot& slot) {
+        return slot.state != TileSlotState::Free;
+    };
+    if (std::ranges::any_of(app.transfers.uploads, inFlight)
+        || std::ranges::any_of(app.transfers.downloads, inFlight)) {
+        return true;
+    }
+    return std::ranges::any_of(app.canvases, [](const CanvasState& canvas) {
+        return canvas.id != kCanvasInvalid
+            && (canvas.history.pending != 0 || canvas.merge.result != kLayerInvalid || !canvas.creates.empty()
+                || !canvas.mipBuilds.empty() || !canvas.composites.empty());
+    });
 }
 
 } // namespace
@@ -1901,8 +1949,9 @@ void AppWindowFrame(Window window) noexcept {
     if (const auto res = WindowSetCursor(window, AppCursor(window)); !res) {
         MIDORI_LOG_ERROR("WindowSetCursor failed: {}", ErrorMessage(res.error()));
     }
-    // ImGui animates and trickles queued input over several frames, so keep presenting while it is shown.
-    GraphicsWindowRequestFrame(window);
+    if (UiWantsFrame(window)) {
+        GraphicsWindowRequestFrame(window);
+    }
 }
 
 Result<void> AppUpdate() noexcept {
@@ -1916,7 +1965,7 @@ Result<void> AppUpdate() noexcept {
             CanvasEdited(canvas.id, wasModified);
         }
     }
-    CanvasTilesStream();
+    const bool streaming = CanvasTilesStream();
     // A dialog an action opens may close windows, so each request checks its own.
     for (const ActionRequest& request : std::exchange(gAppState.actionRequests, {})) {
         if (!WindowGetState(request.window)) {
@@ -1924,6 +1973,14 @@ Result<void> AppUpdate() noexcept {
         }
         if (const auto res = ActionRun(request.window, request.action, request.arg); !res) {
             return res;
+        }
+    }
+    // Otherwise a window presents only after input, see UiWantsFrame, and sleeps in between.
+    if (AppBusy(streaming)) {
+        for (const CanvasViewState& view : gAppState.canvasViews) {
+            if (view.id != kCanvasViewInvalid) {
+                GraphicsWindowRequestFrame(view.window);
+            }
         }
     }
     return {};
@@ -2290,6 +2347,12 @@ std::optional<TransformBox> AppTransformBox(Window window) noexcept {
 Result<void> AppSelectMode() noexcept {
     ZoneScopedN("AppSelectMode");
     gAppState.tools.tool = Tool::Select;
+    return {};
+}
+
+Result<void> AppLassoMode() noexcept {
+    ZoneScopedN("AppLassoMode");
+    gAppState.tools.tool = Tool::Lasso;
     return {};
 }
 

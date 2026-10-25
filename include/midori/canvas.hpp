@@ -401,8 +401,8 @@ void CanvasDestroy(Canvas canvas) noexcept;
 // loaded tiles no longer visible whose content is stored nowhere to their canvas's
 // cache (which makes them evictable), and reads the visible tiles that are not loaded, from the cache or else the
 // file. Above the occupancy watermark it evicts the tiles shown the longest ago. Transfers are bounded by the free
-// slots; visible tiles past what the atlas holds stay unloaded.
-void CanvasTilesStream() noexcept;
+// slots; visible tiles past what the atlas holds stay unloaded. True when an update's budget ran out, leaving work.
+[[nodiscard]] bool CanvasTilesStream() noexcept;
 // The JobExecuteFn of tile reads and writes, on a job thread. A transparent level-0 tile is not written but flagged
 // `empty`, and the main thread deletes it.
 [[nodiscard]] Result<void> CanvasJobExecute(Job& job) noexcept;

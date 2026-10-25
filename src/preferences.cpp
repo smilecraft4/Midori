@@ -32,7 +32,7 @@ constexpr int kPreferencesVersion = 1;
 constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kBlendModeNames = {
     "normal", "multiply", "add", "screen", "normalOkLab",
 };
-constexpr std::array<std::string_view, 3> kToolNames = {"paint", "erase", "select"};
+constexpr std::array<std::string_view, 4> kToolNames = {"paint", "erase", "select", "lasso"};
 constexpr std::array<std::string_view, std::to_underlying(CanvasFilter::Count_)> kCanvasFilterNames = {
     "nearest", "bilinear", "bicubic", "mitchell", "lanczos2", "lanczos3",
 };

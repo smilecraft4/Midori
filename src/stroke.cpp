@@ -263,6 +263,31 @@ void TransformTouch(StrokeState& stroke, const StrokeTransform& transform) noexc
     }
 }
 
+// A lasso point is a dab, the polygon's next corner. Only the triangle between the last point, it and the first, where
+// the polygon closed before, changes: that box a texel wider is recomputed.
+void LassoAdd(StrokeState& stroke, StrokePoint point) noexcept {
+    stroke.dabs.push_back(StrokeDab{
+        .x = static_cast<float>(point.x - (static_cast<double>(stroke.origin.x) * kTileSize)),
+        .y = static_cast<float>(point.y - (static_cast<double>(stroke.origin.y) * kTileSize)),
+        .radius = 0.0f,
+        .hardness = 1.0f,
+        .flow = 1.0f,
+        .opacity = 1.0f,
+        .width = 0.0f,
+        .height = 0.0f,
+    });
+    stroke.last = point;
+    if (stroke.dabs.size() < 3) {
+        return;
+    }
+    const StrokeDab& first = stroke.dabs.front();
+    const StrokeDab& last = stroke.dabs[stroke.dabs.size() - 2];
+    const StrokeDab& added = stroke.dabs.back();
+    BoxTouch(stroke, stroke.layer, std::min({first.x, last.x, added.x}) - 1.0f,
+             std::min({first.y, last.y, added.y}) - 1.0f, std::max({first.x, last.x, added.x}) + 1.0f,
+             std::max({first.y, last.y, added.y}) + 1.0f, 0, StrokeCreates(stroke.mode));
+}
+
 } // namespace
 
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
@@ -322,6 +347,8 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     }
     if (stroke.shape == StrokeShape::Brush) {
         DabAdd(stroke, beginInfo.point);
+    } else if (stroke.shape == StrokeShape::Lasso) {
+        LassoAdd(stroke, beginInfo.point);
     }
 }
 
@@ -332,6 +359,14 @@ void StrokeTo(StrokePoint point) noexcept {
     if (stroke.shape == StrokeShape::Rect) {
         RectSet(stroke, point);
         stroke.last = point;
+        return;
+    }
+    if (stroke.shape == StrokeShape::Lasso) {
+        const double zoom = std::abs(gAppState.canvasViews[stroke.view].viewport.zoomX);
+        if (stroke.dabs.size() < kStrokeLassoPointsMax
+            && std::hypot(point.x - stroke.last.x, point.y - stroke.last.y) * zoom >= kStrokeLassoSpacing) {
+            LassoAdd(stroke, point);
+        }
         return;
     }
     const StrokePoint from = stroke.last;

@@ -3,7 +3,7 @@
 
 // One UAV per atlas, volatile like the tile pipeline's SRVs.
 #define STROKE_ROOT_SIGNATURE                                                                          \
-    "RootConstants(num32BitConstants = 15, b0),"                                                       \
+    "RootConstants(num32BitConstants = 16, b0),"                                                       \
     "SRV(t0),"                                                                                         \
     "DescriptorTable(UAV(u0, numDescriptors = 16, flags = DESCRIPTORS_VOLATILE))"
 
@@ -17,6 +17,8 @@ static const uint kStrokeExclude = 4;
 // maskPage: nothing selected anywhere, so nothing clips; or nothing selected in this tile.
 static const uint kStrokeMaskNone = 0xFFFFFFFF;
 static const uint kStrokeMaskEmpty = 0xFFFFFFFE;
+// StrokeShape in stroke.hpp.
+static const uint kStrokeLasso = 2;
 
 // StrokeDab in stroke.hpp.
 struct StrokeDab {
@@ -40,6 +42,7 @@ cbuffer Stroke : register(b0) {
     uint blendMode;
     uint mode;
     uint maskPage; // the selection's mask at this tile, coverage in alpha
+    uint shape;
 };
 
 StructuredBuffer<StrokeDab> dabs : register(t0);
@@ -54,6 +57,33 @@ float DabMask(StrokeDab dab, float2 pos) {
     }
     const float edge = max((1.0 - dab.hardness) * dab.radius, 1.0);
     return smoothstep(0.0, 1.0, (dab.radius - distance(pos, dab.pos)) / edge);
+}
+
+// The polygon through every dab's position, closed: inside by the nonzero winding rule, its edge antialiased by the
+// distance to it.
+float LassoMask(float2 pos) {
+    if (dabEnd < 3) {
+        return 0.0;
+    }
+    int winding = 0;
+    float dist = 1e30;
+    float2 a = dabs[dabEnd - 1].pos;
+    for (uint i = 0; i < dabEnd; ++i) {
+        const float2 b = dabs[i].pos;
+        const float2 ab = b - a;
+        const float side = ab.x * (pos.y - a.y) - (pos.x - a.x) * ab.y;
+        if (a.y <= pos.y) {
+            if (b.y > pos.y && side > 0.0) {
+                ++winding;
+            }
+        } else if (b.y <= pos.y && side < 0.0) {
+            --winding;
+        }
+        const float t = saturate(dot(pos - a, ab) / max(dot(ab, ab), 1e-12));
+        dist = min(dist, distance(pos, a + t * ab));
+        a = b;
+    }
+    return saturate(0.5 + (winding != 0 ? dist : -dist));
 }
 
 // Alpha only goes as far as every channel does, so premultiplied colors stay within it.
@@ -73,10 +103,14 @@ void CSMain(uint2 id : SV_DispatchThreadID) {
     // Each dab pulls the coverage toward its opacity by its flow and never past it, so a constant opacity
     // caps the stroke like Photoshop's and a varying one only ever darkens.
     float coverage = 0.0;
-    for (uint i = dabFirst; i < dabEnd; ++i) {
-        const StrokeDab dab = dabs[i];
-        if (coverage < dab.opacity) {
-            coverage = lerp(coverage, dab.opacity, DabMask(dab, pos) * dab.flow);
+    if (shape == kStrokeLasso) {
+        coverage = LassoMask(pos);
+    } else {
+        for (uint i = dabFirst; i < dabEnd; ++i) {
+            const StrokeDab dab = dabs[i];
+            if (coverage < dab.opacity) {
+                coverage = lerp(coverage, dab.opacity, DabMask(dab, pos) * dab.flow);
+            }
         }
     }
     if (maskPage == kStrokeMaskEmpty) {

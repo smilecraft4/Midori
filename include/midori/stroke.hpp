@@ -26,6 +26,7 @@ enum struct StrokeMode : std::uint8_t {
 enum struct StrokeShape : std::uint8_t {
     Brush,     // dabs along the path
     Rect,      // one dab, the rectangle from the first point to the last
+    Lasso,     // the polygon through the dabs, one per point, closed back to the first
     Transform, // no dab: the selected pixels of the layer and the selection with them, placed by StrokeState::transform
 };
 
@@ -62,6 +63,10 @@ struct StrokeTransformPoint {
 // A transform's lifted tiles, the grid positions under the selection's bounds, fit in the dab buffer of one frame as
 // two pages each.
 constexpr std::size_t kStrokeTransformTilesMax = std::size_t{kStrokeDabMax} * 4;
+// Every texel the lasso covers tests all of its edges.
+constexpr std::size_t kStrokeLassoPointsMax = 4096;
+// DIPs between a lasso's points.
+constexpr double kStrokeLassoSpacing = 2.0;
 
 [[nodiscard]] constexpr SelectionBounds StrokeTransformBounds(const StrokeTransform& transform,
                                                               const SelectionBounds& box) noexcept {
