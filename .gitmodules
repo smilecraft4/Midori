@@ -4,6 +4,7 @@
 [submodule "vendors/imgui"]
 	path = vendors/imgui
 	url = https://github.com/ocornut/imgui
+	branch = docking
 [submodule "vendors/freetype"]
 	path = vendors/freetype
 	url = https://github.com/freetype/freetype

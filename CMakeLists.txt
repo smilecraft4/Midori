@@ -40,6 +40,16 @@ set(TRACY_ONLY_LOCALHOST ON)
 set(TRACY_STATIC ON)
 add_subdirectory(vendors/tracy)
 
+# The UI's text rasterizer: hinted glyphs, sharper than stb_truetype at small sizes. Only the TrueType/OpenType
+# fonts the system has are read, so no optional codec.
+set(FT_DISABLE_ZLIB ON)
+set(FT_DISABLE_BZIP2 ON)
+set(FT_DISABLE_PNG ON)
+set(FT_DISABLE_HARFBUZZ ON)
+set(FT_DISABLE_BROTLI ON)
+set(SKIP_INSTALL_ALL ON)
+add_subdirectory(vendors/freetype EXCLUDE_FROM_ALL)
+
 # Only the DX12 renderer backend is built: input comes from Midori's own events, not imgui_impl_win32.
 add_library(imgui STATIC
     vendors/imgui/imgui.cpp
@@ -48,16 +58,19 @@ add_library(imgui STATIC
     vendors/imgui/imgui_tables.cpp
     vendors/imgui/imgui_widgets.cpp
     vendors/imgui/backends/imgui_impl_dx12.cpp
+    vendors/imgui/misc/freetype/imgui_freetype.cpp
 )
 target_include_directories(imgui SYSTEM PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vendors/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/vendors/imgui/backends
 )
+# With FreeType enabled, every font atlas loads through it.
 target_compile_definitions(imgui PUBLIC
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
     IMGUI_USE_WCHAR32
+    IMGUI_ENABLE_FREETYPE
 )
-target_link_libraries(imgui PRIVATE d3d12 dxgi d3dcompiler)
+target_link_libraries(imgui PRIVATE d3d12 dxgi d3dcompiler freetype)
 
 # Static: Windows Vista and later run its thread-local destructors without DllMain.
 add_library(mdbx STATIC vendors/libmdbx/mdbx.c)
