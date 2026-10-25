@@ -1359,6 +1359,63 @@ bool CanvasTilesStream() noexcept {
     return mipBudget == 0 || compositeBudget == 0 || mergeBudget == 0;
 }
 
+Result<void> CanvasTilesGet(const CanvasState& canvas, std::span<const TileKey> keys,
+                            std::span<std::byte> pixels) noexcept {
+    ZoneScopedN("CanvasTilesGet");
+    const std::size_t tileBytes = TileBytes(canvas.pixelFormat);
+    MIDORI_ASSERT(pixels.size() == keys.size() * tileBytes, "{} bytes for {} tiles", pixels.size(), keys.size());
+    std::ranges::fill(pixels, std::byte{0});
+    // Each source gathers its tiles back to back, then they go where `keys` has them.
+    std::vector<TileAtlasCell> cells;
+    std::vector<std::size_t> downloaded;
+    std::vector<TileKey> cachedKeys;
+    std::vector<std::size_t> cached;
+    std::vector<TileKey> savedKeys;
+    std::vector<std::size_t> saved;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        const auto found = canvas.tileIndices.find(keys[i]);
+        if (found == canvas.tileIndices.end()) {
+            continue;
+        }
+        const TileState& tile = canvas.tiles[found->second];
+        if (tile.cell != kTileAtlasCellInvalid) {
+            cells.push_back(tile.cell);
+            downloaded.push_back(i);
+        } else if (HasAnyFlag(tile.flags, TileFlags::CachedDisk)) {
+            cachedKeys.push_back(tile.key);
+            cached.push_back(i);
+        } else if (HasAnyFlag(tile.flags, TileFlags::Saved)) {
+            savedKeys.push_back(tile.key);
+            saved.push_back(i);
+        }
+    }
+    std::vector<std::byte> gathered;
+    const auto scatter = [&](std::span<const std::size_t> at) {
+        for (std::size_t j = 0; j < at.size(); ++j) {
+            std::memcpy(pixels.data() + (at[j] * tileBytes), gathered.data() + (j * tileBytes), tileBytes);
+        }
+    };
+    // Only these wait for the GPU.
+    if (!cells.empty()) {
+        gathered.resize(cells.size() * tileBytes);
+        if (const auto res = GraphicsTilesDownload(cells, gathered); !res) {
+            return std::unexpected(res.error());
+        }
+        scatter(downloaded);
+    }
+    gathered.resize(cachedKeys.size() * tileBytes);
+    if (const auto res = TilesRead(canvas.cache, canvas.pixelFormat, cachedKeys, gathered); !res) {
+        return std::unexpected(res.error());
+    }
+    scatter(cached);
+    gathered.resize(savedKeys.size() * tileBytes);
+    if (const auto res = TilesRead(canvas.file, canvas.pixelFormat, savedKeys, gathered); !res) {
+        return std::unexpected(res.error());
+    }
+    scatter(saved);
+    return {};
+}
+
 CanvasFileSize CanvasFileSizeGet(const CanvasFile& file) noexcept {
     MDBX_envinfo info{};
     if (!file.env || mdbx_env_info_ex(file.env, nullptr, &info, sizeof(info)) != MDBX_SUCCESS) {

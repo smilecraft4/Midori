@@ -106,6 +106,31 @@ struct TransformBox {
     CanvasView view;
 };
 
+// An image pasted into a new layer: uploaded a tile per free upload slot over the updates, then selected, then
+// transformed. See PasteUpdate.
+struct PasteState {
+    std::vector<std::byte> pixels;      // RGBA8 premultiplied, `width` x `height`, rows top to bottom
+    std::vector<TileGridPos> remaining; // grid positions not uploaded yet
+    std::int64_t x;                     // the canvas texel of its top left pixel
+    std::int64_t y;
+    std::uint32_t width;
+    std::uint32_t height;
+    Window window{kWindowInvalid};
+    Canvas canvas{kCanvasInvalid}; // kCanvasInvalid: no paste
+    Layer layer{kLayerInvalid};
+    bool selected;                 // the selection was made around it: the transform comes next
+};
+
+// Where the last copy came from, so pasting it puts it back there while the clipboard still holds it.
+struct CopyState {
+    std::int64_t x; // the canvas texel of its top left pixel
+    std::int64_t y;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t sequence; // PlatformClipboardSequence right after it was put there
+    bool copied;
+};
+
 // Where a window shows the brush outline this frame, in physical pixels of its client area. AppWindowFrame sets it,
 // the renderer draws it over the canvas, inverting what is below.
 struct BrushOutlineState {
@@ -130,6 +155,8 @@ struct AppState {
     std::array<BrushOutlineState, kWindowMax> brushOutlines; // indexed by window
     StrokeState stroke;
     TransformState transform;
+    PasteState paste;
+    CopyState copy;
     ToolsState tools;
     KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
     std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax

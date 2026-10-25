@@ -1,11 +1,13 @@
 #pragma once
 
 #include "midori/base.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Midori {
 
@@ -110,6 +112,26 @@ struct PlatformMemory {
 };
 
 [[nodiscard]] PlatformMemory PlatformMemoryGet() noexcept;
+
+// RGBA8 with premultiplied alpha, rows top to bottom without padding.
+struct PlatformImage {
+    std::vector<std::byte> pixels;
+    std::uint32_t width;
+    std::uint32_t height;
+};
+
+// An image wider or taller is not read.
+constexpr std::uint32_t kPlatformImageSideMax = 16384;
+
+// The clipboard holds what may be an image: PNG (web browsers, screenshots), a bitmap, or files copied in the file
+// browser, of which the first is read.
+[[nodiscard]] bool PlatformClipboardHasImage() noexcept;
+// Its embedded color profile is ignored: the pixels are taken as sRGB.
+[[nodiscard]] Result<PlatformImage> PlatformClipboardImage() noexcept;
+// Changes every time anything is put on the clipboard, by any app.
+[[nodiscard]] std::uint32_t PlatformClipboardSequence() noexcept;
+// Replaces what the clipboard holds with the image, as PNG and as a bitmap with alpha, which other apps paste.
+[[nodiscard]] Result<void> PlatformClipboardSetImage(Window window, const PlatformImage& image) noexcept;
 
 // The first of the system's UI fonts for `script` that is installed.
 [[nodiscard]] Result<std::filesystem::path> PlatformFontPath(FontScript script) noexcept;

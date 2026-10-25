@@ -35,6 +35,7 @@ struct UiPreferences {
     bool toolShown{true};
     bool layersShown{true};
     bool helpShown{true};
+    bool menuBarShown{true};
 };
 
 // One Dear ImGui context per window: its own input state, style, font atlas and draw data. Owned by
@@ -53,6 +54,7 @@ struct UiState {
     std::array<bool, kWindowMax> hidden;         // no menu, panel or debug overlay, only the brush adjust
     // The panels each window shows, from `preferences` when it opens. The help window's tips follow what the user does.
     std::array<bool, kWindowMax> helpShown;
+    std::array<bool, kWindowMax> menuBarShown; // hidden, panel.menuBar from the search or a key brings it back
     std::array<bool, kWindowMax> viewShown;
     std::array<bool, kWindowMax> toolShown;
     std::array<bool, kWindowMax> layersShown;

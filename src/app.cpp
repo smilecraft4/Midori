@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -1395,6 +1396,176 @@ void SelectionBoundsFollow() noexcept {
     }
 }
 
+// One tile of the pasted image into an upload slot's memory, RGBA8 rows of the tile; transparent around the image.
+// False when the image is transparent all over it.
+[[nodiscard]] bool PasteTileFill(const PasteState& paste, TileGridPos gridPos, std::byte* memory) noexcept {
+    constexpr std::int64_t kSize = kTileSize;
+    const std::int64_t tileX = std::int64_t{gridPos.x} * kSize;
+    const std::int64_t tileY = std::int64_t{gridPos.y} * kSize;
+    const std::int64_t left = std::max(paste.x, tileX);
+    const std::int64_t right = std::min(paste.x + paste.width, tileX + kSize);
+    const std::int64_t top = std::max(paste.y, tileY);
+    const std::int64_t bottom = std::min(paste.y + paste.height, tileY + kSize);
+    std::memset(memory, 0, static_cast<std::size_t>(kSize * kSize * 4));
+    bool opaque = false;
+    for (std::int64_t y = top; y < bottom; ++y) {
+        const std::byte* from = paste.pixels.data() + ((((y - paste.y) * paste.width) + (left - paste.x)) * 4);
+        std::memcpy(memory + ((((y - tileY) * kSize) + (left - tileX)) * 4), from,
+                    static_cast<std::size_t>((right - left) * 4));
+        for (std::int64_t i = 3; i < (right - left) * 4 && !opaque; i += 4) {
+            opaque = from[i] != std::byte{0};
+        }
+    }
+    return opaque;
+}
+
+// edit.paste: the clipboard's image into a new layer above the active one, at 100% centered on the view. PasteUpdate
+// uploads it, selects it and opens a transform.
+void AppPaste(Window window) noexcept {
+    ZoneScopedN("AppPaste");
+    if (ActionBlocked(window, ActionId::EditPaste, 0) != Text::Count_) {
+        return;
+    }
+    auto image = PlatformClipboardImage();
+    if (!image) {
+        MIDORI_LOG_WARN("paste: {}", ErrorMessage(image.error()));
+        return;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
+    const Layer before = canvas.activeLayer;
+    AppLayerNew(window, false);
+    if (canvas.activeLayer == before) {
+        return;
+    }
+    // Centered on the view, unless it is this app's last copy and where it came from shows, as Photoshop does.
+    const Viewport& viewport = gAppState.canvasViews[view].viewport;
+    std::int64_t x = std::llround(viewport.posX - (image->width * 0.5));
+    std::int64_t y = std::llround(viewport.posY - (image->height * 0.5));
+    if (const CopyState& copy = gAppState.copy; copy.copied && copy.sequence == PlatformClipboardSequence()
+                                                && copy.width == image->width && copy.height == image->height) {
+        // The view's bounds on the canvas, at any rotation.
+        const auto windowState = WindowGetState(window);
+        const double halfWidth = windowState ? windowState->width / windowState->dpiScale * 0.5 : 0.0;
+        const double halfHeight = windowState ? windowState->height / windowState->dpiScale * 0.5 : 0.0;
+        const double c = std::abs(std::cos(static_cast<double>(viewport.rot)));
+        const double s = std::abs(std::sin(static_cast<double>(viewport.rot)));
+        const double reachX = ((c * halfWidth) + (s * halfHeight)) / std::abs(viewport.zoomX);
+        const double reachY = ((s * halfWidth) + (c * halfHeight)) / std::abs(viewport.zoomY);
+        const bool shown =
+            static_cast<double>(copy.x)<viewport.posX + reachX&& static_cast<double>(copy.x + copy.width)> viewport.posX
+                - reachX
+            && static_cast<double>(copy.y)<viewport.posY + reachY&& static_cast<double>(copy.y + copy.height)> viewport
+                       .posY
+                   - reachY;
+        if (shown) {
+            x = copy.x;
+            y = copy.y;
+        }
+    }
+    PasteState paste{
+        .pixels = std::move(image->pixels),
+        .remaining = {},
+        .x = x,
+        .y = y,
+        .width = image->width,
+        .height = image->height,
+        .window = window,
+        .canvas = canvas.id,
+        .layer = canvas.activeLayer,
+        .selected = false,
+    };
+    const auto tileOf = [](std::int64_t pos) {
+        return static_cast<TileAxis>(pos >= 0 ? pos / kTileSize : ((pos + 1) / kTileSize) - 1);
+    };
+    for (TileAxis tileY = tileOf(paste.y); tileY <= tileOf(paste.y + paste.height - 1); ++tileY) {
+        for (TileAxis tileX = tileOf(paste.x); tileX <= tileOf(paste.x + paste.width - 1); ++tileX) {
+            paste.remaining.push_back(TileGridPos{.x = tileX, .y = tileY});
+        }
+    }
+    gAppState.paste = std::move(paste);
+}
+
+// The paste in progress, once per update before streaming places the uploads: its tiles go to the free upload slots as
+// new Modified tiles of its layer, Loaded once copied; once all are, the selection becomes its rectangle; once that
+// stroke is done, a transform opens on it. Dropped when its window, canvas or layer goes.
+void PasteUpdate() noexcept {
+    PasteState& paste = gAppState.paste;
+    if (paste.canvas == kCanvasInvalid) {
+        return;
+    }
+    ZoneScopedN("PasteUpdate");
+    CanvasState& canvas = gAppState.canvases[paste.canvas];
+    const CanvasView view = WindowCanvasView(paste.window);
+    if (canvas.id != paste.canvas || view == kCanvasViewInvalid || gAppState.canvasViews[view].canvas != paste.canvas
+        || HasAnyFlag(canvas.layers[paste.layer].flags, LayerFlags::Deleted)) {
+        paste = {};
+        return;
+    }
+    auto& slots = gAppState.transfers.uploads;
+    const bool wasModified = canvas.modified;
+    while (!paste.remaining.empty()) {
+        const auto free = std::ranges::find(slots, TileSlotState::Free, &TileSlot::state);
+        if (free == slots.end()) {
+            break;
+        }
+        const auto slot = static_cast<TileTransferSlot>(free - slots.begin());
+        const TileGridPos gridPos = paste.remaining.back();
+        paste.remaining.pop_back();
+        if (!PasteTileFill(paste, gridPos, GraphicsTileUploadMemory(slot))) {
+            continue;
+        }
+        const TileKey key = TileKeyMake(paste.layer, 0, gridPos);
+        TileInsert(canvas, key, kTileAtlasCellInvalid).transfer = TileTransfer::Load;
+        LayerCompositesTouch(canvas, key);
+        *free = TileSlot{
+            .fence = 0, .key = key, .cell = kTileAtlasCellInvalid, .canvas = canvas.id, .state = TileSlotState::Ready};
+        canvas.modified = true;
+    }
+    CanvasEdited(canvas.id, wasModified);
+    const bool loading = std::ranges::any_of(canvas.tiles, [&](const TileState& tile) {
+        return TileKeyLayer(tile.key) == paste.layer && HasAnyFlag(tile.transfer, TileTransfer::Load);
+    });
+    if (!paste.remaining.empty() || loading || gAppState.stroke.canvas != kCanvasInvalid
+        || canvas.history.pending != 0) {
+        return;
+    }
+    if (!paste.selected) {
+        const Layer selection = LayerSelectionTake(canvas);
+        if (selection == kLayerInvalid) {
+            paste = {};
+            return;
+        }
+        const auto x = static_cast<double>(paste.x);
+        const auto y = static_cast<double>(paste.y);
+        const double right = x + paste.width;
+        const double bottom = y + paste.height;
+        StrokeBegin(StrokeBeginInfo{
+            .brush = {},
+            .color = Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f},
+            .point = {.x = x, .y = y, .pressure = 1.0f},
+            .layer = selection,
+            .view = view,
+            .mode = StrokeMode::Replace,
+            .blendMode = BlendMode::Normal,
+            .shape = StrokeShape::Rect,
+        });
+        StrokeTo(StrokePoint{.x = right, .y = bottom, .pressure = 1.0f});
+        StrokeEnd();
+        canvas.selectionBounds = SelectionBounds{.minX = x, .minY = y, .maxX = right, .maxY = bottom};
+        paste.selected = true;
+        return;
+    }
+    const Window window = paste.window;
+    const bool active = canvas.activeLayer == paste.layer;
+    paste = {};
+    if (active) {
+        if (const auto res = AppTransformMode(window); !res) {
+            MIDORI_LOG_WARN("paste: no transform: {}", ErrorMessage(res.error()));
+        }
+    }
+}
+
 // selection.clear: a Replace stroke with no dab clears every tile of the mask, as one undo step.
 void SelectionClear(Window window) noexcept {
     const CanvasView view = WindowCanvasView(window);
@@ -1448,6 +1619,83 @@ void SelectionDelete(Window window) noexcept {
     StrokeTo(StrokePoint{.x = bounds.maxX + 1.0, .y = bounds.maxY + 1.0, .pressure = 1.0f});
     StrokeEnd();
     CanvasEdited(canvas.id, wasModified);
+}
+
+// edit.copy and edit.cut: the active layer's pixels times the selection's coverage, over the selection's bounds, to the
+// clipboard. Read a row of tiles at a time, so memory stays bounded whatever the selection. Cut then deletes them.
+void AppCopy(Window window, bool cut) noexcept {
+    ZoneScopedN("AppCopy");
+    if (ActionBlocked(window, cut ? ActionId::EditCut : ActionId::EditCopy, 0) != Text::Count_) {
+        return;
+    }
+    const CanvasState& canvas = *WindowCanvas(window);
+    const SelectionBounds& bounds = canvas.selectionBounds;
+    const auto minX = static_cast<std::int64_t>(std::floor(bounds.minX));
+    const auto minY = static_cast<std::int64_t>(std::floor(bounds.minY));
+    const auto maxX = static_cast<std::int64_t>(std::ceil(bounds.maxX));
+    const auto maxY = static_cast<std::int64_t>(std::ceil(bounds.maxY));
+    if (maxX - minX > kPlatformImageSideMax || maxY - minY > kPlatformImageSideMax) {
+        MIDORI_LOG_WARN("copy: {}x{} is too large", maxX - minX, maxY - minY);
+        return;
+    }
+    PlatformImage image{
+        .pixels = std::vector<std::byte>(static_cast<std::size_t>((maxX - minX) * (maxY - minY) * 4)),
+        .width = static_cast<std::uint32_t>(maxX - minX),
+        .height = static_cast<std::uint32_t>(maxY - minY),
+    };
+    const auto tileOf = [](std::int64_t pos) {
+        return static_cast<TileAxis>(pos >= 0 ? pos / kTileSize : ((pos + 1) / kTileSize) - 1);
+    };
+    constexpr std::int64_t kSize = kTileSize;
+    const TileAxis firstX = tileOf(minX);
+    const auto columns = static_cast<std::size_t>(tileOf(maxX - 1) - firstX + 1);
+    const std::size_t tileBytes = TileBytes(canvas.pixelFormat);
+    // Per column, the layer's tile then the selection's.
+    std::vector<TileKey> keys(columns * 2);
+    std::vector<std::byte> pixels(keys.size() * tileBytes);
+    for (TileAxis tileRow = tileOf(minY); tileRow <= tileOf(maxY - 1); ++tileRow) {
+        for (std::size_t c = 0; c < columns; ++c) {
+            const TileGridPos gridPos{.x = static_cast<TileAxis>(firstX + static_cast<TileAxis>(c)), .y = tileRow};
+            keys[c * 2] = TileKeyMake(canvas.activeLayer, 0, gridPos);
+            keys[(c * 2) + 1] = TileKeyMake(canvas.selection, 0, gridPos);
+        }
+        if (const auto res = CanvasTilesGet(canvas, keys, pixels); !res) {
+            MIDORI_LOG_ERROR("copy: {}", ErrorMessage(res.error()));
+            return;
+        }
+        const std::int64_t tileY = std::int64_t{tileRow} * kSize;
+        for (std::size_t c = 0; c < columns; ++c) {
+            const std::byte* layer = pixels.data() + (c * 2 * tileBytes);
+            const std::byte* mask = layer + tileBytes;
+            const std::int64_t tileX = (std::int64_t{firstX} + static_cast<std::int64_t>(c)) * kSize;
+            for (std::int64_t y = std::max(minY, tileY); y < std::min(maxY, tileY + kSize); ++y) {
+                for (std::int64_t x = std::max(minX, tileX); x < std::min(maxX, tileX + kSize); ++x) {
+                    const auto texel = static_cast<std::size_t>((((y - tileY) * kSize) + (x - tileX)) * 4);
+                    const unsigned coverage = std::to_integer<unsigned>(mask[texel + 3]);
+                    std::byte* out = image.pixels.data() + ((((y - minY) * image.width) + (x - minX)) * 4);
+                    for (std::size_t channel = 0; channel < 4; ++channel) {
+                        out[channel] = static_cast<std::byte>(
+                            ((std::to_integer<unsigned>(layer[texel + channel]) * coverage) + 127) / 255);
+                    }
+                }
+            }
+        }
+    }
+    if (const auto res = PlatformClipboardSetImage(window, image); !res) {
+        MIDORI_LOG_ERROR("copy: {}", ErrorMessage(res.error()));
+        return;
+    }
+    gAppState.copy = CopyState{
+        .x = minX,
+        .y = minY,
+        .width = image.width,
+        .height = image.height,
+        .sequence = PlatformClipboardSequence(),
+        .copied = true,
+    };
+    if (cut) {
+        SelectionDelete(window);
+    }
 }
 
 // Left drag paints or erases the active layer, by the current tool. Releases and focus loss end the stroke even when
@@ -1646,6 +1894,7 @@ void SelectionDelete(Window window) noexcept {
         case ActionId::PanelTool:
         case ActionId::PanelLayers:
         case ActionId::PanelHelp:
+        case ActionId::PanelMenuBar:
         case ActionId::DebugTileAtlas:
         case ActionId::DebugTileCells:
         case ActionId::DebugStatistics:
@@ -1656,6 +1905,7 @@ void SelectionDelete(Window window) noexcept {
                             : action == ActionId::PanelTool         ? gUiState.toolShown[window]
                             : action == ActionId::PanelLayers       ? gUiState.layersShown[window]
                             : action == ActionId::PanelHelp         ? gUiState.helpShown[window]
+                            : action == ActionId::PanelMenuBar      ? gUiState.menuBarShown[window]
                             : action == ActionId::DebugTileAtlas    ? gUiState.tileAtlasShown[window]
                             : action == ActionId::DebugStatistics   ? gUiState.statisticsShown[window]
                             : action == ActionId::DebugImGuiMetrics ? gUiState.imguiMetricsShown[window]
@@ -1699,6 +1949,13 @@ void SelectionDelete(Window window) noexcept {
             return {};
         case ActionId::SelectionClear:
             SelectionClear(window);
+            return {};
+        case ActionId::EditPaste:
+            AppPaste(window);
+            return {};
+        case ActionId::EditCopy:
+        case ActionId::EditCut:
+            AppCopy(window, action == ActionId::EditCut);
             return {};
         case ActionId::SelectionDelete:
             SelectionDelete(window);
@@ -1783,7 +2040,7 @@ void ActionEnd(ActionId action) noexcept {
 [[nodiscard]] bool AppBusy(bool streaming) noexcept {
     const AppState& app = gAppState;
     const StrokeState& stroke = app.stroke;
-    if (streaming || !app.historyPool.ops.empty()
+    if (streaming || app.paste.canvas != kCanvasInvalid || !app.historyPool.ops.empty()
         || (stroke.canvas != kCanvasInvalid
             && (stroke.ended || std::ranges::any_of(stroke.tiles, StrokeTilePending)))) {
         return true;
@@ -1970,6 +2227,7 @@ Result<void> AppUpdate() noexcept {
     }
     TilesMarkVisible();
     StrokeUpdate();
+    PasteUpdate();
     for (const CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid) {
             const bool wasModified = canvas.modified;
@@ -2155,6 +2413,9 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
             if (!canvas) {
                 return Text::ReasonNoCanvas;
             }
+            if (app.paste.canvas != kCanvasInvalid) {
+                return Text::ReasonPainting;
+            }
             if (AppTransforming()) {
                 return action == ActionId::HistoryUndo ? Text::Count_ : Text::ReasonPainting;
             }
@@ -2219,6 +2480,33 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
                 return Text::ReasonNoSelection;
             }
             return painting ? Text::ReasonPainting : needsEdit();
+        case ActionId::EditCopy:
+        case ActionId::EditCut: {
+            const Text blocked = needsLayer();
+            if (blocked != Text::Count_) {
+                return blocked;
+            }
+            if (canvas->selection == kLayerInvalid || SelectionEmpty(canvas->selectionBounds)) {
+                return Text::ReasonNoSelection;
+            }
+            if (painting || app.paste.canvas != kCanvasInvalid) {
+                return Text::ReasonPainting;
+            }
+            // Copying reads any layer that has pixels; cutting also erases them.
+            const bool readable = !HasAnyFlag(canvas->layers[canvas->activeLayer].flags, LayerFlags::Folder);
+            const bool paintable = LayerPaintable(*canvas, canvas->activeLayer);
+            return (action == ActionId::EditCut ? paintable : readable) ? Text::Count_ : Text::ReasonNotPaintable;
+        }
+        case ActionId::EditPaste: {
+            const Text blocked = needsEdit();
+            if (blocked != Text::Count_) {
+                return blocked;
+            }
+            if (painting || app.paste.canvas != kCanvasInvalid) {
+                return Text::ReasonPainting;
+            }
+            return PlatformClipboardHasImage() ? Text::Count_ : Text::ReasonNoImage;
+        }
         case ActionId::SelectionDelete: {
             const Text blocked = needsLayer();
             if (blocked != Text::Count_) {

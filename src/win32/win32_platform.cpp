@@ -17,12 +17,17 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <shlobj.h>
+#include <wincodec.h>
+#include <objbase.h>
 #include <psapi.h>
 #include <windowsx.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <iterator>
 #include <numbers>
@@ -1349,6 +1354,267 @@ Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) 
 void AssertAbort() noexcept {
     spdlog::default_logger_raw()->flush();
     BreakAndAbort();
+}
+
+namespace {
+
+// Releases the COM object it holds.
+template<class T>
+struct ComRef {
+    T* ptr{};
+
+    ComRef() = default;
+    ComRef(const ComRef&) = delete;
+    ComRef& operator=(const ComRef&) = delete;
+    ~ComRef() {
+        if (ptr) {
+            ptr->Release();
+        }
+    }
+};
+
+// The first frame `decoder` reads, converted by WIC.
+[[nodiscard]] Result<PlatformImage> ImageDecode(IWICImagingFactory* factory, IWICBitmapDecoder* decoder) noexcept {
+    ComRef<IWICBitmapFrameDecode> frame;
+    ComRef<IWICFormatConverter> converter;
+    UINT width = 0;
+    UINT height = 0;
+    if (FAILED(decoder->GetFrame(0, &frame.ptr)) || FAILED(frame.ptr->GetSize(&width, &height)) || width == 0
+        || height == 0 || width > kPlatformImageSideMax || height > kPlatformImageSideMax
+        || FAILED(factory->CreateFormatConverter(&converter.ptr))
+        || FAILED(converter.ptr->Initialize(frame.ptr, GUID_WICPixelFormat32bppPRGBA, WICBitmapDitherTypeNone, nullptr,
+                                            0.0, WICBitmapPaletteTypeCustom))) {
+        MIDORI_LOG_WARN("image of {}x{} not decoded", width, height);
+        return std::unexpected(Error::ImageDecodeFailed);
+    }
+    PlatformImage image{
+        .pixels = std::vector<std::byte>(std::size_t{width} * height * 4),
+        .width = width,
+        .height = height,
+    };
+    if (const HRESULT hr = converter.ptr->CopyPixels(nullptr, width * 4, static_cast<UINT>(image.pixels.size()),
+                                                     reinterpret_cast<BYTE*>(image.pixels.data()));
+        FAILED(hr)) {
+        MIDORI_LOG_WARN("IWICFormatConverter::CopyPixels failed: {:#010x}", static_cast<std::uint32_t>(hr));
+        return std::unexpected(Error::ImageDecodeFailed);
+    }
+    return image;
+}
+
+// An encoded image in memory, or else the file at `path`. COM must be initialized.
+[[nodiscard]] Result<PlatformImage> ImageDecode(std::span<std::byte> data, const std::wstring& path) noexcept {
+    ComRef<IWICImagingFactory> factory;
+    ComRef<IWICStream> stream;
+    ComRef<IWICBitmapDecoder> decoder;
+    if (const HRESULT hr =
+            CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory.ptr));
+        FAILED(hr)) {
+        MIDORI_LOG_ERROR("CoCreateInstance(WICImagingFactory) failed: {:#010x}", static_cast<std::uint32_t>(hr));
+        return std::unexpected(Error::ImageDecodeFailed);
+    }
+    HRESULT hr = S_OK;
+    if (!path.empty()) {
+        hr = factory.ptr->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
+                                                    &decoder.ptr);
+    } else if (SUCCEEDED(hr = factory.ptr->CreateStream(&stream.ptr))
+               && SUCCEEDED(hr = stream.ptr->InitializeFromMemory(reinterpret_cast<BYTE*>(data.data()),
+                                                                  static_cast<DWORD>(data.size())))) {
+        hr = factory.ptr->CreateDecoderFromStream(stream.ptr, nullptr, WICDecodeMetadataCacheOnDemand, &decoder.ptr);
+    }
+    if (FAILED(hr)) {
+        MIDORI_LOG_WARN("no WIC decoder for the clipboard's image: {:#010x}", static_cast<std::uint32_t>(hr));
+        return std::unexpected(Error::ImageDecodeFailed);
+    }
+    return ImageDecode(factory.ptr, decoder.ptr);
+}
+
+// A clipboard bitmap is a BMP file without its file header: put back, WIC decodes it like one. A 32-bit bitmap
+// without an alpha mask comes out opaque.
+[[nodiscard]] bool DibToBmp(std::vector<std::byte>& data) noexcept {
+    BITMAPINFOHEADER header{};
+    if (data.size() < sizeof(header)) {
+        return false;
+    }
+    std::memcpy(&header, data.data(), sizeof(header));
+    const std::size_t colors =
+        header.biClrUsed != 0 ? header.biClrUsed : (header.biBitCount <= 8 ? std::size_t{1} << header.biBitCount : 0);
+    const std::size_t masks =
+        header.biSize == sizeof(BITMAPINFOHEADER) && header.biCompression == BI_BITFIELDS ? 3 * sizeof(DWORD) : 0;
+    const BITMAPFILEHEADER file{
+        .bfType = 0x4D42, // "BM"
+        .bfSize = static_cast<DWORD>(sizeof(BITMAPFILEHEADER) + data.size()),
+        .bfReserved1 = 0,
+        .bfReserved2 = 0,
+        .bfOffBits = static_cast<DWORD>(sizeof(BITMAPFILEHEADER) + header.biSize + masks + (colors * sizeof(RGBQUAD))),
+    };
+    const auto* bytes = reinterpret_cast<const std::byte*>(&file);
+    data.insert(data.begin(), bytes, bytes + sizeof(file));
+    return true;
+}
+
+// Straight BGRA, the order and alpha both clipboard formats take, as PNG into movable memory the clipboard then owns.
+// Null when WIC fails. COM must be initialized.
+[[nodiscard]] HGLOBAL PngEncode(std::span<std::byte> bgra, UINT width, UINT height) noexcept {
+    ComRef<IWICImagingFactory> factory;
+    ComRef<IStream> stream;
+    ComRef<IWICBitmapEncoder> encoder;
+    ComRef<IWICBitmapFrameEncode> frame;
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory.ptr)))
+        // Not deleted with the stream: the clipboard takes the memory.
+        || FAILED(CreateStreamOnHGlobal(nullptr, FALSE, &stream.ptr))
+        || FAILED(factory.ptr->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder.ptr))
+        || FAILED(encoder.ptr->Initialize(stream.ptr, WICBitmapEncoderNoCache))
+        || FAILED(encoder.ptr->CreateNewFrame(&frame.ptr, nullptr)) || FAILED(frame.ptr->Initialize(nullptr))
+        || FAILED(frame.ptr->SetSize(width, height)) || FAILED(frame.ptr->SetPixelFormat(&format))
+        || format != GUID_WICPixelFormat32bppBGRA
+        || FAILED(frame.ptr->WritePixels(height, width * 4, static_cast<UINT>(bgra.size()),
+                                         reinterpret_cast<BYTE*>(bgra.data())))
+        || FAILED(frame.ptr->Commit()) || FAILED(encoder.ptr->Commit())) {
+        MIDORI_LOG_WARN("PNG of {}x{} not encoded", width, height);
+        return nullptr;
+    }
+    HGLOBAL memory = nullptr;
+    return SUCCEEDED(GetHGlobalFromStream(stream.ptr, &memory)) ? memory : nullptr;
+}
+
+// The same pixels as a bottom-up bitmap with an alpha mask, the layout most apps read.
+[[nodiscard]] HGLOBAL DibV5Make(std::span<const std::byte> bgra, UINT width, UINT height) noexcept {
+    const std::size_t row = std::size_t{width} * 4;
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPV5HEADER) + bgra.size());
+    auto* bytes = memory ? static_cast<std::byte*>(GlobalLock(memory)) : nullptr;
+    if (!bytes) {
+        if (memory) {
+            GlobalFree(memory);
+        }
+        return nullptr;
+    }
+    BITMAPV5HEADER header{};
+    header.bV5Size = sizeof(BITMAPV5HEADER);
+    header.bV5Width = static_cast<LONG>(width);
+    header.bV5Height = static_cast<LONG>(height);
+    header.bV5Planes = 1;
+    header.bV5BitCount = 32;
+    header.bV5Compression = BI_BITFIELDS;
+    header.bV5SizeImage = static_cast<DWORD>(bgra.size());
+    header.bV5RedMask = 0x00FF0000;
+    header.bV5GreenMask = 0x0000FF00;
+    header.bV5BlueMask = 0x000000FF;
+    header.bV5AlphaMask = 0xFF000000;
+    header.bV5CSType = LCS_sRGB;
+    header.bV5Intent = LCS_GM_IMAGES;
+    std::memcpy(bytes, &header, sizeof(header));
+    for (UINT y = 0; y < height; ++y) {
+        std::memcpy(bytes + sizeof(header) + (std::size_t{height - 1 - y} * row), bgra.data() + (std::size_t{y} * row),
+                    row);
+    }
+    GlobalUnlock(memory);
+    return memory;
+}
+
+} // namespace
+
+bool PlatformClipboardHasImage() noexcept {
+    return IsClipboardFormatAvailable(RegisterClipboardFormatW(L"PNG")) || IsClipboardFormatAvailable(CF_DIBV5)
+        || IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_HDROP);
+}
+
+// PNG first, which keeps the alpha browsers and screenshots put there, then a bitmap, then a copied file. Copied out
+// of the clipboard, which is not held open while decoding.
+Result<PlatformImage> PlatformClipboardImage() noexcept {
+    ZoneScopedN("PlatformClipboardImage");
+    if (!OpenClipboard(nullptr)) {
+        MIDORI_LOG_ERROR("OpenClipboard failed: {}", GetLastError());
+        return std::unexpected(Error::ClipboardFailed);
+    }
+    std::vector<std::byte> data;
+    std::wstring path;
+    const auto copy = [&data](UINT format) {
+        HANDLE handle = IsClipboardFormatAvailable(format) ? GetClipboardData(format) : nullptr;
+        const void* memory = handle ? GlobalLock(handle) : nullptr;
+        if (!memory) {
+            return false;
+        }
+        const auto* bytes = static_cast<const std::byte*>(memory);
+        data.assign(bytes, bytes + GlobalSize(handle));
+        GlobalUnlock(handle);
+        return true;
+    };
+    bool dib = false;
+    if (!copy(RegisterClipboardFormatW(L"PNG"))) {
+        dib = copy(CF_DIBV5) || copy(CF_DIB);
+        if (!dib && IsClipboardFormatAvailable(CF_HDROP)) {
+            if (auto* drop = static_cast<HDROP>(GetClipboardData(CF_HDROP))) {
+                const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
+                path.resize(length);
+                DragQueryFileW(drop, 0, path.data(), length + 1);
+            }
+        }
+    }
+    CloseClipboard();
+    if ((data.empty() && path.empty()) || (dib && !DibToBmp(data))) {
+        return std::unexpected(Error::ClipboardFailed);
+    }
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    auto image = ImageDecode(data, path);
+    if (SUCCEEDED(init)) {
+        CoUninitialize();
+    }
+    return image;
+}
+
+std::uint32_t PlatformClipboardSequence() noexcept {
+    return GetClipboardSequenceNumber();
+}
+
+Result<void> PlatformClipboardSetImage(Window window, const PlatformImage& image) noexcept {
+    ZoneScopedN("PlatformClipboardSetImage");
+    if (!WindowValid(window)) {
+        return std::unexpected(Error::WindowInvalid);
+    }
+    std::vector<std::byte> bgra(image.pixels.size());
+    for (std::size_t i = 0; i < image.pixels.size(); i += 4) {
+        const auto alpha = std::to_integer<unsigned>(image.pixels[i + 3]);
+        const auto straight = [&](std::size_t channel) {
+            const unsigned value = std::to_integer<unsigned>(image.pixels[i + channel]);
+            return static_cast<std::byte>(alpha == 0 ? 0u : std::min(255u, ((value * 255u) + (alpha / 2)) / alpha));
+        };
+        bgra[i] = straight(2);
+        bgra[i + 1] = straight(1);
+        bgra[i + 2] = straight(0);
+        bgra[i + 3] = image.pixels[i + 3];
+    }
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    HGLOBAL png = PngEncode(bgra, image.width, image.height);
+    if (SUCCEEDED(init)) {
+        CoUninitialize();
+    }
+    HGLOBAL dib = DibV5Make(bgra, image.width, image.height);
+    // An owner window, or EmptyClipboard leaves none and SetClipboardData fails.
+    if (!OpenClipboard(gPlatformState.windows[window].hwnd)) {
+        MIDORI_LOG_ERROR("OpenClipboard failed: {}", GetLastError());
+        for (HGLOBAL memory : {png, dib}) {
+            if (memory) {
+                GlobalFree(memory);
+            }
+        }
+        return std::unexpected(Error::ClipboardFailed);
+    }
+    EmptyClipboard();
+    bool set = false;
+    for (const auto [format, memory] :
+         {std::pair{RegisterClipboardFormatW(L"PNG"), png}, std::pair{UINT{CF_DIBV5}, dib}}) {
+        if (!memory) {
+            continue;
+        }
+        if (SetClipboardData(format, memory)) {
+            set = true;
+        } else {
+            GlobalFree(memory);
+        }
+    }
+    CloseClipboard();
+    return set ? Result<void>{} : std::unexpected(Error::ClipboardFailed);
 }
 
 PlatformMemory PlatformMemoryGet() noexcept {

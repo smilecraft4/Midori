@@ -231,6 +231,7 @@ Result<Preferences> PreferencesLoad() noexcept {
         Read(*ui, "toolShown", preferences.ui.toolShown);
         Read(*ui, "layersShown", preferences.ui.layersShown);
         Read(*ui, "helpShown", preferences.ui.helpShown);
+        Read(*ui, "menuBarShown", preferences.ui.menuBarShown);
         if (const auto settings = ui->find("imguiSettings"); settings != ui->end() && settings->is_string()) {
             preferences.ui.imguiSettings = settings->get_ref<const std::string&>();
         }
@@ -323,6 +324,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
              {"toolShown", preferences.ui.toolShown},
              {"layersShown", preferences.ui.layersShown},
              {"helpShown", preferences.ui.helpShown},
+             {"menuBarShown", preferences.ui.menuBarShown},
              {"imguiSettings", preferences.ui.imguiSettings},
          }},
         {"brushPresets", brushPresets},

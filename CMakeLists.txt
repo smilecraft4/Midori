@@ -178,7 +178,7 @@ target_precompile_headers(midori PRIVATE
     <string_view>
 )
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32 ole32)
+target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32 ole32 windowscodecs)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})
 

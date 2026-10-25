@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -401,6 +402,11 @@ struct CanvasFileSize {
 };
 
 [[nodiscard]] CanvasFileSize CanvasFileSizeGet(const CanvasFile& file) noexcept;
+
+// The tiles `keys`, a TileBytes stride each: downloaded from the atlas, else read from the cache or the file;
+// transparent where the canvas has none, or one is still being pasted. Waits for the GPU and the reads.
+[[nodiscard]] Result<void> CanvasTilesGet(const CanvasState& canvas, std::span<const TileKey> keys,
+                                          std::span<std::byte> pixels) noexcept;
 
 // Unsaved changes are lost. Waits for every job.
 void CanvasDestroy(Canvas canvas) noexcept;

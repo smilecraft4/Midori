@@ -1499,6 +1499,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.imguiMetricsShown[window] = false;
     gUiState.hidden[window] = false;
     gUiState.helpShown[window] = gUiState.preferences.helpShown;
+    gUiState.menuBarShown[window] = gUiState.preferences.menuBarShown;
     gUiState.viewShown[window] = gUiState.preferences.viewShown;
     gUiState.toolShown[window] = gUiState.preferences.toolShown;
     gUiState.layersShown[window] = gUiState.preferences.layersShown;
@@ -1656,7 +1657,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
         ImGui::Render();
         return;
     }
-    if (ImGui::BeginMainMenuBar()) {
+    if (gUiState.menuBarShown[window] && ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu(TextLabel(Text::File))) {
             MenuAction(window, Text::New, ActionId::CanvasNew);
             MenuAction(window, Text::Open, ActionId::CanvasOpen);
@@ -1686,6 +1687,10 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             MenuAction(window, Text::Undo, ActionId::HistoryUndo);
             MenuAction(window, Text::Redo, ActionId::HistoryRedo);
             ImGui::Separator();
+            MenuAction(window, Text::Cut, ActionId::EditCut);
+            MenuAction(window, Text::Copy, ActionId::EditCopy);
+            MenuAction(window, Text::Paste, ActionId::EditPaste);
+            ImGui::Separator();
             MenuAction(window, Text::SettingsMenu, ActionId::PanelSettings, gUiState.settingsShown[window]);
             ImGui::EndMenu();
         }
@@ -1698,6 +1703,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             MenuAction(window, Text::Tool, ActionId::PanelTool, gUiState.toolShown[window]);
             MenuAction(window, Text::Layers, ActionId::PanelLayers, gUiState.layersShown[window]);
             MenuAction(window, Text::Help, ActionId::PanelHelp, gUiState.helpShown[window]);
+            MenuAction(window, Text::MenuBar, ActionId::PanelMenuBar, gUiState.menuBarShown[window]);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(TextLabel(Text::Debug))) {
@@ -1766,6 +1772,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     preferences.toolShown = gUiState.toolShown[window];
     preferences.layersShown = gUiState.layersShown[window];
     preferences.helpShown = gUiState.helpShown[window];
+    preferences.menuBarShown = gUiState.menuBarShown[window];
     // With no ini file, ImGui only flags that its windows moved or resized.
     if (io.WantSaveIniSettings) {
         preferences.imguiSettings = ImGui::SaveIniSettingsToMemory();

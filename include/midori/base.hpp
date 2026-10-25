@@ -31,6 +31,8 @@ enum struct Error : std::uint8_t {
     PreferencesFailed,
     FontNotFound,
     KeyBindingInvalid,
+    ClipboardFailed,
+    ImageDecodeFailed,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -79,6 +81,10 @@ enum struct Error : std::uint8_t {
             return "font not found";
         case Error::KeyBindingInvalid:
             return "key binding not understood";
+        case Error::ClipboardFailed:
+            return "the clipboard could not be read";
+        case Error::ImageDecodeFailed:
+            return "image not decoded";
     }
     return "unknown error";
 }
