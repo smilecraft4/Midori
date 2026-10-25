@@ -31,6 +31,7 @@
 #include "midori/shaders/tile_mip_cs.h"
 #include "midori/shaders/tile_ps.h"
 #include "midori/shaders/tile_vs.h"
+#include "midori/shaders/transform_cs.h"
 
 namespace Midori {
 
@@ -123,6 +124,30 @@ static_assert(kStrokeConstantCount == 15, "must match num32BitConstants in STROK
 constexpr std::uint32_t kStrokeMaskNone = 0xFFFFFFFF;
 constexpr std::uint32_t kStrokeMaskEmpty = 0xFFFFFFFE;
 constexpr UINT kStrokeGroupSize = 8;
+// One transform dispatch. Mirrors the Transform cbuffer in transform.cs.hlsl.
+struct TransformConstants {
+    std::array<float, 3> inverseX;
+    std::uint32_t dstPage;
+    std::array<float, 3> inverseY;
+    std::uint32_t srcPage;
+    std::array<float, 3> inverseW;
+    std::uint32_t selection;
+    TileGridPos gridPos;
+    TileGridPos tableOrigin;
+    std::uint32_t tableWidth;
+    std::uint32_t tableHeight;
+    std::uint32_t rectOriginX;
+    std::uint32_t rectOriginY;
+    std::uint32_t restore;
+};
+constexpr UINT kTransformConstantsRootParameter = 0;
+constexpr UINT kTransformTableRootParameter = 1;
+constexpr UINT kTransformTilePoolRootParameter = 2;
+constexpr UINT kTransformConstantCount = sizeof(TransformConstants) / sizeof(std::uint32_t);
+static_assert(kTransformConstantCount == 21, "must match num32BitConstants in TRANSFORM_ROOT_SIGNATURE");
+// Mirrors kTransformPageNone in transform.cs.hlsl.
+constexpr std::uint32_t kTransformPageNone = 0xFFFFFFFF;
+constexpr UINT kTransformGroupSize = 8;
 // One level build. Mirrors the TileMip cbuffer in tile_mip.cs.hlsl.
 struct TileMipConstants {
     std::uint32_t srcCell;
@@ -478,6 +503,113 @@ void StrokeDispatch(const StrokeConstants& constants, UINT width, UINT height) n
                                   (height + kStrokeGroupSize - 1) / kStrokeGroupSize, 1);
 }
 
+// A transform's dirty texels from the backups of the tiles it lifted, whose pages go where the dabs would. While a
+// lifted tile is still streaming in, every tile is held. False when nothing was dispatched.
+[[nodiscard]] bool RecordTransform(std::vector<bool>& held, std::size_t frameDabs) noexcept {
+    ZoneScopedN("RecordTransform");
+    GraphicsState& state = gGraphicsState;
+    const StrokeState& stroke = gAppState.stroke;
+    const CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    const SelectionBounds& source = stroke.selectionBefore;
+    const auto tileOf = [](double pos) {
+        return static_cast<TileAxis>(std::floor(pos / kTileSize));
+    };
+    const TileGridPos first{.x = tileOf(source.minX), .y = tileOf(source.minY)};
+    const auto width = static_cast<std::uint32_t>(tileOf(source.maxX) - first.x + 1);
+    const auto height = static_cast<std::uint32_t>(tileOf(source.maxY) - first.y + 1);
+    MIDORI_ASSERT(std::size_t{width} * height <= kStrokeTransformTilesMax, "{}x{} lifted tiles", width, height);
+    const std::span table(reinterpret_cast<std::uint32_t*>(state.strokeDabsMapped + frameDabs),
+                          std::size_t{width} * height * 2);
+    std::ranges::fill(table, kTransformPageNone);
+    bool waiting = false;
+    for (const StrokeTile& tile : stroke.tiles) {
+        const TileGridPos gridPos = TileKeyGridPos(tile.key);
+        const std::int64_t x = std::int64_t{gridPos.x} - first.x;
+        const std::int64_t y = std::int64_t{gridPos.y} - first.y;
+        if (x < 0 || y < 0 || x >= width || y >= height) {
+            continue;
+        }
+        waiting = waiting || tile.cell == kTileAtlasCellInvalid;
+        if (tile.backupCell == kTileAtlasCellInvalid || tile.backupCell == kTileAtlasCellClear) {
+            continue;
+        }
+        const std::size_t entry = (static_cast<std::size_t>(y) * width) + static_cast<std::size_t>(x);
+        const bool selection = TileKeyLayer(tile.key) == canvas.selection;
+        table[(entry * 2) + (selection ? 1 : 0)] = TileAtlasCellPage(tile.backupCell);
+    }
+    if (waiting) {
+        std::ranges::fill(held, true);
+        return false;
+    }
+
+    // Relative to the origin tile like the stroke: canvas = local + o, so the matrix on local points is
+    // T(-o) H T(o), and the shader takes its inverse.
+    const StrokeTransform& t = stroke.transform;
+    const double ox = static_cast<double>(stroke.origin.x) * kTileSize;
+    const double oy = static_cast<double>(stroke.origin.y) * kTileSize;
+    const std::array<double, 9> m = {
+        t.xx - (ox * t.wx),
+        t.xy - (ox * t.wy),
+        (t.xx * ox) + (t.xy * oy) + t.x - (ox * ((t.wx * ox) + (t.wy * oy) + t.w)),
+        t.yx - (oy * t.wx),
+        t.yy - (oy * t.wy),
+        (t.yx * ox) + (t.yy * oy) + t.y - (oy * ((t.wx * ox) + (t.wy * oy) + t.w)),
+        t.wx,
+        t.wy,
+        (t.wx * ox) + (t.wy * oy) + t.w,
+    };
+    // The adjugate over the determinant, the true inverse: a point the transform reaches maps back with q.z above 0.
+    const std::array<double, 9> adj = {
+        (m[4] * m[8]) - (m[5] * m[7]), (m[2] * m[7]) - (m[1] * m[8]), (m[1] * m[5]) - (m[2] * m[4]),
+        (m[5] * m[6]) - (m[3] * m[8]), (m[0] * m[8]) - (m[2] * m[6]), (m[2] * m[3]) - (m[0] * m[5]),
+        (m[3] * m[7]) - (m[4] * m[6]), (m[1] * m[6]) - (m[0] * m[7]), (m[0] * m[4]) - (m[1] * m[3]),
+    };
+    const double det = (m[0] * adj[0]) + (m[1] * adj[3]) + (m[2] * adj[6]);
+    const auto row = [&](std::size_t r) {
+        return std::array{static_cast<float>(adj[r * 3] / det), static_cast<float>(adj[(r * 3) + 1] / det),
+                          static_cast<float>(adj[(r * 3) + 2] / det)};
+    };
+    TransformConstants constants{
+        .inverseX = row(0),
+        .dstPage = 0,
+        .inverseY = row(1),
+        .srcPage = 0,
+        .inverseW = row(2),
+        .selection = 0,
+        .gridPos = {},
+        .tableOrigin = {.x = first.x - stroke.origin.x, .y = first.y - stroke.origin.y},
+        .tableWidth = width,
+        .tableHeight = height,
+        .rectOriginX = 0,
+        .rectOriginY = 0,
+        .restore = t == StrokeTransform{} ? 1u : 0u,
+    };
+    state.list->SetComputeRootSignature(state.transformRootSignature);
+    state.list->SetPipelineState(state.transformPipeline);
+    state.list->SetComputeRootShaderResourceView(kTransformTableRootParameter, state.strokeDabs->GetGPUVirtualAddress()
+                                                                                   + (frameDabs * sizeof(StrokeDab)));
+    state.list->SetComputeRootDescriptorTable(kTransformTilePoolRootParameter, ViewGpu(kTilePoolFirstUav));
+    bool painted = false;
+    for (const StrokeTile& tile : stroke.tiles) {
+        if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
+            continue;
+        }
+        painted = true;
+        const TileGridPos gridPos = TileKeyGridPos(tile.key);
+        constants.gridPos = {.x = gridPos.x - stroke.origin.x, .y = gridPos.y - stroke.origin.y};
+        constants.rectOriginX = tile.dirtyMinX;
+        constants.rectOriginY = tile.dirtyMinY;
+        constants.dstPage = TileAtlasCellPage(tile.cell);
+        constants.srcPage = TileAtlasCellPage(tile.backupCell);
+        constants.selection = TileKeyLayer(tile.key) == canvas.selection ? 1u : 0u;
+        state.list->SetComputeRoot32BitConstants(kTransformConstantsRootParameter, kTransformConstantCount, &constants,
+                                                 0);
+        state.list->Dispatch((tile.dirtyMaxX - tile.dirtyMinX + kTransformGroupSize - 1) / kTransformGroupSize,
+                             (tile.dirtyMaxY - tile.dirtyMinY + kTransformGroupSize - 1) / kTransformGroupSize, 1);
+    }
+    return painted;
+}
+
 // Backs up the tiles the stroke reached, then recomputes their dirty texels from the backups and the dabs. Each
 // frame in flight reads its own copy of the dabs.
 void RecordStroke() noexcept {
@@ -540,7 +672,10 @@ void RecordStroke() noexcept {
                       && !SelectionEmpty(strokeCanvas.selectionBounds);
     std::vector<bool> held(stroke.tiles.size());
     bool painted = false;
-    for (std::size_t i = 0; i < stroke.tiles.size(); ++i) {
+    if (stroke.shape == StrokeShape::Transform) {
+        painted = RecordTransform(held, frameDabs);
+    }
+    for (std::size_t i = 0; i < stroke.tiles.size() && stroke.shape != StrokeShape::Transform; ++i) {
         const StrokeTile& tile = stroke.tiles[i];
         if (tile.backupCell == kTileAtlasCellInvalid || tile.dirtyMinX >= tile.dirtyMaxX) {
             continue;
@@ -1066,8 +1201,13 @@ void RecordTileDownloads() noexcept {
                     CanvasViewConstants constants =
                         CanvasViewConstantsMake(view.viewport, origin, slot.width, slot.height, dpiScale);
                     const CanvasState& viewCanvas = gAppState.canvases[view.canvas];
-                    constants.selection =
-                        viewCanvas.selection != kLayerInvalid && !SelectionEmpty(viewCanvas.selectionBounds) ? 1 : 0;
+                    // A transform's box replaces the outline.
+                    const auto transformBox = AppTransformBox(view.window);
+                    constants.selection = viewCanvas.selection != kLayerInvalid
+                                               && !SelectionEmpty(viewCanvas.selectionBounds)
+                                               && (!transformBox || transformBox->view != view.id)
+                                            ? 1
+                                            : 0;
                     const Color::Srgb bg = viewCanvas.backgroundColor;
                     const float background[4] = {bg.r * bg.a, bg.g * bg.a, bg.b * bg.a, bg.a};
                     state.list->ClearRenderTargetView(rtvs[i], background, 1, &rect);
@@ -1504,6 +1644,23 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
     }
 
     {
+        ZoneScopedN("CreateTransformPipeline");
+        if (const HRESULT hr = state.device->CreateRootSignature(0, transform_cs, sizeof(transform_cs),
+                                                                 IID_PPV_ARGS(&state.transformRootSignature));
+            FAILED(hr)) {
+            return fail("ID3D12Device::CreateRootSignature", hr);
+        }
+        const D3D12_COMPUTE_PIPELINE_STATE_DESC desc{
+            .pRootSignature = state.transformRootSignature,
+            .CS = {.pShaderBytecode = transform_cs, .BytecodeLength = sizeof(transform_cs)},
+        };
+        if (const HRESULT hr = state.device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&state.transformPipeline));
+            FAILED(hr)) {
+            return fail("ID3D12Device::CreateComputePipelineState", hr);
+        }
+    }
+
+    {
         ZoneScopedN("CreateHistoryPipeline");
         if (const HRESULT hr = state.device->CreateRootSignature(0, history_cs, sizeof(history_cs),
                                                                  IID_PPV_ARGS(&state.historyRootSignature));
@@ -1601,6 +1758,8 @@ void GraphicsTerminate() noexcept {
     Release(state.compositePipeline);
     Release(state.compositeRootSignature);
     Release(state.strokeDabs);
+    Release(state.transformPipeline);
+    Release(state.transformRootSignature);
     Release(state.strokePipeline);
     Release(state.strokeRootSignature);
     Release(state.mipPipeline);

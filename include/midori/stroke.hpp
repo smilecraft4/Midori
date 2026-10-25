@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace Midori {
@@ -23,9 +24,65 @@ enum struct StrokeMode : std::uint8_t {
 };
 
 enum struct StrokeShape : std::uint8_t {
-    Brush, // dabs along the path
-    Rect,  // one dab, the rectangle from the first point to the last
+    Brush,     // dabs along the path
+    Rect,      // one dab, the rectangle from the first point to the last
+    Transform, // no dab: the selected pixels of the layer and the selection with them, placed by StrokeState::transform
 };
+
+// Canvas units to canvas units, projectively: (xx x + xy y + x, yx x + yy y + y) / (wx x + wy y + w). The divisor
+// stays above 0 over the box a transform lifts, a texel around included.
+struct StrokeTransform {
+    double xx{1.0};
+    double xy{};
+    double yx{};
+    double yy{1.0};
+    double x{};
+    double y{};
+    double wx{};
+    double wy{};
+    double w{1.0};
+
+    bool operator==(const StrokeTransform&) const = default;
+};
+
+struct StrokeTransformPoint {
+    double x;
+    double y;
+};
+
+[[nodiscard]] constexpr StrokeTransformPoint StrokeTransformApply(const StrokeTransform& transform, double x,
+                                                                  double y) noexcept {
+    const double w = (transform.wx * x) + (transform.wy * y) + transform.w;
+    return StrokeTransformPoint{
+        .x = ((transform.xx * x) + (transform.xy * y) + transform.x) / w,
+        .y = ((transform.yx * x) + (transform.yy * y) + transform.y) / w,
+    };
+}
+
+// A transform's lifted tiles, the grid positions under the selection's bounds, fit in the dab buffer of one frame as
+// two pages each.
+constexpr std::size_t kStrokeTransformTilesMax = std::size_t{kStrokeDabMax} * 4;
+
+[[nodiscard]] constexpr SelectionBounds StrokeTransformBounds(const StrokeTransform& transform,
+                                                              const SelectionBounds& box) noexcept {
+    SelectionBounds bounds{
+        .minX = std::numeric_limits<double>::max(),
+        .minY = std::numeric_limits<double>::max(),
+        .maxX = std::numeric_limits<double>::lowest(),
+        .maxY = std::numeric_limits<double>::lowest(),
+    };
+    // With the divisor above 0 over the box, its image is the convex quad of its corners'.
+    for (const double x : {box.minX, box.maxX}) {
+        for (const double y : {box.minY, box.maxY}) {
+            const StrokeTransformPoint to = StrokeTransformApply(transform, x, y);
+            bounds.minX = std::min(bounds.minX, to.x);
+            bounds.minY = std::min(bounds.minY, to.y);
+            bounds.maxX = std::max(bounds.maxX, to.x);
+            bounds.maxY = std::max(bounds.maxY, to.y);
+        }
+    }
+    return bounds;
+}
 
 // Mirrors StrokeDab in stroke.cs.hlsl. A rectangle when `width` is above 0, from (x, y), its edge antialiased.
 struct StrokeDab {
@@ -80,6 +137,7 @@ struct StrokeState {
     StrokePoint first;               // the first input point
     StrokePoint last;                // the last input point
     SelectionBounds selectionBefore; // a stroke of the selection's mask: its canvas's bounds before it
+    StrokeTransform transform;       // Transform: where the pixels lifted from under selectionBefore go
     float toNextDab{};               // canvas units along the path
     TileGridPos origin;              // the tile of the first point, the dabs and the GPU work relative to it
     Layer layer{};
@@ -90,6 +148,7 @@ struct StrokeState {
     StrokeShape shape{};
     std::uint32_t endFrame{}; // gAppState.frame when it ended
     bool ended{};             // the GPU records what is left, then StrokeUpdate frees the backups
+    bool discard{};           // ended having put every tile back: freed without a history record
 };
 
 [[nodiscard]] constexpr float DabRadius(const BrushState& brush, float pressure) noexcept {
@@ -110,9 +169,14 @@ struct StrokeState {
 
 // Edits the tiles of `layer` and deletes their level 1-3 tiles. Paint, Replace and Exclude create the tiles missing
 // under the stroke while atlas cells can be taken; Erase and Intersect skip them. Replace and Intersect also take in
-// every tile the layer has, so what no dab covers is cleared. A tile not streamed in waits for it and joins late. A Rect stroke has no dab until StrokeTo.
+// every tile the layer has, so what no dab covers is cleared. A tile not streamed in waits for it and joins late. A
+// Rect stroke has no dab until StrokeTo. A Transform takes in the tiles of `layer` and of the selection under the
+// selection's bounds, and starts where they are.
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept;
 void StrokeTo(StrokePoint point) noexcept;
+// A Transform's pixels go where `transform` puts them; where they were and where they go are recomputed, creating the
+// tiles missing there.
+void StrokeTransformTo(const StrokeTransform& transform) noexcept;
 void StrokeEnd() noexcept;
 // Once per update, after the frame's visible tiles are marked: attaches the waiting tiles that streamed in and
 // keeps the others wanted. Once the GPU recorded all of an ended stroke, its backups become a history record and it

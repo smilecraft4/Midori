@@ -125,11 +125,16 @@ constexpr std::array kModNames = {
     return root;
 }
 
-// The sum of ChordMatch over the first `count` pending chords, -1 when one does not match.
+// The sum of ChordMatch over the first `count` pending chords, -1 when one does not match. A one-key Hold binding also
+// matches with more modifiers held, which it may read, as navigation does for its modes.
 [[nodiscard]] int PendingMatch(const KeymapState& keymap, const KeyBinding& binding, std::uint8_t count) noexcept {
+    const bool hold = binding.length == 1 && kActions[std::to_underlying(binding.action)].kind == ActionKind::Hold;
     int score = 0;
     for (std::uint8_t c = 0; c < count; ++c) {
-        const KeyMod carried = c == 0 ? KeyMod::None : keymap.pending[c].mods & keymap.pending[c - 1].mods;
+        KeyMod carried = c == 0 ? KeyMod::None : keymap.pending[c].mods & keymap.pending[c - 1].mods;
+        if (hold) {
+            carried = keymap.pending[c].mods;
+        }
         const int match = ChordMatch(binding.chords[c], keymap.pending[c], carried);
         if (match == 0) {
             return -1;

@@ -61,14 +61,18 @@ enum struct ActionId : std::uint8_t {
     SettingsCanvasFilter,
     ToolSelect,
     SelectionClear,
+    SelectionDelete,
     SelectionOp,
+    SelectionTransform,
+    TransformApply,
+    TransformCancel,
     Count_,
 };
 
 enum struct ActionKind : std::uint8_t {
     Trigger,
     Repeat, // runs again while the last key of its sequence repeats
-    Hold,   // lasts while the last key of its sequence is down
+    Hold,   // lasts while the last key of its sequence is down; one key alone also matches with more modifiers held
 };
 
 // Searched by name and description, shown as `name(argName)` description (keys), the name as keybinds.json writes it.
@@ -132,9 +136,14 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
      .argName = "filter"},
     {.name = "tool.select", .description = "Switch to the rectangle selection"},
     {.name = "selection.clear", .description = "Select nothing"},
+    {.name = "selection.delete", .description = "Delete the active layer's pixels in the selection"},
     {.name = "selection.op",
      .description = "Change how a new selection combines with the last one",
      .argName = "operation"},
+    {.name = "selection.transform",
+     .description = "Move, scale, turn or distort the selection and the active layer's pixels in it"},
+    {.name = "transform.apply", .description = "Apply the transform"},
+    {.name = "transform.cancel", .description = "Put the selection and its pixels back as they were"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -193,6 +202,10 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "E", .action = ActionId::ToolErase, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "M", .action = ActionId::ToolSelect, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+D", .action = ActionId::SelectionClear, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Delete", .action = ActionId::SelectionDelete, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Ctrl+T", .action = ActionId::SelectionTransform, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Enter", .action = ActionId::TransformApply, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Escape", .action = ActionId::TransformCancel, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+B, 1", .action = ActionId::BrushPreset, .arg = 1, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+B, 2", .action = ActionId::BrushPreset, .arg = 2, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+B, 3", .action = ActionId::BrushPreset, .arg = 3, .context = ActionContext::Canvas},

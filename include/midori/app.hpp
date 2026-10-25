@@ -13,6 +13,7 @@
 #include "midori/ui.hpp"
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -65,6 +66,46 @@ struct BrushAdjustState {
     BrushAdjustMode mode{}; // None while not adjusting
 };
 
+enum struct TransformDrag : std::uint8_t {
+    None,
+    Move,        // inside the box
+    Rotate,      // outside it
+    Scale,       // a corner, or an edge along one axis
+    Distort,     // a handle with Alt: its corner, or the two of its edge, alone; the box to any convex quad
+};
+
+// Around the center of the box under the selection's bounds as the transform began: distorted, scaled, turned
+// clockwise, then moved.
+struct TransformParams {
+    double offsetX{}; // canvas units
+    double offsetY{};
+    double scaleX{1.0};
+    double scaleY{1.0};
+    double rotation{}; // radians
+    StrokeTransform distort; // canvas units, before the rest: where the corners dragged alone put the box
+};
+
+// The selection's transform, a Transform stroke while it lasts. Every pointer move recomputes from the drag's start.
+struct TransformState {
+    TransformParams params;
+    TransformParams start; // as the drag started
+    double pointerStartX;  // canvas units
+    double pointerStartY;
+    TransformDrag drag{};
+    std::int8_t handleX{}; // Scale and Distort: -1, 0 or 1 along the box's x axis, where the handle is
+    std::int8_t handleY{};
+    bool wasModified{};    // the canvas's before the transform, put back when canceled
+    bool held{};           // begun by a drag with Ctrl held: applied once Ctrl is up and the drag over
+};
+
+// A transform's box as a view shows it: the transform in progress, or with Ctrl held the selection's, which a drag
+// starts transforming.
+struct TransformBox {
+    StrokeTransform transform;
+    SelectionBounds source;
+    CanvasView view;
+};
+
 // Where a window shows the brush outline this frame, in physical pixels of its client area. AppWindowFrame sets it,
 // the renderer draws it over the canvas, inverting what is below.
 struct BrushOutlineState {
@@ -88,6 +129,7 @@ struct AppState {
     BrushAdjustState brushAdjust;
     std::array<BrushOutlineState, kWindowMax> brushOutlines; // indexed by window
     StrokeState stroke;
+    TransformState transform;
     ToolsState tools;
     KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
     std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax
@@ -163,6 +205,11 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept;
 [[nodiscard]] Result<void> AppPaintMode() noexcept;
 [[nodiscard]] Result<void> AppEraseMode() noexcept;
 [[nodiscard]] Result<void> AppSelectMode() noexcept;
-[[nodiscard]] Result<void> AppTransformMode() noexcept;
+// The window's selection and the active layer's pixels under it follow handles over the canvas until applied, as one
+// undo step, or canceled.
+[[nodiscard]] Result<void> AppTransformMode(Window window) noexcept;
+void AppTransformEnd(bool apply) noexcept;
+[[nodiscard]] bool AppTransforming() noexcept;
+[[nodiscard]] std::optional<TransformBox> AppTransformBox(Window window) noexcept;
 
 } // namespace Midori

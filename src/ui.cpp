@@ -317,6 +317,20 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
     ImGui::End();
 }
 
+// Canvas to view DIPs as in the renderer, then to client pixels around the floored center.
+[[nodiscard]] ImVec2 CanvasToScreen(const Viewport& viewport, const WindowState& windowState, double x,
+                                    double y) noexcept {
+    const float c = std::cos(viewport.rot);
+    const float s = std::sin(viewport.rot);
+    const float centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
+    const float centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
+    const float scale = windowState.dpiScale;
+    const auto dx = static_cast<float>(x - viewport.posX);
+    const auto dy = static_cast<float>(y - viewport.posY);
+    return ImVec2(centerX + (((dx * c) - (dy * s)) * viewport.zoomX * scale),
+                  centerY + (((dx * s) + (dy * c)) * viewport.zoomY * scale));
+}
+
 // Outlines every tile of the window's canvas view on screen, labeled with its atlas cell and grid position. Drawn
 // behind the UI windows, over the canvas.
 void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
@@ -325,18 +339,9 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
     if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
         return;
     }
-    // Canvas to view DIPs as in the renderer, then to client pixels around the floored center.
     const Viewport& viewport = view->viewport;
-    const float c = std::cos(viewport.rot);
-    const float s = std::sin(viewport.rot);
-    const float centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
-    const float centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
-    const float scale = windowState.dpiScale;
     const auto toScreen = [&](double x, double y) {
-        const auto dx = static_cast<float>(x - viewport.posX);
-        const auto dy = static_cast<float>(y - viewport.posY);
-        return ImVec2(centerX + (((dx * c) - (dy * s)) * viewport.zoomX * scale),
-                      centerY + (((dx * s) + (dy * c)) * viewport.zoomY * scale));
+        return CanvasToScreen(viewport, windowState, x, y);
     };
 
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
@@ -363,6 +368,40 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
         // Shadowed so it reads over any paint.
         drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text.data());
         drawList->AddText(pos, IM_COL32_WHITE, text.data());
+    }
+}
+
+// The box of the selection's transform and its handles over its view, behind the UI windows.
+void TransformOverlay(Window window, const WindowState& windowState) noexcept {
+    const auto box = AppTransformBox(window);
+    if (!box) {
+        return;
+    }
+    ZoneScopedN("TransformOverlay");
+    const Viewport& viewport = gAppState.canvasViews[box->view].viewport;
+    const SelectionBounds& source = box->source;
+    const auto at = [&](double handleX, double handleY) {
+        const double x = ((source.minX + source.maxX) * 0.5) + (handleX * (source.maxX - source.minX) * 0.5);
+        const double y = ((source.minY + source.maxY) * 0.5) + (handleY * (source.maxY - source.minY) * 0.5);
+        const StrokeTransformPoint to = StrokeTransformApply(box->transform, x, y);
+        return CanvasToScreen(viewport, windowState, to.x, to.y);
+    };
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    // An accent rather than white or black, so it shows over light and dark paint alike.
+    const ImU32 accent = ImGui::GetColorU32(ImGuiCol_CheckMark);
+    drawList->AddQuad(at(-1.0, -1.0), at(1.0, -1.0), at(1.0, 1.0), at(-1.0, 1.0), accent, 1.0f);
+    const float half = std::round(4.0f * windowState.dpiScale);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0) {
+                continue;
+            }
+            const ImVec2 handle = at(x, y);
+            const ImVec2 min(handle.x - half, handle.y - half);
+            const ImVec2 max(handle.x + half, handle.y + half);
+            drawList->AddRectFilled(min, max, IM_COL32_WHITE);
+            drawList->AddRect(min, max, accent, 0.0f, 1.0f);
+        }
     }
 }
 
@@ -817,13 +856,28 @@ struct HelpEntry {
     Text action;
 };
 
-constexpr std::array kHelpPaint = {HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePaint}};
-constexpr std::array kHelpErase = {HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureErase}};
+constexpr std::array kHelpPaint = {
+    HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePaint},
+    HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
+};
+constexpr std::array kHelpErase = {
+    HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureErase},
+    HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
+};
 constexpr std::array kHelpSelect = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureSelect},
     HelpEntry{.keys = Text::GestureShiftDragOnly, .action = Text::GestureShiftSelect},
     HelpEntry{.keys = Text::GestureAltDrag, .action = Text::GestureAltSelect},
     HelpEntry{.keys = Text::GestureShiftAltDrag, .action = Text::GestureShiftAltSelect},
+    HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
+};
+constexpr std::array kHelpTransform = {
+    HelpEntry{.keys = Text::GestureDragInside, .action = Text::GestureTransformMove},
+    HelpEntry{.keys = Text::GestureDragHandle, .action = Text::GestureTransformScale},
+    HelpEntry{.keys = Text::GestureShiftDragCorner, .action = Text::GestureTransformRatio},
+    HelpEntry{.keys = Text::GestureAltDragHandle, .action = Text::GestureTransformDistort},
+    HelpEntry{.keys = Text::GestureDragOutside, .action = Text::GestureTransformRotate},
+    HelpEntry{.keys = Text::GestureShiftDragOutside, .action = Text::GestureTransformSnap},
 };
 constexpr std::array kHelpStroke = {HelpEntry{.keys = Text::GestureRelease, .action = Text::GestureFinishStroke}};
 constexpr std::array kHelpNavigate = {
@@ -843,8 +897,9 @@ constexpr std::array kHelpAdjust = {
 enum struct HelpBindings : std::uint8_t {
     None,
     All,
-    Layers, // layer.*
-    NotLayers,
+    Layers,    // layer.*
+    NotLayers, // neither layer.* nor transform.*
+    Transform, // transform.*
 };
 
 // The gestures, then the bindings of `context` that `which` picks, as the keymap has them.
@@ -868,8 +923,10 @@ void HelpTable(const char* id, std::span<const HelpEntry> gestures, ActionContex
         const KeyBinding& binding = keymap.bindings[i];
         const ActionInfo& info = kActions[std::to_underlying(binding.action)];
         const bool layer = std::string_view(info.name).starts_with("layer.");
+        const bool transform = std::string_view(info.name).starts_with("transform.");
         if (binding.context != context || (which == HelpBindings::Layers && !layer)
-            || (which == HelpBindings::NotLayers && layer)) {
+            || (which == HelpBindings::NotLayers && (layer || transform))
+            || (which == HelpBindings::Transform && !transform)) {
             continue;
         }
         if (info.argName) {
@@ -899,6 +956,9 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
     } else if (app.spaceDown || app.navigate.mode != NavigateMode::None) {
         ImGui::TextUnformatted(TextGet(Text::HelpNavigating));
         HelpTable("navigate", kHelpNavigate, ActionContext::Navigate, HelpBindings::All);
+    } else if (AppTransforming()) {
+        ImGui::TextUnformatted(TextGet(Text::HelpTransforming));
+        HelpTable("transform", kHelpTransform, ActionContext::Canvas, HelpBindings::Transform);
     } else if (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended) {
         Text title = app.stroke.mode == StrokeMode::Erase ? Text::HelpErasing : Text::HelpPainting;
         if (app.stroke.shape == StrokeShape::Rect) {
@@ -1349,6 +1409,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
         viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid) {
         ViewInfoOverlay(*state, *viewport, gAppState.canvases[view->canvas]);
     }
+    TransformOverlay(window, *state);
     WhichKeyOverlay(*state);
     if (gUiState.searchShown[window]) {
         SearchWindow(window);

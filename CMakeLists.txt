@@ -104,6 +104,7 @@ set(MIDORI_SHADERS_WIN32
     data/win32/shaders/tile_blend.cs.hlsl
     data/win32/shaders/tile_mip.cs.hlsl
     data/win32/shaders/stroke.cs.hlsl
+    data/win32/shaders/transform.cs.hlsl
     data/win32/shaders/history.cs.hlsl
 )
 

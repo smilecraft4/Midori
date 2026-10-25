@@ -203,7 +203,7 @@ void HistoryPushStroke(StrokeState& stroke) noexcept {
         .firstOrder = static_cast<std::uint32_t>(history.orders.size()),
         .orderBeforeCount = 0,
         .orderAfterCount = 0,
-        .selection = stroke.layer == canvas.selection,
+        .selection = stroke.layer == canvas.selection || stroke.shape == StrokeShape::Transform,
     };
     if (record.selection) {
         record.selectionBefore = stroke.selectionBefore;

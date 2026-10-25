@@ -97,16 +97,16 @@ void StrokeTileAttach(StrokeTile& tile, TileState& tileState, bool created) noex
     ++tileState.edits;
 }
 
-// The tile at `gridPos` takes in the texels [minX, maxX) x [minY, maxY): they are recomputed from the dabs since
-// `firstDab` from its backup. A missing tile is created when `create`.
-void TileTouch(StrokeState& stroke, TileGridPos gridPos, std::uint16_t minX, std::uint16_t minY, std::uint16_t maxX,
-               std::uint16_t maxY, std::uint32_t firstDab, bool create) noexcept {
+// The tile of `layer` at `gridPos` takes in the texels [minX, maxX) x [minY, maxY): they are recomputed from the dabs
+// since `firstDab` from its backup. A missing tile is created when `create`.
+void TileTouch(StrokeState& stroke, Layer layer, TileGridPos gridPos, std::uint16_t minX, std::uint16_t minY,
+               std::uint16_t maxX, std::uint16_t maxY, std::uint32_t firstDab, bool create) noexcept {
     CanvasState& canvas = gAppState.canvases[stroke.canvas];
-    const TileKey key = TileKeyMake(stroke.layer, 0, gridPos);
+    const TileKey key = TileKeyMake(layer, 0, gridPos);
     auto found = canvas.tileIndices.find(key);
     const bool created = found == canvas.tileIndices.end();
     if (created) {
-        const Tile tile{.canvas = stroke.canvas, .mip = 0, .layer = stroke.layer, .gridPos = gridPos};
+        const Tile tile{.canvas = stroke.canvas, .mip = 0, .layer = layer, .gridPos = gridPos};
         if (!create || !TileNew(tile)) {
             return;
         }
@@ -155,9 +155,15 @@ void TileTouch(StrokeState& stroke, TileGridPos gridPos, std::uint16_t minX, std
     canvas.modified = true;
 }
 
-// Every tile the box [minX, maxX] x [minY, maxY] overlaps, in canvas units from the stroke's origin tile, takes in its
-// texels there. Erasing nothing leaves nothing, so only the other modes create tiles.
-void BoxTouch(StrokeState& stroke, float minX, float minY, float maxX, float maxY, std::uint32_t firstDab) noexcept {
+// Erasing or intersecting nothing leaves nothing.
+[[nodiscard]] bool StrokeCreates(StrokeMode mode) noexcept {
+    return mode != StrokeMode::Erase && mode != StrokeMode::Intersect;
+}
+
+// Every tile of `layer` the box [minX, maxX] x [minY, maxY] overlaps, in canvas units from the stroke's origin tile,
+// takes in its texels there.
+void BoxTouch(StrokeState& stroke, Layer layer, float minX, float minY, float maxX, float maxY, std::uint32_t firstDab,
+              bool create) noexcept {
     const auto tileOf = [](float pos) {
         return static_cast<TileAxis>(std::floor(pos / static_cast<float>(kTileSize)));
     };
@@ -165,10 +171,9 @@ void BoxTouch(StrokeState& stroke, float minX, float minY, float maxX, float max
         for (TileAxis x = tileOf(minX); x <= tileOf(maxX); ++x) {
             const TileAxis originX = x * kTileSize;
             const TileAxis originY = y * kTileSize;
-            TileTouch(stroke, TileGridPos{.x = stroke.origin.x + x, .y = stroke.origin.y + y},
+            TileTouch(stroke, layer, TileGridPos{.x = stroke.origin.x + x, .y = stroke.origin.y + y},
                       TileTexel(std::floor(minX), originX), TileTexel(std::floor(minY), originY),
-                      TileTexel(std::ceil(maxX), originX), TileTexel(std::ceil(maxY), originY), firstDab,
-                      stroke.mode != StrokeMode::Erase && stroke.mode != StrokeMode::Intersect);
+                      TileTexel(std::ceil(maxX), originX), TileTexel(std::ceil(maxY), originY), firstDab, create);
         }
     }
 }
@@ -205,7 +210,8 @@ void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
     const auto index = static_cast<std::uint32_t>(stroke.dabs.size());
     stroke.dabs.push_back(dab);
     const float reach = dab.radius + 1.0f;
-    BoxTouch(stroke, dab.x - reach, dab.y - reach, dab.x + reach, dab.y + reach, index);
+    BoxTouch(stroke, stroke.layer, dab.x - reach, dab.y - reach, dab.x + reach, dab.y + reach, index,
+             StrokeCreates(stroke.mode));
 }
 
 // The rectangle from the first point to `point` replaces the stroke's one dab. Where the last one was is recomputed
@@ -229,11 +235,32 @@ void RectSet(StrokeState& stroke, StrokePoint point) noexcept {
     if (!stroke.dabs.empty()) {
         const StrokeDab last = stroke.dabs.front();
         stroke.dabs.front() = dab;
-        BoxTouch(stroke, last.x - 1.0f, last.y - 1.0f, last.x + last.width + 1.0f, last.y + last.height + 1.0f, 0);
+        BoxTouch(stroke, stroke.layer, last.x - 1.0f, last.y - 1.0f, last.x + last.width + 1.0f,
+                 last.y + last.height + 1.0f, 0, StrokeCreates(stroke.mode));
     } else {
         stroke.dabs.push_back(dab);
     }
-    BoxTouch(stroke, dab.x - 1.0f, dab.y - 1.0f, dab.x + dab.width + 1.0f, dab.y + dab.height + 1.0f, 0);
+    BoxTouch(stroke, stroke.layer, dab.x - 1.0f, dab.y - 1.0f, dab.x + dab.width + 1.0f, dab.y + dab.height + 1.0f, 0,
+             StrokeCreates(stroke.mode));
+}
+
+// Where the pixels lifted from under the selection's bounds land through `transform`, and a texel around for the
+// filtering, in canvas units from the stroke's origin tile: recomputed in the layer and in the selection.
+void TransformTouch(StrokeState& stroke, const StrokeTransform& transform) noexcept {
+    const SelectionBounds& source = stroke.selectionBefore;
+    const SelectionBounds box = StrokeTransformBounds(transform, SelectionBounds{
+                                                                     .minX = source.minX - 1.0,
+                                                                     .minY = source.minY - 1.0,
+                                                                     .maxX = source.maxX + 1.0,
+                                                                     .maxY = source.maxY + 1.0,
+                                                                 });
+    const double originX = static_cast<double>(stroke.origin.x) * kTileSize;
+    const double originY = static_cast<double>(stroke.origin.y) * kTileSize;
+    const Layer selection = gAppState.canvases[stroke.canvas].selection;
+    for (const Layer layer : {stroke.layer, selection}) {
+        BoxTouch(stroke, layer, static_cast<float>(box.minX - originX), static_cast<float>(box.minY - originY),
+                 static_cast<float>(box.maxX - originX), static_cast<float>(box.maxY - originY), 0, true);
+    }
 }
 
 } // namespace
@@ -255,9 +282,32 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     stroke.mode = beginInfo.mode;
     stroke.blendMode = beginInfo.blendMode;
     stroke.shape = beginInfo.shape;
+    stroke.transform = {};
     stroke.ended = false;
+    stroke.discard = false;
     const CanvasState& canvas = gAppState.canvases[stroke.canvas];
     stroke.selectionBefore = canvas.selectionBounds;
+    if (stroke.shape == StrokeShape::Transform) {
+        const SelectionBounds& source = stroke.selectionBefore;
+        const auto tileOf = [](double pos) {
+            return static_cast<TileAxis>(std::floor(pos / kTileSize));
+        };
+        std::vector<TileKey> lifted;
+        for (const TileState& tile : canvas.tiles) {
+            const Layer layer = TileKeyLayer(tile.key);
+            const TileGridPos gridPos = TileKeyGridPos(tile.key);
+            if ((layer == stroke.layer || layer == canvas.selection) && TileKeyMip(tile.key) == 0
+                && gridPos.x >= tileOf(source.minX) && gridPos.x <= tileOf(source.maxX)
+                && gridPos.y >= tileOf(source.minY) && gridPos.y <= tileOf(source.maxY)) {
+                lifted.push_back(tile.key);
+            }
+        }
+        // Touching may create tiles, which moves `canvas.tiles`.
+        for (const TileKey key : lifted) {
+            TileTouch(stroke, TileKeyLayer(key), TileKeyGridPos(key), 0, 0, kTileSize, kTileSize, 0, false);
+        }
+        return;
+    }
     if (stroke.mode == StrokeMode::Replace || stroke.mode == StrokeMode::Intersect) {
         std::vector<TileGridPos> existing;
         for (const TileState& tile : canvas.tiles) {
@@ -267,7 +317,7 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
         }
         // Touching may create tiles, which moves `canvas.tiles`.
         for (const TileGridPos gridPos : existing) {
-            TileTouch(stroke, gridPos, 0, 0, kTileSize, kTileSize, 0, false);
+            TileTouch(stroke, stroke.layer, gridPos, 0, 0, kTileSize, kTileSize, 0, false);
         }
     }
     if (stroke.shape == StrokeShape::Brush) {
@@ -299,6 +349,16 @@ void StrokeTo(StrokePoint point) noexcept {
     }
     stroke.toNextDab = static_cast<float>(along - length);
     stroke.last = point;
+}
+
+void StrokeTransformTo(const StrokeTransform& transform) noexcept {
+    ZoneScopedN("StrokeTransformTo");
+    StrokeState& stroke = gAppState.stroke;
+    MIDORI_ASSERT(stroke.canvas != kCanvasInvalid && !stroke.ended && stroke.shape == StrokeShape::Transform,
+                  "no transform to move");
+    TransformTouch(stroke, stroke.transform);
+    stroke.transform = transform;
+    TransformTouch(stroke, stroke.transform);
 }
 
 void StrokeEnd() noexcept {
@@ -354,7 +414,9 @@ void StrokeUpdate() noexcept {
     if (waiting) {
         MIDORI_LOG_WARN("stroke: tiles not streamed in after {} updates stay unpainted", kStrokeWaitUpdates);
     }
-    HistoryPushStroke(stroke);
+    if (!stroke.discard) {
+        HistoryPushStroke(stroke);
+    }
     StrokeRelease();
 }
 
@@ -372,6 +434,7 @@ void StrokeRelease() noexcept {
     stroke.canvas = kCanvasInvalid;
     stroke.view = kCanvasViewInvalid;
     stroke.ended = false;
+    stroke.discard = false;
 }
 
 } // namespace Midori

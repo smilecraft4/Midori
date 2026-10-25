@@ -304,7 +304,7 @@ struct SelectionBounds {
 // stroke; layers[firstLayer, firstLayer + layerCount) and the layersOrder before then after it, from
 // orders[firstOrder], for a layer op.
 struct HistoryRecord {
-    SelectionBounds selectionBefore; // `selection`: a stroke of the selection's mask
+    SelectionBounds selectionBefore; // `selection`: a stroke of the selection's mask, or a transform
     SelectionBounds selectionAfter;
     std::uint64_t sequence;          // orders records across canvases, the oldest goes first when the store is full
     std::uint32_t firstBlock;

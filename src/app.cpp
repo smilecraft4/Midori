@@ -797,8 +797,415 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     }
 }
 
-// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, the arrow with the Select tool, else
-// none, the brush outline showing where the paint or erase lands. Zoom drags right or up, like the NE-SW arrow;
+// Around a transform's handles, in DIPs.
+constexpr float kTransformHandleReachDips = 8.0f;
+constexpr double kTransformRotationSnap = std::numbers::pi / 12.0;
+// Keeps a scale from flattening the box, which could not be turned back.
+constexpr double kTransformScaleMin = 1e-3;
+// Over the lifted box, the smallest divisor of a distortion against the largest: what one texel may grow to.
+constexpr double kTransformDivisorRatioMin = 1.0 / 64.0;
+
+struct CanvasPoint {
+    double x;
+    double y;
+};
+
+// The grid positions a transform of what is under `bounds` lifts its tiles from.
+[[nodiscard]] std::size_t TransformTileCount(const SelectionBounds& bounds) noexcept {
+    const auto tileOf = [](double pos) {
+        return static_cast<std::int64_t>(std::floor(pos / kTileSize));
+    };
+    return static_cast<std::size_t>((tileOf(bounds.maxX) - tileOf(bounds.minX) + 1)
+                                    * (tileOf(bounds.maxY) - tileOf(bounds.minY) + 1));
+}
+
+// `a` after `b`.
+[[nodiscard]] StrokeTransform TransformCompose(const StrokeTransform& a, const StrokeTransform& b) noexcept {
+    return StrokeTransform{
+        .xx = (a.xx * b.xx) + (a.xy * b.yx) + (a.x * b.wx),
+        .xy = (a.xx * b.xy) + (a.xy * b.yy) + (a.x * b.wy),
+        .yx = (a.yx * b.xx) + (a.yy * b.yx) + (a.y * b.wx),
+        .yy = (a.yx * b.xy) + (a.yy * b.yy) + (a.y * b.wy),
+        .x = (a.xx * b.x) + (a.xy * b.y) + (a.x * b.w),
+        .y = (a.yx * b.x) + (a.yy * b.y) + (a.y * b.w),
+        .wx = (a.wx * b.xx) + (a.wy * b.yx) + (a.w * b.wx),
+        .wy = (a.wx * b.xy) + (a.wy * b.yy) + (a.w * b.wy),
+        .w = (a.wx * b.x) + (a.wy * b.y) + (a.w * b.w),
+    };
+}
+
+// The adjugate over the determinant: a point the transform reaches maps back with a divisor above 0.
+[[nodiscard]] StrokeTransform TransformInverse(const StrokeTransform& t) noexcept {
+    StrokeTransform inverse{
+        .xx = (t.yy * t.w) - (t.y * t.wy),
+        .xy = (t.x * t.wy) - (t.xy * t.w),
+        .yx = (t.y * t.wx) - (t.yx * t.w),
+        .yy = (t.xx * t.w) - (t.x * t.wx),
+        .x = (t.xy * t.y) - (t.x * t.yy),
+        .y = (t.x * t.yx) - (t.xx * t.y),
+        .wx = (t.yx * t.wy) - (t.yy * t.wx),
+        .wy = (t.xy * t.wx) - (t.xx * t.wy),
+        .w = (t.xx * t.yy) - (t.xy * t.yx),
+    };
+    const double det = (t.xx * inverse.xx) + (t.xy * inverse.yx) + (t.x * inverse.wx);
+    for (double* value : {&inverse.xx, &inverse.xy, &inverse.yx, &inverse.yy, &inverse.x, &inverse.y, &inverse.wx,
+                          &inverse.wy, &inverse.w}) {
+        *value /= det;
+    }
+    return inverse;
+}
+
+// The source box onto the quad of `to`, clockwise from the top left corner (Heckbert's square to quad).
+[[nodiscard]] StrokeTransform TransformQuad(const SelectionBounds& source, const std::array<CanvasPoint, 4>& to) noexcept {
+    const auto [x0, y0] = to[0];
+    const auto [x1, y1] = to[1];
+    const auto [x2, y2] = to[2];
+    const auto [x3, y3] = to[3];
+    const double dx1 = x1 - x2;
+    const double dy1 = y1 - y2;
+    const double dx2 = x3 - x2;
+    const double dy2 = y3 - y2;
+    const double dx3 = x0 - x1 + x2 - x3;
+    const double dy3 = y0 - y1 + y2 - y3;
+    const double det = (dx1 * dy2) - (dx2 * dy1);
+    const double g = ((dx3 * dy2) - (dx2 * dy3)) / det;
+    const double h = ((dx1 * dy3) - (dx3 * dy1)) / det;
+    const StrokeTransform square{
+        .xx = x1 - x0 + (g * x1),
+        .xy = x3 - x0 + (h * x3),
+        .yx = y1 - y0 + (g * y1),
+        .yy = y3 - y0 + (h * y3),
+        .x = x0,
+        .y = y0,
+        .wx = g,
+        .wy = h,
+        .w = 1.0,
+    };
+    const double width = source.maxX - source.minX;
+    const double height = source.maxY - source.minY;
+    return TransformCompose(square, StrokeTransform{
+                                        .xx = 1.0 / width,
+                                        .yy = 1.0 / height,
+                                        .x = -source.minX / width,
+                                        .y = -source.minY / height,
+                                    });
+}
+
+// The divisor stays above 0 over the box a texel around, and no texel grows past kTransformDivisorRatioMin: a quad
+// folded or reaching the horizon could not be lifted.
+[[nodiscard]] bool TransformLiftable(const StrokeTransform& transform, const SelectionBounds& source) noexcept {
+    double min = std::numeric_limits<double>::max();
+    double max = 0.0;
+    for (const double x : {source.minX - 1.0, source.maxX + 1.0}) {
+        for (const double y : {source.minY - 1.0, source.maxY + 1.0}) {
+            const double w = (transform.wx * x) + (transform.wy * y) + transform.w;
+            if (!std::isfinite(w) || w <= 0.0) {
+                return false;
+            }
+            min = std::min(min, w);
+            max = std::max(max, w);
+        }
+    }
+    return min >= max * kTransformDivisorRatioMin;
+}
+
+[[nodiscard]] StrokeTransform TransformMatrix(const TransformParams& params, const SelectionBounds& source) noexcept {
+    const double centerX = (source.minX + source.maxX) * 0.5;
+    const double centerY = (source.minY + source.maxY) * 0.5;
+    const double c = std::cos(params.rotation);
+    const double s = std::sin(params.rotation);
+    // R(rotation) S(scale).
+    StrokeTransform transform{
+        .xx = c * params.scaleX,
+        .xy = -s * params.scaleY,
+        .yx = s * params.scaleX,
+        .yy = c * params.scaleY,
+    };
+    transform.x = centerX + params.offsetX - ((transform.xx * centerX) + (transform.xy * centerY));
+    transform.y = centerY + params.offsetY - ((transform.yx * centerX) + (transform.yy * centerY));
+    return params.distort == StrokeTransform{} ? transform : TransformCompose(transform, params.distort);
+}
+
+// Where the transform puts the point of the source box half its size from the center along each axis times `handle`.
+[[nodiscard]] CanvasPoint TransformPoint(const StrokeTransform& transform, const SelectionBounds& source,
+                                         double handleX, double handleY) noexcept {
+    const double x = ((source.minX + source.maxX) * 0.5) + (handleX * (source.maxX - source.minX) * 0.5);
+    const double y = ((source.minY + source.maxY) * 0.5) + (handleY * (source.maxY - source.minY) * 0.5);
+    const StrokeTransformPoint to = StrokeTransformApply(transform, x, y);
+    return CanvasPoint{.x = to.x, .y = to.y};
+}
+
+struct TransformHit {
+    TransformDrag drag;
+    std::int8_t handleX;
+    std::int8_t handleY;
+};
+
+// A handle within reach of the pointer scales, or with Alt moves alone; else inside the box moves and outside turns.
+[[nodiscard]] TransformHit TransformHitTest(const TransformBox& box, CanvasPoint point) noexcept {
+    const double reach =
+        kTransformHandleReachDips / std::max(std::abs(gAppState.canvasViews[box.view].viewport.zoomX), 1e-6f);
+    const bool alt = HasAnyFlag(gAppState.keyMods, KeyMod::Alt);
+    for (std::int8_t y = -1; y <= 1; ++y) {
+        for (std::int8_t x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0) {
+                continue;
+            }
+            const CanvasPoint handle = TransformPoint(box.transform, box.source, x, y);
+            if (std::hypot(point.x - handle.x, point.y - handle.y) <= reach) {
+                return TransformHit{
+                    .drag = alt ? TransformDrag::Distort : TransformDrag::Scale, .handleX = x, .handleY = y};
+            }
+        }
+    }
+    const StrokeTransform inverse = TransformInverse(box.transform);
+    const double w = (inverse.wx * point.x) + (inverse.wy * point.y) + inverse.w;
+    const StrokeTransformPoint from = StrokeTransformApply(inverse, point.x, point.y);
+    const bool inside = w > 0.0 && from.x >= box.source.minX && from.x <= box.source.maxX
+                     && from.y >= box.source.minY && from.y <= box.source.maxY;
+    return TransformHit{.drag = inside ? TransformDrag::Move : TransformDrag::Rotate, .handleX = 0, .handleY = 0};
+}
+
+// The resize arrow closest to the direction from the box's center to the handle, as the view shows it.
+[[nodiscard]] WindowCursor TransformResizeCursor(const TransformBox& box, std::int8_t handleX,
+                                                 std::int8_t handleY) noexcept {
+    const Viewport& viewport = gAppState.canvasViews[box.view].viewport;
+    const CanvasPoint center = TransformPoint(box.transform, box.source, 0.0, 0.0);
+    const CanvasPoint handle = TransformPoint(box.transform, box.source, handleX, handleY);
+    const double dx = handle.x - center.x;
+    const double dy = handle.y - center.y;
+    const double c = std::cos(static_cast<double>(viewport.rot));
+    const double s = std::sin(static_cast<double>(viewport.rot));
+    const double screenX = ((dx * c) - (dy * s)) * viewport.zoomX;
+    const double screenY = ((dx * s) + (dy * c)) * viewport.zoomY;
+    double angle = std::atan2(screenY, screenX);
+    if (angle < 0.0) {
+        angle += std::numbers::pi;
+    }
+    constexpr std::array kCursors = {WindowCursor::ResizeEW, WindowCursor::ResizeNWSE, WindowCursor::ResizeNS,
+                                     WindowCursor::ResizeNESW};
+    return kCursors[static_cast<std::size_t>(std::lround(angle / (std::numbers::pi / 4.0))) % kCursors.size()];
+}
+
+// The drag's, or what a press there would start.
+[[nodiscard]] WindowCursor TransformCursor(const TransformBox& box) noexcept {
+    const TransformState& transform = gAppState.transform;
+    TransformHit hit{.drag = TransformDrag::None, .handleX = 0, .handleY = 0};
+    if (AppTransforming()) {
+        hit = TransformHit{.drag = transform.drag, .handleX = transform.handleX, .handleY = transform.handleY};
+    }
+    if (hit.drag == TransformDrag::None) {
+        const auto point = CanvasPointUnderPointer(box.view, 1.0f);
+        if (!point) {
+            return WindowCursor::Arrow;
+        }
+        hit = TransformHitTest(box, CanvasPoint{.x = point->x, .y = point->y});
+    }
+    switch (hit.drag) {
+        case TransformDrag::Move:
+            return WindowCursor::Move;
+        case TransformDrag::Scale:
+        case TransformDrag::Distort:
+            return TransformResizeCursor(box, hit.handleX, hit.handleY);
+        case TransformDrag::Rotate:
+        case TransformDrag::None:
+            break;
+    }
+    return WindowCursor::Arrow;
+}
+
+// The drag from its start to `point`. Scaling keeps the opposite handle in place, and with Shift on a corner the box's
+// proportions; Shift snaps a turn to 15 degrees. A handle moved alone takes its corner, or the two of its edge, with
+// the pointer while the others stay.
+void TransformDragTo(CanvasPoint point) noexcept {
+    ZoneScopedN("TransformDragTo");
+    AppState& app = gAppState;
+    TransformState& transform = app.transform;
+    const SelectionBounds& source = app.stroke.selectionBefore;
+    const TransformParams& start = transform.start;
+    const bool shift = HasAnyFlag(app.keyMods, KeyMod::Shift);
+    const double width = source.maxX - source.minX;
+    const double height = source.maxY - source.minY;
+    const double hx = transform.handleX;
+    const double hy = transform.handleY;
+    TransformParams flat = start;
+    flat.distort = {};
+    const StrokeTransform affine = TransformMatrix(flat, source);
+    // The pointers taken out of the distortion, so the handles and the center are where they would be without it.
+    const StrokeTransform unproject = TransformCompose(affine, TransformInverse(TransformMatrix(start, source)));
+    const StrokeTransformPoint flatPoint = StrokeTransformApply(unproject, point.x, point.y);
+    const StrokeTransformPoint flatStart = StrokeTransformApply(unproject, transform.pointerStartX,
+                                                                transform.pointerStartY);
+    const CanvasPoint center = TransformPoint(affine, source, 0.0, 0.0);
+    const double c = std::cos(start.rotation);
+    const double s = std::sin(start.rotation);
+    // Turned back into the box's axes.
+    const auto unturn = [&](double x, double y) {
+        return CanvasPoint{.x = (c * x) + (s * y), .y = (c * y) - (s * x)};
+    };
+    TransformParams params = start;
+    switch (transform.drag) {
+        case TransformDrag::Move:
+            params.offsetX = start.offsetX + point.x - transform.pointerStartX;
+            params.offsetY = start.offsetY + point.y - transform.pointerStartY;
+            break;
+        case TransformDrag::Rotate:
+            params.rotation = start.rotation + std::atan2(flatPoint.y - center.y, flatPoint.x - center.x)
+                            - std::atan2(flatStart.y - center.y, flatStart.x - center.x);
+            if (shift) {
+                params.rotation = std::round(params.rotation / kTransformRotationSnap) * kTransformRotationSnap;
+            }
+            break;
+        case TransformDrag::Scale: {
+            const CanvasPoint anchor = TransformPoint(affine, source, -hx, -hy);
+            const CanvasPoint turned = unturn(flatPoint.x - anchor.x, flatPoint.y - anchor.y);
+            const double dx = turned.x;
+            const double dy = turned.y;
+            if (hx != 0.0) {
+                params.scaleX = dx / (hx * width);
+            }
+            if (hy != 0.0) {
+                params.scaleY = dy / (hy * height);
+            }
+            if (shift && hx != 0.0 && hy != 0.0) {
+                const double vx = start.scaleX * hx * width;
+                const double vy = start.scaleY * hy * height;
+                const double along = ((dx * vx) + (dy * vy)) / ((vx * vx) + (vy * vy));
+                params.scaleX = start.scaleX * along;
+                params.scaleY = start.scaleY * along;
+            }
+            const auto clamp = [](double scale) {
+                return std::abs(scale) < kTransformScaleMin ? std::copysign(kTransformScaleMin, scale) : scale;
+            };
+            params.scaleX = clamp(params.scaleX);
+            params.scaleY = clamp(params.scaleY);
+            // The center is half the new box from the anchor.
+            const double halfX = params.scaleX * hx * width * 0.5;
+            const double halfY = params.scaleY * hy * height * 0.5;
+            params.offsetX = anchor.x + (c * halfX) - (s * halfY) - ((source.minX + source.maxX) * 0.5);
+            params.offsetY = anchor.y + (s * halfX) + (c * halfY) - ((source.minY + source.maxY) * 0.5);
+            break;
+        }
+        case TransformDrag::Distort: {
+            constexpr std::array<std::array<std::int8_t, 2>, 4> kCorners = {{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}};
+            const StrokeTransform before = TransformMatrix(start, source);
+            std::array<CanvasPoint, 4> corners{};
+            for (std::size_t i = 0; i < kCorners.size(); ++i) {
+                corners[i] = TransformPoint(before, source, kCorners[i][0], kCorners[i][1]);
+                if ((transform.handleX == 0 || kCorners[i][0] == transform.handleX)
+                    && (transform.handleY == 0 || kCorners[i][1] == transform.handleY)) {
+                    corners[i].x += point.x - transform.pointerStartX;
+                    corners[i].y += point.y - transform.pointerStartY;
+                }
+            }
+            const StrokeTransform quad = TransformQuad(source, corners);
+            if (!TransformLiftable(quad, source)) {
+                return;
+            }
+            params.distort = TransformCompose(TransformInverse(affine), quad);
+            break;
+        }
+        case TransformDrag::None:
+            return;
+    }
+    transform.params = params;
+    const StrokeTransform matrix = TransformMatrix(params, source);
+    CanvasState& canvas = app.canvases[app.stroke.canvas];
+    const bool wasModified = canvas.modified;
+    StrokeTransformTo(matrix);
+    canvas.selectionBounds = StrokeTransformBounds(matrix, source);
+    CanvasEdited(canvas.id, wasModified);
+}
+
+// With Ctrl held, a left press over a view showing the selection's box starts transforming it.
+[[nodiscard]] bool TransformHoldBegin(const Event& event, bool uiWants) noexcept {
+    if (event.type != EventType::Button || event.button.button != Button::Left
+        || event.button.inputState != InputState::Press || uiWants || AppTransforming()
+        || !AppTransformBox(event.button.window)) {
+        return false;
+    }
+    if (!AppTransformMode(event.button.window) || !AppTransforming()) {
+        return false;
+    }
+    gAppState.transform.held = true;
+    return true;
+}
+
+// A transform begun with Ctrl held is applied once Ctrl is up and no drag is left.
+void TransformHoldEnd() noexcept {
+    const TransformState& transform = gAppState.transform;
+    if (AppTransforming() && transform.held && transform.drag == TransformDrag::None
+        && !HasAnyFlag(gAppState.keyMods, KeyMod::Ctrl)) {
+        AppTransformEnd(true);
+    }
+}
+
+// While a selection is transformed, left drags over its view go to the handles, see TransformHitTest. Returns true
+// when the event belongs to the transform.
+[[nodiscard]] bool TransformEvent(const Event& event, bool uiWants) noexcept {
+    if (!AppTransforming() && !TransformHoldBegin(event, uiWants)) {
+        return false;
+    }
+    ZoneScopedN("TransformEvent");
+    AppState& app = gAppState;
+    TransformState& transform = app.transform;
+    const CanvasView view = app.stroke.view;
+    switch (event.type) {
+        case EventType::Button: {
+            if (event.button.button != Button::Left) {
+                return false;
+            }
+            if (event.button.inputState == InputState::Release) {
+                const bool dragging = std::exchange(transform.drag, TransformDrag::None) != TransformDrag::None;
+                TransformHoldEnd();
+                return dragging;
+            }
+            if (event.button.inputState != InputState::Press || uiWants
+                || WindowCanvasView(event.button.window) != view) {
+                return false;
+            }
+            const auto point = CanvasPointUnderPointer(view, 1.0f);
+            if (!point) {
+                return false;
+            }
+            const TransformHit hit = TransformHitTest(
+                TransformBox{.transform = app.stroke.transform, .source = app.stroke.selectionBefore, .view = view},
+                CanvasPoint{.x = point->x, .y = point->y});
+            transform.drag = hit.drag;
+            transform.handleX = hit.handleX;
+            transform.handleY = hit.handleY;
+            transform.start = transform.params;
+            transform.pointerStartX = point->x;
+            transform.pointerStartY = point->y;
+            return true;
+        }
+        case EventType::Pointer: {
+            if (transform.drag == TransformDrag::None || app.canvasViews[view].window != event.pointer.window) {
+                return false;
+            }
+            if (const auto point = CanvasPointUnderPointer(view, 1.0f)) {
+                TransformDragTo(CanvasPoint{.x = point->x, .y = point->y});
+            }
+            return true;
+        }
+        case EventType::Key:
+            TransformHoldEnd();
+            return false;
+        case EventType::WindowFocus:
+            if (!event.windowFocus.focused) {
+                transform.drag = TransformDrag::None;
+                if (transform.held) {
+                    AppTransformEnd(true);
+                }
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
+// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, the transform's over its box, the
+// arrow with the Select tool, else none, the brush outline showing where the paint or erase lands. Zoom drags right or up, like the NE-SW arrow;
 // rotation has no system cursor.
 [[nodiscard]] WindowCursor AppCursor(Window window) noexcept {
     ZoneScopedN("AppCursor");
@@ -826,6 +1233,9 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
         case NavigateMode::None:
             break;
     }
+    if (const auto box = AppTransformBox(window)) {
+        return TransformCursor(*box);
+    }
     return app.tools.tool == Tool::Select ? WindowCursor::Arrow : WindowCursor::None;
 }
 
@@ -840,7 +1250,7 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
         || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None
         || (app.tools.tool == Tool::Select && app.stroke.canvas == kCanvasInvalid)
-        || (app.stroke.canvas != kCanvasInvalid && app.stroke.shape == StrokeShape::Rect)) {
+        || (app.stroke.canvas != kCanvasInvalid && app.stroke.shape != StrokeShape::Brush) || AppTransformBox(window)) {
         return {};
     }
     const float scale = std::abs(app.canvasViews[view].viewport.zoomX) * windowState->dpiScale;
@@ -993,12 +1403,40 @@ void SelectionClear(Window window) noexcept {
     CanvasEdited(canvas.id, wasModified);
 }
 
+// selection.delete: an Erase stroke of one rectangle over the selection's bounds, which the selection clips, as one
+// undo step. A texel larger each side, so its antialiased edge leaves the selection's own.
+void SelectionDelete(Window window) noexcept {
+    if (ActionBlocked(window, ActionId::SelectionDelete, 0) != Text::Count_) {
+        return;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
+    if (canvas.history.pending != 0) {
+        return;
+    }
+    const SelectionBounds& bounds = canvas.selectionBounds;
+    const bool wasModified = canvas.modified;
+    StrokeBegin(StrokeBeginInfo{
+        .brush = {},
+        .color = Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f},
+        .point = {.x = bounds.minX - 1.0, .y = bounds.minY - 1.0, .pressure = 1.0f},
+        .layer = canvas.activeLayer,
+        .view = view,
+        .mode = StrokeMode::Erase,
+        .blendMode = BlendMode::Normal,
+        .shape = StrokeShape::Rect,
+    });
+    StrokeTo(StrokePoint{.x = bounds.maxX + 1.0, .y = bounds.maxY + 1.0, .pressure = 1.0f});
+    StrokeEnd();
+    CanvasEdited(canvas.id, wasModified);
+}
+
 // Left drag paints or erases the active layer, by the current tool. Releases and focus loss end the stroke even when
 // the UI wants them. Returns true when the event belongs to the stroke.
 [[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
     ZoneScopedN("Paint");
     StrokeState& stroke = gAppState.stroke;
-    const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended;
+    const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended && stroke.shape != StrokeShape::Transform;
     switch (event.type) {
         case EventType::Button: {
             if (event.button.button != Button::Left) {
@@ -1091,6 +1529,11 @@ void SelectionClear(Window window) noexcept {
         case ActionId::CanvasSaveAs:
             return AppCanvasSaveAs(window);
         case ActionId::HistoryUndo:
+            // Undoing a transform in progress cancels it.
+            if (AppTransforming()) {
+                AppTransformEnd(false);
+                return {};
+            }
             return AppUndo(window);
         case ActionId::HistoryRedo:
             return AppRedo(window);
@@ -1215,8 +1658,22 @@ void SelectionClear(Window window) noexcept {
                 app.tools.selectionOp = static_cast<SelectionOp>(arg);
             }
             return {};
+        case ActionId::SelectionTransform:
+            // One begun with Ctrl held then lasts until applied.
+            if (AppTransforming()) {
+                app.transform.held = false;
+                return {};
+            }
+            return AppTransformMode(window);
+        case ActionId::TransformApply:
+        case ActionId::TransformCancel:
+            AppTransformEnd(action == ActionId::TransformApply);
+            return {};
         case ActionId::SelectionClear:
             SelectionClear(window);
+            return {};
+        case ActionId::SelectionDelete:
+            SelectionDelete(window);
             return {};
         case ActionId::Count_:
             break;
@@ -1283,6 +1740,12 @@ void ActionEnd(ActionId action) noexcept {
             break;
         case ActionKind::Trigger:
             break;
+    }
+    // A key pressed with Ctrl still held after a transform it began applies it first, unless it undoes it.
+    if (AppTransforming() && app.transform.held && app.transform.drag == TransformDrag::None
+        && binding.action != ActionId::HistoryUndo && binding.action != ActionId::TransformCancel
+        && binding.action != ActionId::SelectionTransform && binding.action != ActionId::ViewNavigate) {
+        AppTransformEnd(true);
     }
     return ActionRun(key.window, binding.action, binding.arg);
 }
@@ -1358,7 +1821,7 @@ Result<void> AppEvent(Event event) noexcept {
         gAppState.pointerPressure = event.pointer.pressure;
     }
     const bool uiWants = UiEvent(event);
-    if (BrushAdjust(event) || Navigate(event, uiWants) || Paint(event, uiWants)) {
+    if (BrushAdjust(event) || Navigate(event, uiWants) || TransformEvent(event, uiWants) || Paint(event, uiWants)) {
         return {};
     }
     if (event.type == EventType::Key) {
@@ -1620,6 +2083,9 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
             if (!canvas) {
                 return Text::ReasonNoCanvas;
             }
+            if (AppTransforming()) {
+                return action == ActionId::HistoryUndo ? Text::Count_ : Text::ReasonPainting;
+            }
             const std::int32_t at = static_cast<std::int32_t>(canvas->history.current) + canvas->history.pending;
             if (action == ActionId::HistoryUndo) {
                 return at > 0 ? Text::Count_ : Text::ReasonNoUndo;
@@ -1681,6 +2147,40 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
                 return Text::ReasonNoSelection;
             }
             return painting ? Text::ReasonPainting : needsEdit();
+        case ActionId::SelectionDelete: {
+            const Text blocked = needsLayer();
+            if (blocked != Text::Count_) {
+                return blocked;
+            }
+            if (canvas->selection == kLayerInvalid || SelectionEmpty(canvas->selectionBounds)) {
+                return Text::ReasonNoSelection;
+            }
+            if (app.stroke.canvas != kCanvasInvalid) {
+                return Text::ReasonPainting;
+            }
+            return LayerPaintable(*canvas, canvas->activeLayer) ? Text::Count_ : Text::ReasonNotPaintable;
+        }
+        case ActionId::SelectionTransform: {
+            const Text blocked = needsLayer();
+            if (blocked != Text::Count_) {
+                return blocked;
+            }
+            if (canvas->selection == kLayerInvalid || SelectionEmpty(canvas->selectionBounds)) {
+                return Text::ReasonNoSelection;
+            }
+            if (app.stroke.canvas != kCanvasInvalid) {
+                return Text::ReasonPainting;
+            }
+            if (!LayerPaintable(*canvas, canvas->activeLayer)) {
+                return Text::ReasonNotPaintable;
+            }
+            return TransformTileCount(canvas->selectionBounds) > kStrokeTransformTilesMax
+                     ? Text::ReasonSelectionTooLarge
+                     : Text::Count_;
+        }
+        case ActionId::TransformApply:
+        case ActionId::TransformCancel:
+            return AppTransforming() ? Text::Count_ : Text::ReasonNoTransform;
         case ActionId::CanvasOpenRecent:
             return arg < app.recentFiles.size() ? Text::Count_ : Text::ReasonNoRecent;
         case ActionId::CanvasRecentClear:
@@ -1711,6 +2211,80 @@ Result<void> AppEraseMode() noexcept {
     ZoneScopedN("AppEraseMode");
     gAppState.tools.tool = Tool::Erase;
     return {};
+}
+
+Result<void> AppTransformMode(Window window) noexcept {
+    ZoneScopedN("AppTransformMode");
+    if (ActionBlocked(window, ActionId::SelectionTransform, 0) != Text::Count_) {
+        return {};
+    }
+    CanvasState& canvas = *WindowCanvas(window);
+    if (canvas.history.pending != 0) {
+        return {};
+    }
+    const SelectionBounds& source = canvas.selectionBounds;
+    gAppState.transform = TransformState{.wasModified = canvas.modified};
+    StrokeBegin(StrokeBeginInfo{
+        .brush = {},
+        .color = Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f},
+        .point = {.x = (source.minX + source.maxX) * 0.5, .y = (source.minY + source.maxY) * 0.5, .pressure = 1.0f},
+        .layer = canvas.activeLayer,
+        .view = WindowCanvasView(window),
+        .mode = StrokeMode::Paint,
+        .blendMode = BlendMode::Normal,
+        .shape = StrokeShape::Transform,
+    });
+    CanvasEdited(canvas.id, gAppState.transform.wasModified);
+    return {};
+}
+
+// Applying what moves nothing, or canceling, puts every tile back from its backup and records nothing.
+void AppTransformEnd(bool apply) noexcept {
+    ZoneScopedN("AppTransformEnd");
+    if (!AppTransforming()) {
+        return;
+    }
+    StrokeState& stroke = gAppState.stroke;
+    CanvasState& canvas = gAppState.canvases[stroke.canvas];
+    gAppState.transform.drag = TransformDrag::None;
+    if (!apply || stroke.transform == StrokeTransform{}) {
+        StrokeTransformTo(StrokeTransform{});
+        canvas.selectionBounds = stroke.selectionBefore;
+        stroke.discard = true;
+        if (!gAppState.transform.wasModified && canvas.modified) {
+            canvas.modified = false;
+            CanvasTitlesUpdate(canvas.id);
+        }
+    }
+    StrokeEnd();
+}
+
+bool AppTransforming() noexcept {
+    const StrokeState& stroke = gAppState.stroke;
+    return stroke.canvas != kCanvasInvalid && !stroke.ended && stroke.shape == StrokeShape::Transform;
+}
+
+std::optional<TransformBox> AppTransformBox(Window window) noexcept {
+    const AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return std::nullopt;
+    }
+    if (AppTransforming()) {
+        if (app.stroke.view != view) {
+            return std::nullopt;
+        }
+        return TransformBox{.transform = app.stroke.transform, .source = app.stroke.selectionBefore, .view = view};
+    }
+    if (!HasAnyFlag(app.keyMods, KeyMod::Ctrl) || app.spaceDown || app.navigate.mode != NavigateMode::None
+        || ActionBlocked(window, ActionId::SelectionTransform, 0) != Text::Count_) {
+        return std::nullopt;
+    }
+    return TransformBox{
+        .transform = {},
+        .source = app.canvases[app.canvasViews[view].canvas].selectionBounds,
+        .view = view,
+    };
 }
 
 Result<void> AppSelectMode() noexcept {

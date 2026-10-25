@@ -90,6 +90,8 @@ struct GraphicsState {
     ID3D12PipelineState* outlinePipeline;
     ID3D12RootSignature* strokeRootSignature;    // embedded in stroke.cs.hlsl
     ID3D12PipelineState* strokePipeline;
+    ID3D12RootSignature* transformRootSignature; // embedded in transform.cs.hlsl
+    ID3D12PipelineState* transformPipeline;
     ID3D12RootSignature* mipRootSignature;       // embedded in tile_mip.cs.hlsl
     ID3D12PipelineState* mipPipeline;
     ID3D12RootSignature* compositeRootSignature; // embedded in tile_blend.cs.hlsl
