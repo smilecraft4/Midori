@@ -1,6 +1,8 @@
 #include "midori/ui.hpp"
 #include "midori/app.hpp"
 #include "midori/graphics.hpp"
+#include "midori/history.hpp"
+#include "midori/job.hpp"
 #include "midori/layer.hpp"
 #include "midori/log.hpp"
 #include "midori/text.hpp"
@@ -515,6 +517,181 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     label(text.data(), center.x, center.y - (lineHeight * 0.5f));
 }
 
+// What the user never sees: memory, jobs, transfers, the atlas, history and each canvas's tiles and queues. Plain
+// English, as a tool for whoever works on the app.
+void StatisticsWindow(Window window) noexcept {
+    ZoneScopedN("StatisticsWindow");
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 560.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(TextLabel(Text::Statistics), &gUiState.statisticsShown[window])) {
+        ImGui::End();
+        return;
+    }
+    const AppState& app = gAppState;
+    constexpr double kMiB = 1024.0 * 1024.0;
+    const auto mib = [](std::uint64_t bytes) {
+        return static_cast<double>(bytes) / kMiB;
+    };
+    // A label and its value, in two columns.
+    const auto row = [](const char* label, const char* format, auto... args) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::TableNextColumn();
+        ImGui::Text(format, args...);
+    };
+    const auto table = [](const char* id) {
+        return ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp);
+    };
+
+    if (ImGui::CollapsingHeader("Memory", ImGuiTreeNodeFlags_DefaultOpen) && table("memory")) {
+        const PlatformMemory process = PlatformMemoryGet();
+        const GraphicsMemory gpu = GraphicsMemoryGet();
+        row("Process private", "%.1f MiB", mib(process.privateBytes));
+        row("Working set", "%.1f MiB (peak %.1f)", mib(process.workingSet), mib(process.peakWorkingSet));
+        row("GPU local", "%.1f of %.1f MiB", mib(gpu.localUsage), mib(gpu.localBudget));
+        row("GPU non-local", "%.1f of %.1f MiB", mib(gpu.nonLocalUsage), mib(gpu.nonLocalBudget));
+        ImGui::EndTable();
+    }
+
+    if (ImGui::CollapsingHeader("Frames", ImGuiTreeNodeFlags_DefaultOpen) && table("frames")) {
+        const ImGuiIO& io = ImGui::GetIO();
+        row("Frame", "%u", app.frame);
+        row("This window", "%.1f ms, %.0f fps", io.DeltaTime * 1000.0f, io.Framerate);
+        row("Busy", "%s", app.busy ? "yes: every window presents" : "no: presents after input");
+        row("UI wants frames", "%s", UiWantsFrame(window) ? "yes" : "no");
+        row("UI vertices", "%d in %d windows", io.MetricsRenderVertices, io.MetricsRenderWindows);
+        ImGui::EndTable();
+    }
+
+    if (ImGui::CollapsingHeader("Jobs and transfers", ImGuiTreeNodeFlags_DefaultOpen) && table("jobs")) {
+        const JobsCount jobs = JobsCountGet();
+        row("Jobs pending", "%u on %u threads", jobs.pending, jobs.threads);
+        row("Queued", "%u reads, %u writes, %u finished", jobs.reads, jobs.writes, jobs.finished);
+        constexpr std::array kStates = {"free", "job", "ready", "record", "gpu"};
+        for (const auto& [name, slots] : {std::pair{"Upload slots", &app.transfers.uploads},
+                                          std::pair{"Download slots", &app.transfers.downloads}}) {
+            std::array<int, kStates.size()> counts{};
+            for (const TileSlot& slot : *slots) {
+                ++counts[std::to_underlying(slot.state)];
+            }
+            row(name, "%d %s, %d %s, %d %s, %d %s, %d %s", counts[0], kStates[0], counts[1], kStates[1], counts[2],
+                kStates[2], counts[3], kStates[3], counts[4], kStates[4]);
+        }
+        ImGui::EndTable();
+    }
+
+    if (ImGui::CollapsingHeader("Atlas and history", ImGuiTreeNodeFlags_DefaultOpen) && table("atlas")) {
+        const TileAtlasState& atlas = app.atlas;
+        std::array<int, kTileMipMax> cells{};
+        int blocks = 0;
+        for (std::size_t page = 0; page < std::size_t{atlas.count} * kTileAtlasPages; ++page) {
+            blocks += std::popcount(atlas.used[page]);
+            for (std::uint8_t b = 0; b < kTileAtlasBlocks;) {
+                if (((atlas.used[page] >> b) & 1) == 0) {
+                    ++b;
+                    continue;
+                }
+                const std::uint8_t level = atlas.owners[page][b].level;
+                ++cells[level];
+                b = static_cast<std::uint8_t>(b + TileAtlasLevelBlocks(level));
+            }
+        }
+        row("Atlases", "%d of %d", static_cast<int>(atlas.count), static_cast<int>(kTileAtlasMax));
+        row("Blocks used", "%d of %d", blocks, static_cast<int>(atlas.count) * kTileAtlasPages * kTileAtlasBlocks);
+        row("Cells by level", "%d, %d, %d, %d", cells[0], cells[1], cells[2], cells[3]);
+        const HistoryPoolState& pool = app.historyPool;
+        const auto slotsUsed = static_cast<std::uint32_t>(kHistorySlotsMax - pool.freeSlots.size());
+        row("History slots", "%u of %u (%.1f MiB)", slotsUsed, kHistorySlotsMax,
+            mib(std::uint64_t{slotsUsed} * kHistoryBlockBytes));
+        row("History ops", "%d waiting, %llu records pushed", static_cast<int>(pool.ops.size()),
+            static_cast<unsigned long long>(pool.sequence));
+        ImGui::EndTable();
+    }
+
+    for (const CanvasState& canvas : app.canvases) {
+        if (canvas.id == kCanvasInvalid) {
+            continue;
+        }
+        std::array<char, 64> title{};
+        std::format_to_n(title.data(), title.size() - 1, "Canvas {}{}###canvas{}", canvas.id,
+                         canvas.modified ? " (modified)" : "", canvas.id);
+        if (!ImGui::CollapsingHeader(title.data()) || !table("canvas")) {
+            continue;
+        }
+        std::array<int, kTileMipMax> levels{};
+        int loaded = 0;
+        int modified = 0;
+        int cachedDisk = 0;
+        int saved = 0;
+        int composite = 0;
+        int dirty = 0;
+        int moving = 0;
+        int evictable = 0;
+        for (const TileState& tile : canvas.tiles) {
+            ++levels[TileKeyMip(tile.key)];
+            loaded += HasAnyFlag(tile.flags, TileFlags::Loaded) ? 1 : 0;
+            modified += HasAnyFlag(tile.flags, TileFlags::Modified) ? 1 : 0;
+            cachedDisk += HasAnyFlag(tile.flags, TileFlags::CachedDisk) ? 1 : 0;
+            saved += HasAnyFlag(tile.flags, TileFlags::Saved) ? 1 : 0;
+            composite += HasAnyFlag(tile.flags, TileFlags::Composite) ? 1 : 0;
+            dirty += HasAnyFlag(tile.flags, TileFlags::Dirty) ? 1 : 0;
+            moving += tile.transfer != TileTransfer::None ? 1 : 0;
+            evictable += TileEvictable(canvas.id, tile) ? 1 : 0;
+        }
+        row("Tiles", "%d (by level %d, %d, %d, %d)", static_cast<int>(canvas.tiles.size()), levels[0], levels[1],
+            levels[2], levels[3]);
+        row("Loaded", "%d, %d in transfer, %d evictable", loaded, moving, evictable);
+        row("Modified", "%d, %d in the disk cache, %d saved", modified, cachedDisk, saved);
+        row("Composites", "%d, %d dirty", composite, dirty);
+        row("Queues", "%d creates, %d mip builds, %d composites", static_cast<int>(canvas.creates.size()),
+            static_cast<int>(canvas.mipBuilds.size()), static_cast<int>(canvas.composites.size()));
+        row("Wanted", "%d composites, %d deletes to save", static_cast<int>(canvas.compositeWants.size()),
+            static_cast<int>(canvas.tileDeletes.size()));
+        row("Layers", "%d in the order, %d ids free", static_cast<int>(canvas.layersOrder.size()),
+            static_cast<int>(canvas.freeLayers.size()));
+        const HistoryState& history = canvas.history;
+        row("History", "%u of %d records, %d pending", history.current, static_cast<int>(history.records.size()),
+            static_cast<int>(history.pending));
+        row("History data", "%d blocks, %d tiles, %d layers", static_cast<int>(history.blocks.size()),
+            static_cast<int>(history.tiles.size()), static_cast<int>(history.layers.size()));
+        if (canvas.merge.result != kLayerInvalid) {
+            row("Merge", "%d left, %d queued", static_cast<int>(canvas.merge.remaining.size()),
+                static_cast<int>(canvas.merge.queued.size()));
+        }
+        for (const auto& [name, file] : {std::pair{"File", &canvas.file}, std::pair{"Disk cache", &canvas.cache}}) {
+            if (file->env) {
+                const CanvasFileSize size = CanvasFileSizeGet(*file);
+                row(name, "%.1f MiB, %.1f used", mib(size.file), mib(size.used));
+            } else {
+                row(name, "none");
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    if (ImGui::CollapsingHeader("Stroke and input") && table("stroke")) {
+        const StrokeState& stroke = app.stroke;
+        if (stroke.canvas == kCanvasInvalid) {
+            row("Stroke", "none");
+        } else {
+            constexpr std::array kShapes = {"brush", "rect", "lasso", "transform"};
+            const auto pending = std::ranges::count_if(stroke.tiles, StrokeTilePending);
+            row("Stroke", "%s on canvas %u%s", kShapes[std::to_underlying(stroke.shape)], stroke.canvas,
+                stroke.ended ? ", ended" : "");
+            row("Stroke tiles", "%d, %d pending", static_cast<int>(stroke.tiles.size()), static_cast<int>(pending));
+            row("Stroke dabs", "%d", static_cast<int>(stroke.dabs.size()));
+        }
+        row("Transform", "%s", AppTransforming() ? (app.transform.held ? "held with Ctrl" : "open") : "none");
+        const KeymapState& keymap = app.keymap;
+        row("Keymap", "%d bindings, %d keys pending", static_cast<int>(keymap.bindings.size()),
+            static_cast<int>(keymap.pendingLength));
+        row("Held, repeating", "%d, %d", keymap.holding, keymap.repeating);
+        row("Action requests", "%d", static_cast<int>(app.actionRequests.size()));
+        ImGui::EndTable();
+    }
+    ImGui::End();
+}
+
 // The chosen atlas's cells at mip 0, kTileAtlasDebugColumns per row, sized to the window width. Premultiplied cells are
 // drawn as straight alpha, so translucent paint looks darker than on the canvas.
 void TileAtlasWindow(Window window) noexcept {
@@ -858,6 +1035,19 @@ void SettingsWindow(Window window) noexcept {
         ActionRequestPush(window, ActionId::SettingsCanvasFilter, static_cast<std::uint32_t>(filter));
     }
     ImGui::SetItemTooltip("%s", TextGet(Text::CanvasFilterTip));
+    // In percent, as the view panel shows the zoom.
+    constexpr ImGuiSliderFlags kZoomFlags = ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp;
+    float zoomMin = gAppState.zoomMin * 100.0f;
+    if (ImGui::SliderFloat(TextLabel(Text::ZoomMin), &zoomMin, kViewportZoomMin * 100.0f, kViewportZoomMax * 100.0f,
+                           "%.1f%%", kZoomFlags)) {
+        gAppState.zoomMin = std::min(zoomMin / 100.0f, gAppState.zoomMax);
+    }
+    ImGui::SetItemTooltip(TextGet(Text::ZoomMinTip), AppZoomSupported(window) * 100.0f);
+    float zoomMax = gAppState.zoomMax * 100.0f;
+    if (ImGui::SliderFloat(TextLabel(Text::ZoomMax), &zoomMax, kViewportZoomMin * 100.0f, kViewportZoomMax * 100.0f,
+                           "%.1f%%", kZoomFlags)) {
+        gAppState.zoomMax = std::max(zoomMax / 100.0f, gAppState.zoomMin);
+    }
     ImGui::End();
 }
 
@@ -1305,6 +1495,8 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.tileAtlasShown[window] = false;
     gUiState.tileAtlasIndex[window] = 0;
     gUiState.tileCellsShown[window] = false;
+    gUiState.statisticsShown[window] = false;
+    gUiState.imguiMetricsShown[window] = false;
     gUiState.hidden[window] = false;
     gUiState.helpShown[window] = gUiState.preferences.helpShown;
     gUiState.viewShown[window] = gUiState.preferences.viewShown;
@@ -1511,6 +1703,8 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
         if (ImGui::BeginMenu(TextLabel(Text::Debug))) {
             MenuAction(window, Text::TileAtlas, ActionId::DebugTileAtlas, gUiState.tileAtlasShown[window]);
             MenuAction(window, Text::TileCells, ActionId::DebugTileCells, gUiState.tileCellsShown[window]);
+            MenuAction(window, Text::Statistics, ActionId::DebugStatistics, gUiState.statisticsShown[window]);
+            MenuAction(window, Text::ImGuiMetrics, ActionId::DebugImGuiMetrics, gUiState.imguiMetricsShown[window]);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -1527,11 +1721,11 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             ImGui::Text(TextGet(Text::ViewCenter), viewport->posX, viewport->posY);
             ImGui::Text(TextGet(Text::ViewPointer), under.posX, under.posY);
             if (ImGui::Button(ShortcutLabel(Text::FlipX, ActionId::ViewFlipHorizontal).data())) {
-                *viewport = ViewportZoom(*viewport, -1.0f, 1.0f);
+                *viewport = ViewportZoom(*viewport, -1.0f, 1.0f, kViewportZoomMin, kViewportZoomMax);
             }
             ImGui::SameLine();
             if (ImGui::Button(ShortcutLabel(Text::FlipY, ActionId::ViewFlipVertical).data())) {
-                *viewport = ViewportZoom(*viewport, 1.0f, -1.0f);
+                *viewport = ViewportZoom(*viewport, 1.0f, -1.0f, kViewportZoomMin, kViewportZoomMax);
             }
             ImGui::SameLine();
             if (ImGui::Button(ShortcutLabel(Text::Reset, ActionId::ViewReset).data())) {
@@ -1546,6 +1740,12 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     }
     if (gUiState.tileAtlasShown[window]) {
         TileAtlasWindow(window);
+    }
+    if (gUiState.statisticsShown[window]) {
+        StatisticsWindow(window);
+    }
+    if (gUiState.imguiMetricsShown[window]) {
+        ImGui::ShowMetricsWindow(&gUiState.imguiMetricsShown[window]);
     }
     if (gUiState.layersShown[window]) {
         LayersWindow(window);

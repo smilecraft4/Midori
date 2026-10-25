@@ -13,8 +13,9 @@ uint TileCell(int2 tile) {
 }
 
 // A texel of the view level's grid, which runs on across the tiles, so filtering never sees an edge. A tile shown from
-// level 0 while its own level is missing (painting deletes it until the stroke ends) averages the texel's footprint,
-// the same box tile_mip.cs.hlsl builds the level with, so nothing changes once it is built.
+// a finer level while its own is missing or loading (painting deletes it until the stroke ends) averages the texel's
+// footprint, the same box tile_mip.cs.hlsl builds the level with, so nothing changes once it is built. One shown from a
+// coarser level stretches the texel under it, blurrier until its own loads.
 float4 LevelTexel(int2 texel) {
     const uint shift = 8 - level; // texels per tile: 256 >> level
     const uint cell = TileCell(texel >> shift);
@@ -22,11 +23,16 @@ float4 LevelTexel(int2 texel) {
         return 0.0;
     }
     const uint2 local = uint2(texel & int((1u << shift) - 1u));
-    const uint scale = 1u << (level - TileAtlasCellLevel(cell));
-    const uint2 origin = TileAtlasCellOrigin(cell) + local * scale;
+    const uint cellLevel = TileAtlasCellLevel(cell);
     const uint page = TileAtlasCellPage(cell);
     const uint atlas = TileAtlasPageAtlas(page);
     const uint slice = TileAtlasPageSlice(page);
+    if (cellLevel > level) {
+        const uint2 coarse = TileAtlasCellOrigin(cell) + (local >> (cellLevel - level));
+        return tilePools[NonUniformResourceIndex(atlas)].Load(int4(coarse, slice, 0));
+    }
+    const uint scale = 1u << (level - cellLevel);
+    const uint2 origin = TileAtlasCellOrigin(cell) + local * scale;
     float4 sum = 0.0;
     [loop]
     for (uint y = 0; y < scale; ++y) {

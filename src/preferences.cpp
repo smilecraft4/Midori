@@ -198,6 +198,9 @@ Result<Preferences> PreferencesLoad() noexcept {
     if (const int tool = ReadName(root, "tool", kToolNames); tool >= 0) {
         preferences.tools.tool = static_cast<Tool>(tool);
     }
+    Read(root, "zoomMin", preferences.zoomMin, kViewportZoomMin, kViewportZoomMax);
+    Read(root, "zoomMax", preferences.zoomMax, kViewportZoomMin, kViewportZoomMax);
+    preferences.zoomMax = std::max(preferences.zoomMax, preferences.zoomMin);
     if (const auto paint = root.find("paint"); paint != root.end() && paint->is_object()) {
         ReadBrush(*paint, preferences.tools.paint.brush);
         Read(*paint, "color", preferences.tools.paint.color);
@@ -301,6 +304,8 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         {"language", preferences.language},
         {"tool", kToolNames[std::to_underlying(tools.tool)]},
         {"canvasFilter", kCanvasFilterNames[std::to_underlying(preferences.canvasFilter)]},
+        {"zoomMin", preferences.zoomMin},
+        {"zoomMax", preferences.zoomMax},
         {"paint",
          {
              {"brush", BrushJson(tools.paint.brush)},

@@ -138,6 +138,8 @@ struct AppState {
     std::string language;                           // the preference, a code of kLanguages or empty for the system's
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's
+    float zoomMin{kViewportZoomMin};                   // the settings' limits of every view
+    float zoomMax{kViewportZoomMax};
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible
     // tile grid positions, so a tile with an older `visibleFrame` is shown nowhere.
     std::uint32_t frame;
@@ -146,6 +148,7 @@ struct AppState {
     float pointerPressure;
     KeyMod keyMods; // as of the last key event
     bool spaceDown;
+    bool busy;      // AppBusy as of the last update: every window with a canvas presents each vsync
     bool modal;     // a dialog is up: its message loop still delivers events, which are dropped
 };
 
@@ -201,6 +204,9 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept;
 
 // Borderless over the window's monitor, or back to how it was.
 [[nodiscard]] Result<void> AppToggleFullscreen(Window window) noexcept;
+
+// The lowest zoom whose tiles the tile atlas holds at the window's size. Lower is allowed, but shows only part of them.
+[[nodiscard]] float AppZoomSupported(Window window) noexcept;
 
 [[nodiscard]] Result<void> AppPaintMode() noexcept;
 [[nodiscard]] Result<void> AppEraseMode() noexcept;

@@ -258,19 +258,28 @@ void TileMipsDelete(Canvas canvas, TileKey key) noexcept {
     }
 }
 
+TileMip TileDrawnLevel(const CanvasState& canvas, TileKey key, TileMip viewLevel) noexcept {
+    const auto loaded = [&](int mip) {
+        if (mip < 0 || mip >= kTileMipMax) {
+            return false;
+        }
+        const auto found = canvas.tileIndices.find(TileKeyWithMip(key, static_cast<TileMip>(mip)));
+        return found != canvas.tileIndices.end() && HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded);
+    };
+    for (int distance = 0; distance < kTileMipMax; ++distance) {
+        if (loaded(viewLevel - distance)) {
+            return static_cast<TileMip>(viewLevel - distance);
+        }
+        if (loaded(viewLevel + distance)) {
+            return static_cast<TileMip>(viewLevel + distance);
+        }
+    }
+    return kTileMipMax;
+}
+
 bool TileDrawn(const CanvasState& canvas, const TileState& tile, TileMip viewLevel) noexcept {
-    if (!HasAnyFlag(tile.flags, TileFlags::Loaded)) {
-        return false;
-    }
-    const TileMip mip = TileKeyMip(tile.key);
-    if (mip == viewLevel) {
-        return true;
-    }
-    if (mip != 0) {
-        return false;
-    }
-    const auto found = canvas.tileIndices.find(TileKeyWithMip(tile.key, viewLevel));
-    return found == canvas.tileIndices.end() || !HasAnyFlag(canvas.tiles[found->second].flags, TileFlags::Loaded);
+    return HasAnyFlag(tile.flags, TileFlags::Loaded)
+        && TileKeyMip(tile.key) == TileDrawnLevel(canvas, tile.key, viewLevel);
 }
 
 Result<void> TileDelete(Tile tile) noexcept {

@@ -8,8 +8,8 @@ namespace Midori {
 
 namespace {
 
-[[nodiscard]] float ZoomClamp(float zoom) noexcept {
-    return std::copysign(std::clamp(std::abs(zoom), kViewportZoomMin, kViewportZoomMax), zoom);
+[[nodiscard]] float ZoomClamp(float zoom, float zoomMin, float zoomMax) noexcept {
+    return std::copysign(std::clamp(std::abs(zoom), zoomMin, zoomMax), zoom);
 }
 
 } // namespace
@@ -25,9 +25,9 @@ Viewport ViewportMove(Viewport viewport, float viewX, float viewY) noexcept {
     return viewport;
 }
 
-Viewport ViewportZoom(Viewport viewport, float amountX, float amountY) noexcept {
-    viewport.zoomX = ZoomClamp(viewport.zoomX * amountX);
-    viewport.zoomY = ZoomClamp(viewport.zoomY * amountY);
+Viewport ViewportZoom(Viewport viewport, float amountX, float amountY, float zoomMin, float zoomMax) noexcept {
+    viewport.zoomX = ZoomClamp(viewport.zoomX * amountX, zoomMin, zoomMax);
+    viewport.zoomY = ZoomClamp(viewport.zoomY * amountY, zoomMin, zoomMax);
     return viewport;
 }
 

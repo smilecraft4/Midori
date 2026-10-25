@@ -18,6 +18,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include <psapi.h>
 #include <windowsx.h>
 
 #include <array>
@@ -1348,6 +1349,19 @@ Result<void> WindowSetDisplayMode(Window window, WindowDisplayMode displayMode) 
 void AssertAbort() noexcept {
     spdlog::default_logger_raw()->flush();
     BreakAndAbort();
+}
+
+PlatformMemory PlatformMemoryGet() noexcept {
+    PROCESS_MEMORY_COUNTERS_EX counters{.cb = sizeof(PROCESS_MEMORY_COUNTERS_EX)};
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                              sizeof(counters))) {
+        return {};
+    }
+    return PlatformMemory{
+        .privateBytes = counters.PrivateUsage,
+        .workingSet = counters.WorkingSetSize,
+        .peakWorkingSet = counters.PeakWorkingSetSize,
+    };
 }
 
 } // namespace Midori

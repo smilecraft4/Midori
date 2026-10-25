@@ -393,8 +393,8 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
 }
 
 // Fills `table`, row by row over the region, with the cell each tile position shows: its tile at the view's level, else
-// its level-0 tile while that one loads (TileDrawn). Only the root folder's tiles, the composite of every layer. With
-// `constants.selection`, the region's second half holds the selection's loaded level-0 mask tiles.
+// the loaded level nearest to it while that one loads (TileDrawn). Only the root folder's tiles, the composite of every
+// layer. With `constants.selection`, the region's second half holds the selection's loaded level-0 mask tiles.
 void PageTableFill(const CanvasState& canvas, const CanvasViewConstants& constants, TileGridPos origin,
                    std::span<std::uint32_t> table) noexcept {
     ZoneScopedN("PageTableFill");
@@ -1345,6 +1345,12 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
             return fail("D3D12CreateDevice", hr);
         }
     }
+    if (const HRESULT hr =
+            state.factory->EnumAdapterByLuid(state.device->GetAdapterLuid(), IID_PPV_ARGS(&state.adapter));
+        FAILED(hr)) {
+        LogHresult("IDXGIFactory4::EnumAdapterByLuid", hr);
+        state.adapter = nullptr;
+    }
 
     const D3D12_COMMAND_QUEUE_DESC queueDesc{.Type = D3D12_COMMAND_LIST_TYPE_DIRECT};
     if (const HRESULT hr = state.device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&state.queue)); FAILED(hr)) {
@@ -1787,6 +1793,7 @@ void GraphicsTerminate() noexcept {
     }
     Release(state.queue);
     Release(state.device);
+    Release(state.adapter);
     Release(state.factory);
     state = {};
 }
@@ -1923,6 +1930,22 @@ Result<void> GraphicsWindowTerminate(Window window) noexcept {
     WaitIdle();
     ReleaseWindow(gGraphicsState.windows[window]);
     return {};
+}
+
+GraphicsMemory GraphicsMemoryGet() noexcept {
+    IDXGIAdapter3* adapter = gGraphicsState.adapter;
+    DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+    DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal{};
+    if (!adapter || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local))
+        || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocal))) {
+        return {};
+    }
+    return GraphicsMemory{
+        .localUsage = local.CurrentUsage,
+        .localBudget = local.Budget,
+        .nonLocalUsage = nonLocal.CurrentUsage,
+        .nonLocalBudget = nonLocal.Budget,
+    };
 }
 
 // A window without its swap chain yet, or anymore, takes none: GraphicsWindowInit asks for its first.

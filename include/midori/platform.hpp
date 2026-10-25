@@ -102,6 +102,15 @@ enum struct FontScript : std::uint8_t {
 // The user's preferred UI language as a two-letter code, "en" when unknown.
 [[nodiscard]] std::string PlatformLanguage() noexcept;
 
+// The process's memory as the system counts it, in bytes.
+struct PlatformMemory {
+    std::uint64_t privateBytes; // committed for this process alone
+    std::uint64_t workingSet;   // in physical memory
+    std::uint64_t peakWorkingSet;
+};
+
+[[nodiscard]] PlatformMemory PlatformMemoryGet() noexcept;
+
 // The first of the system's UI fonts for `script` that is installed.
 [[nodiscard]] Result<std::filesystem::path> PlatformFontPath(FontScript script) noexcept;
 

@@ -47,6 +47,8 @@ struct UiState {
     std::array<std::int64_t, kWindowMax> settleUntil;
     std::array<bool, kWindowMax> tileAtlasShown; // the tile atlas debug window is open
     std::array<int, kWindowMax> tileAtlasIndex;  // the atlas it shows
+    std::array<bool, kWindowMax> statisticsShown;
+    std::array<bool, kWindowMax> imguiMetricsShown;
     std::array<bool, kWindowMax> tileCellsShown; // the canvas view outlines its tiles with their atlas cell
     std::array<bool, kWindowMax> hidden;         // no menu, panel or debug overlay, only the brush adjust
     // The panels each window shows, from `preferences` when it opens. The help window's tips follow what the user does.

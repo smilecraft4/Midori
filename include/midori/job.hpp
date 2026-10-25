@@ -67,4 +67,14 @@ void JobSubmit(const Job& job) noexcept;
 void JobsTakeFinished(std::vector<Job>& jobs) noexcept;
 void JobsWaitIdle() noexcept;
 
+struct JobsCount {
+    std::uint32_t pending; // submitted and not taken back by JobsTakeFinished
+    std::uint32_t reads;   // waiting for a reader thread
+    std::uint32_t writes;  // waiting for the writer thread
+    std::uint32_t finished;
+    std::uint32_t threads;
+};
+
+[[nodiscard]] JobsCount JobsCountGet() noexcept;
+
 } // namespace Midori

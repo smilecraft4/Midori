@@ -99,6 +99,28 @@ constexpr TileKey TileKeyWithMip(TileKey key, TileMip mip) noexcept {
     return static_cast<TileMip>(std::clamp(level, 0.0f, static_cast<float>(kTileMipMax - 1)));
 }
 
+// The smallest zoom whose tiles a view of `width` x `height` DIPs shows, at the level it draws them and with the ring
+// around, take at most half the atlas blocks at any rotation; the other half holds the level-0 tiles composites read.
+[[nodiscard]] inline float TileZoomMin(float width, float height) noexcept {
+    // The widest the view spans at any rotation.
+    const float diagonal = std::hypot(width, height);
+    constexpr float kBlocks = static_cast<float>(std::uint32_t{kTileAtlasPageMax} * kTileAtlasBlocks) / 2.0f;
+    // From the coarsest level, whose tiles take the fewest blocks: TileLevelForZoom draws level L from 2^-(L+1),
+    // exclusive, to 2^-L.
+    for (int level = kTileMipMax - 1; level >= 0; --level) {
+        const auto blocks = static_cast<float>(TileAtlasLevelBlocks(static_cast<std::uint8_t>(level)));
+        const float tiles = std::sqrt(kBlocks / blocks) - 2.0f;
+        if (tiles <= 0.0f) {
+            continue;
+        }
+        const float zoom = diagonal / (static_cast<float>(kTileSize) * tiles);
+        if (level == 0 || zoom <= std::exp2(static_cast<float>(-level))) {
+            return zoom;
+        }
+    }
+    return 1.0f;
+}
+
 // Its current content is in the cache or the file, so its atlas cell can be taken.
 [[nodiscard]] constexpr bool TilePersisted(TileFlags flags) noexcept {
     return HasAnyFlag(flags, TileFlags::CachedDisk)
@@ -124,15 +146,19 @@ void TileMipsDelete(Canvas canvas, TileKey key) noexcept;
 // their dispatch. Does not mark the canvas modified.
 TileState& TileInsert(CanvasState& canvas, TileKey key, TileAtlasCell cell) noexcept;
 
-// A view at `viewLevel` draws its loaded tiles of that level, and a loaded level-0 tile where that level's tile is
-// missing or not loaded yet.
+// The level a view at `viewLevel` draws at the position of `key`, any level of a tile: that level once loaded, else
+// the loaded one nearest to it, the finer of two as near, so changing levels never shows a gap; kTileMipMax when none
+// is loaded.
+[[nodiscard]] TileMip TileDrawnLevel(const CanvasState& canvas, TileKey key, TileMip viewLevel) noexcept;
+// The tile is loaded and its level is TileDrawnLevel's.
 [[nodiscard]] bool TileDrawn(const CanvasState& canvas, const TileState& tile, TileMip viewLevel) noexcept;
 
 // Persistently mapped memory of kTileSlotBytes per slot, one buffer per direction (GraphicsTileUploadMemory,
 // GraphicsTileDownloadMemory), so streaming never waits for the GPU. Slots move tiles of every canvas, so each fits
 // a tile of the widest format.
 using TileTransferSlot = std::uint8_t;
-constexpr TileTransferSlot kTileTransferSlots = 32;
+// Enough for every reader thread to decode one tile while the others wait for their copy. Below 256, the type's range.
+constexpr TileTransferSlot kTileTransferSlots = 64;
 constexpr std::size_t kTileSlotBytes = std::size_t{kTileSize} * kTileSize * std::ranges::max(kPixelFormatTexelBytes);
 
 // Upload: Job (a reader fills the memory) -> Ready (waits for an atlas cell) -> Record -> Gpu -> Free.

@@ -13,7 +13,7 @@ JobsState gJobsState{};
 
 namespace {
 
-constexpr std::uint32_t kReaderCountMax = 8;
+constexpr std::uint32_t kReaderCountMax = 4;
 
 void JobsRun(const std::stop_token& stop, JobQueue& queue) noexcept {
     JobsState& state = gJobsState;
@@ -94,6 +94,29 @@ void JobsTakeFinished(std::vector<Job>& jobs) noexcept {
     const std::scoped_lock lock(state.finishedMutex);
     jobs.insert(jobs.end(), state.finished.begin(), state.finished.end());
     state.finished.clear();
+}
+
+JobsCount JobsCountGet() noexcept {
+    JobsState& state = gJobsState;
+    JobsCount count{.pending = 0,
+                    .reads = 0,
+                    .writes = 0,
+                    .finished = 0,
+                    .threads = static_cast<std::uint32_t>(state.threads.size())};
+    {
+        const std::scoped_lock lock(state.finishedMutex);
+        count.pending = state.pending;
+        count.finished = static_cast<std::uint32_t>(state.finished.size());
+    }
+    {
+        const std::scoped_lock lock(state.reads.mutex);
+        count.reads = static_cast<std::uint32_t>(state.reads.jobs.size());
+    }
+    {
+        const std::scoped_lock lock(state.writes.mutex);
+        count.writes = static_cast<std::uint32_t>(state.writes.jobs.size());
+    }
+    return count;
 }
 
 void JobsWaitIdle() noexcept {

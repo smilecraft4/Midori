@@ -77,6 +77,7 @@ struct GraphicsState {
     std::array<ID3D12CommandAllocator*, kGraphicsFramesInFlight> allocators;
     std::array<std::uint64_t, kGraphicsFramesInFlight> allocatorFences; // fence value of each allocator's last use
     IDXGIFactory7* factory;
+    IDXGIAdapter3* adapter; // the device's, for its memory; null when not found
     ID3D12Device* device;
     ID3D12CommandQueue* queue;
     ID3D12GraphicsCommandList* list; // closed between submits

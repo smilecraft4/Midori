@@ -891,11 +891,14 @@ void TileCompositesSchedule(CanvasState& canvas, std::uint32_t& budget) noexcept
         }
         bool ready = true;
         queue.clear();
+        // Every position tried counts, ready or not: the tiles the tries want must fit the atlas. Zoomed far out, the
+        // positions shown would otherwise want more level-0 tiles than it holds, keep each other's from loading and
+        // never finish.
+        --budget;
         // A position whose layers are all hidden lost its tile and queues nothing.
         CompositePrepare(canvas, root, want.gridPos, ready, queue);
         if (ready && !queue.empty()) {
             canvas.composites.insert(canvas.composites.end(), queue.begin(), queue.end());
-            --budget;
         }
     }
 }
@@ -1354,6 +1357,17 @@ bool CanvasTilesStream() noexcept {
     }
     TileAtlasRelieve();
     return mipBudget == 0 || compositeBudget == 0 || mergeBudget == 0;
+}
+
+CanvasFileSize CanvasFileSizeGet(const CanvasFile& file) noexcept {
+    MDBX_envinfo info{};
+    if (!file.env || mdbx_env_info_ex(file.env, nullptr, &info, sizeof(info)) != MDBX_SUCCESS) {
+        return {};
+    }
+    return CanvasFileSize{
+        .file = info.mi_geo.current,
+        .used = (info.mi_last_pgno + 1) * std::uint64_t{info.mi_dxb_pagesize},
+    };
 }
 
 Result<void> CanvasJobExecute(Job& job) noexcept {

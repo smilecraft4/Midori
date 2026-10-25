@@ -21,6 +21,8 @@ struct Preferences {
     UiPreferences ui;
     WindowCreateInfo window;                        // where the first window opens; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2};
+    float zoomMin{kViewportZoomMin};                // within [kViewportZoomMin, kViewportZoomMax], zoomMin <= zoomMax
+    float zoomMax{kViewportZoomMax};
     std::vector<std::filesystem::path> recentFiles; // the most recent first, up to kRecentFilesMax
     std::string language;                           // a code of kLanguages, empty for the system's
 };

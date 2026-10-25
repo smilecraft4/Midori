@@ -374,8 +374,8 @@ void TilesMarkVisible() noexcept {
         };
         const TileGridPos min{.x = tileOf(minX), .y = tileOf(minY)};
         const TileGridPos max{.x = tileOf(maxX), .y = tileOf(maxY)};
-        // The view's level, else level 0: where that level is missing, loading level 0 builds it; where it is
-        // still loading, a loaded level 0 keeps showing meanwhile.
+        // The view's level, and the level drawn meanwhile, see TileDrawnLevel. Where the view's level is missing,
+        // level 0 too: loading it builds the level.
         CanvasState& canvas = gAppState.canvases[view.canvas];
         const TileMip level = TileLevelForZoom(view.viewport.zoomX);
         const Layer root = canvas.layersOrder.back();
@@ -400,7 +400,7 @@ void TilesMarkVisible() noexcept {
             if (mip == 0) {
                 canvas.compositeWants.push_back(CompositeWant{.gridPos = TileGridPosKey(tile.key), .level = level});
             }
-            if (mip == level) {
+            if (mip == level || TileDrawn(canvas, tile, level)) {
                 tile.visibleFrame = frame;
             } else if (mip == 0) {
                 const auto found = canvas.tileIndices.find(TileKeyWithMip(tile.key, level));
@@ -505,7 +505,7 @@ void NavigateUpdate() noexcept {
                 const float zoom = std::abs(start.zoomX);
                 amount = ZoomSnap(zoom * amount) / zoom;
             }
-            view.viewport = ViewportZoom(start, amount, amount);
+            view.viewport = ViewportZoom(start, amount, amount, gAppState.zoomMin, gAppState.zoomMax);
             break;
         }
         case NavigateMode::Rotate: {
@@ -563,8 +563,8 @@ void ViewFlip(Window window, bool vertical) noexcept {
     if (app.navigate.mode == NavigateMode::None) {
         NavigationPush(view, app.canvasViews[view].viewport);
     }
-    app.canvasViews[view].viewport =
-        ViewportZoom(app.canvasViews[view].viewport, vertical ? 1.0f : -1.0f, vertical ? -1.0f : 1.0f);
+    app.canvasViews[view].viewport = ViewportZoom(app.canvasViews[view].viewport, vertical ? 1.0f : -1.0f,
+                                                  vertical ? -1.0f : 1.0f, kViewportZoomMin, kViewportZoomMax);
     if (app.navigate.mode != NavigateMode::None) {
         NavigateBegin(app.navigate.view, app.navigate.mode);
     }
@@ -1648,14 +1648,18 @@ void SelectionDelete(Window window) noexcept {
         case ActionId::PanelHelp:
         case ActionId::DebugTileAtlas:
         case ActionId::DebugTileCells:
+        case ActionId::DebugStatistics:
+        case ActionId::DebugImGuiMetrics:
             if (window < kWindowMax) {
-                bool& shown = action == ActionId::PanelSettings  ? gUiState.settingsShown[window]
-                            : action == ActionId::PanelView      ? gUiState.viewShown[window]
-                            : action == ActionId::PanelTool      ? gUiState.toolShown[window]
-                            : action == ActionId::PanelLayers    ? gUiState.layersShown[window]
-                            : action == ActionId::PanelHelp      ? gUiState.helpShown[window]
-                            : action == ActionId::DebugTileAtlas ? gUiState.tileAtlasShown[window]
-                                                                 : gUiState.tileCellsShown[window];
+                bool& shown = action == ActionId::PanelSettings     ? gUiState.settingsShown[window]
+                            : action == ActionId::PanelView         ? gUiState.viewShown[window]
+                            : action == ActionId::PanelTool         ? gUiState.toolShown[window]
+                            : action == ActionId::PanelLayers       ? gUiState.layersShown[window]
+                            : action == ActionId::PanelHelp         ? gUiState.helpShown[window]
+                            : action == ActionId::DebugTileAtlas    ? gUiState.tileAtlasShown[window]
+                            : action == ActionId::DebugStatistics   ? gUiState.statisticsShown[window]
+                            : action == ActionId::DebugImGuiMetrics ? gUiState.imguiMetricsShown[window]
+                                                                    : gUiState.tileCellsShown[window];
                 shown = !shown;
             }
             return {};
@@ -1811,6 +1815,8 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gUiState.preferences = preferences->ui;
         gAppState.windowPlacement = preferences->window;
         gAppState.canvasFilter = preferences->canvasFilter;
+        gAppState.zoomMin = preferences->zoomMin;
+        gAppState.zoomMax = preferences->zoomMax;
         gAppState.recentFiles = preferences->recentFiles;
         gAppState.language = preferences->language;
     } else {
@@ -1956,6 +1962,12 @@ void AppWindowFrame(Window window) noexcept {
 
 Result<void> AppUpdate() noexcept {
     ZoneScopedN("AppUpdate");
+    // A limit changed in the settings may leave a view past it.
+    for (CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id != kCanvasViewInvalid) {
+            view.viewport = ViewportZoom(view.viewport, 1.0f, 1.0f, gAppState.zoomMin, gAppState.zoomMax);
+        }
+    }
     TilesMarkVisible();
     StrokeUpdate();
     for (const CanvasState& canvas : gAppState.canvases) {
@@ -1976,7 +1988,8 @@ Result<void> AppUpdate() noexcept {
         }
     }
     // Otherwise a window presents only after input, see UiWantsFrame, and sleeps in between.
-    if (AppBusy(streaming)) {
+    gAppState.busy = AppBusy(streaming);
+    if (gAppState.busy) {
         for (const CanvasViewState& view : gAppState.canvasViews) {
             if (view.id != kCanvasViewInvalid) {
                 GraphicsWindowRequestFrame(view.window);
@@ -2001,6 +2014,8 @@ void AppTerminate() noexcept {
         .ui = gUiState.preferences,
         .window = gAppState.windowPlacement,
         .canvasFilter = gAppState.canvasFilter,
+        .zoomMin = gAppState.zoomMin,
+        .zoomMax = gAppState.zoomMax,
         .recentFiles = gAppState.recentFiles,
         .language = gAppState.language,
     };
@@ -2245,6 +2260,13 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
         default:
             return Text::Count_;
     }
+}
+
+float AppZoomSupported(Window window) noexcept {
+    const auto state = WindowGetState(window);
+    return state ? TileZoomMin(static_cast<float>(state->width) / state->dpiScale,
+                               static_cast<float>(state->height) / state->dpiScale)
+                 : kViewportZoomMin;
 }
 
 Result<void> AppToggleFullscreen(Window window) noexcept {

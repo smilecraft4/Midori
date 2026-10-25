@@ -394,6 +394,14 @@ struct CanvasState {
 [[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
 // Writes the whole canvas into a new file that then replaces `path`, and keeps it as the canvas's file.
 [[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
+// The file's size on disk and what its pages hold, in bytes; zero without a file.
+struct CanvasFileSize {
+    std::uint64_t file;
+    std::uint64_t used;
+};
+
+[[nodiscard]] CanvasFileSize CanvasFileSizeGet(const CanvasFile& file) noexcept;
+
 // Unsaved changes are lost. Waits for every job.
 void CanvasDestroy(Canvas canvas) noexcept;
 // Once per update, after the tiles shown this frame have `visibleFrame` set; never waits. Takes the finished jobs

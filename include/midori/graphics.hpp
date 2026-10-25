@@ -35,6 +35,17 @@ struct GraphicsWindowInitInfo {
 // The window gets a frame at its next vblank, from GraphicsUpdate.
 void GraphicsWindowRequestFrame(Window window) noexcept;
 
+// The adapter's memory, in bytes: local is the GPU's own (all of it on an integrated GPU), non-local the system memory
+// it reaches. The budget is what the system lets this process use. Zero when unknown.
+struct GraphicsMemory {
+    std::uint64_t localUsage;
+    std::uint64_t localBudget;
+    std::uint64_t nonLocalUsage;
+    std::uint64_t nonLocalBudget;
+};
+
+[[nodiscard]] GraphicsMemory GraphicsMemoryGet() noexcept;
+
 // GraphicsInit creates atlas 0; the others are created in order, outside any submit. Its pages start undefined.
 [[nodiscard]] Result<void> GraphicsTileAtlasCreate(TileAtlas atlas) noexcept;
 
