@@ -115,7 +115,7 @@ struct StrokePoint {
 
 struct StrokeBeginInfo {
     BrushState brush;
-    Color::Srgb color; // Paint: the paint. Erase: how much of each channel goes, see EraseToolState
+    Color::Srgb color; // Paint: the paint. Erase: how much of each channel goes, see PaintToolState::eraseColor
     StrokePoint point;
     Layer layer;
     CanvasView view;

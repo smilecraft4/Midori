@@ -111,7 +111,7 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "window.fullscreen", .description = "Toggle fullscreen"},
     {.name = "ui.toggle", .description = "Hide or show the UI"},
     {.name = "tool.paint", .description = "Switch to the paint brush"},
-    {.name = "tool.erase", .description = "Switch to the eraser"},
+    {.name = "tool.erase", .description = "Erase with the Paint tool's brush, or paint again"},
     {.name = "brush.preset", .description = "Give the current tool a brush preset", .argName = "number"},
     {.name = "brush.radius", .description = "Change the brush size"},
     {.name = "brush.opacity", .description = "Change the brush opacity"},

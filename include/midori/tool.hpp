@@ -69,7 +69,6 @@ inline int BrushCurveFind(std::span<const MdslCurve> curves, std::string_view na
 
 enum struct Tool : std::uint8_t {
     Paint,
-    Erase,
     Select, // a rectangle combined with the selection by ToolsState::selectionOp, or Shift, Alt, Shift+Alt
     Lasso,  // a freehand shape, combined the same way
 };
@@ -84,17 +83,14 @@ enum struct SelectionOp : std::uint8_t {
     Count_,
 };
 
+// BlendMode::Erase erases with the brush, by `eraseColor` in place of `color`.
 struct PaintToolState {
     BrushState brush;
     Color::Srgb color{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f};
+    // Times its alpha, how much of each channel goes: white erases everything and pure red only removes red.
+    Color::Srgb eraseColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f};
     BlendMode blendMode{};
-};
-
-struct EraseToolState {
-    BrushState brush;
-    // Times its alpha, how much of each channel goes. Alpha goes as far as all three channels do, so white
-    // erases everything and pure red only removes red.
-    Color::Srgb color{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f};
+    BlendMode paintBlendMode{}; // what tool.erase and tool.paint go back to from Erase
 };
 
 constexpr std::size_t kBrushPresetNameLenMax = 32;
@@ -104,21 +100,12 @@ struct BrushPreset {
     std::array<char, kBrushPresetNameLenMax> name;
 };
 
-// Each tool keeps its own brush. brush.preset(number) copies presets[number - 1] into the current tool's.
+// brush.preset(number) copies presets[number - 1] into the Paint tool's brush.
 struct ToolsState {
     std::vector<BrushPreset> presets;
     PaintToolState paint;
-    EraseToolState erase;
     Tool tool{};
     SelectionOp selectionOp{};
 };
-
-[[nodiscard]] inline BrushState& ToolBrush(ToolsState& tools, Tool tool) noexcept {
-    return tool == Tool::Erase ? tools.erase.brush : tools.paint.brush;
-}
-
-[[nodiscard]] inline const BrushState& ToolBrush(const ToolsState& tools, Tool tool) noexcept {
-    return tool == Tool::Erase ? tools.erase.brush : tools.paint.brush;
-}
 
 } // namespace Midori

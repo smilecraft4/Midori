@@ -32,9 +32,9 @@ using Json = nlohmann::json;
 constexpr int kPreferencesVersion = 1;
 // Names rather than numbers, so the file reads and edits by hand. Indexed by BlendMode and Tool.
 constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kBlendModeNames = {
-    "normal", "multiply", "add", "screen", "normalOkLab",
+    "normal", "multiply", "add", "screen", "normalOkLab", "erase",
 };
-constexpr std::array<std::string_view, 4> kToolNames = {"paint", "erase", "select", "lasso"};
+constexpr std::array<std::string_view, 3> kToolNames = {"paint", "select", "lasso"};
 constexpr std::array<std::string_view, std::to_underlying(BrushInput::Count_)> kBrushInputNames = {
     "none", "pressure", "tiltX", "tiltY", "speed", "random",
 };
@@ -224,7 +224,6 @@ Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
     ZoneScopedN("PreferencesLoad");
     Preferences preferences{};
     BrushParamsDefault(preferences.tools.paint.brush, brush);
-    BrushParamsDefault(preferences.tools.erase.brush, brush);
     const auto path = PreferencesPath();
     if (!path) {
         return std::unexpected(path.error());
@@ -261,8 +260,13 @@ Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
     if (const auto paint = root.find("paint"); paint != root.end() && paint->is_object()) {
         ReadBrush(*paint, preferences.tools.paint.brush, brush);
         Read(*paint, "color", preferences.tools.paint.color);
+        Read(*paint, "eraseColor", preferences.tools.paint.eraseColor);
         if (const int blendMode = ReadName(*paint, "blendMode", kBlendModeNames); blendMode >= 0) {
             preferences.tools.paint.blendMode = static_cast<BlendMode>(blendMode);
+        }
+        if (const int blendMode = ReadName(*paint, "paintBlendMode", kBlendModeNames);
+            blendMode >= 0 && blendMode != std::to_underlying(BlendMode::Erase)) {
+            preferences.tools.paint.paintBlendMode = static_cast<BlendMode>(blendMode);
         }
     }
     if (const auto presets = root.find("brushPresets"); presets != root.end() && presets->is_array()) {
@@ -278,10 +282,6 @@ Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
             }
             preferences.tools.presets.push_back(preset);
         }
-    }
-    if (const auto erase = root.find("erase"); erase != root.end() && erase->is_object()) {
-        ReadBrush(*erase, preferences.tools.erase.brush, brush);
-        Read(*erase, "color", preferences.tools.erase.color);
     }
     if (const auto ui = root.find("ui"); ui != root.end() && ui->is_object()) {
         Read(*ui, "viewShown", preferences.ui.viewShown);
@@ -368,12 +368,9 @@ Result<void> PreferencesSave(const Preferences& preferences, const MdslBrush& br
          {
              {"brush", BrushJson(tools.paint.brush, brush)},
              {"color", ColorJson(tools.paint.color)},
+             {"eraseColor", ColorJson(tools.paint.eraseColor)},
              {"blendMode", kBlendModeNames[std::to_underlying(tools.paint.blendMode)]},
-         }},
-        {"erase",
-         {
-             {"brush", BrushJson(tools.erase.brush, brush)},
-             {"color", ColorJson(tools.erase.color)},
+             {"paintBlendMode", kBlendModeNames[std::to_underlying(tools.paint.paintBlendMode)]},
          }},
         {"ui",
          {

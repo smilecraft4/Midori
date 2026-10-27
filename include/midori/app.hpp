@@ -80,8 +80,7 @@ struct BrushAdjustState {
     float startValue;
     Layer layer{kLayerInvalid}; // LayerOpacity: the canvas's active layer when it started
     CanvasView view{kCanvasViewInvalid};
-    Tool tool{};
-    BrushAdjustMode mode{}; // None while not adjusting
+    BrushAdjustMode mode{};     // None while not adjusting
 };
 
 enum struct TransformDrag : std::uint8_t {

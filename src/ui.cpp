@@ -42,7 +42,7 @@ constexpr std::chrono::milliseconds kUiSettle{600};
 constexpr float kFontSize = 15.0f; // DIPs
 
 constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
-    Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab,
+    Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab, Text::Erase,
 };
 constexpr std::array<Text, std::to_underlying(BrushInput::Count_)> kBrushInputTexts = {
     Text::BrushInputNone,  Text::BrushInputPressure, Text::BrushInputTiltX,
@@ -498,9 +498,6 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
         ImGui::RadioButton(ShortcutLabel(Text::Paint, ActionId::ToolPaint).data(), &tool,
                            std::to_underlying(Tool::Paint));
         ImGui::SameLine();
-        ImGui::RadioButton(ShortcutLabel(Text::Erase, ActionId::ToolErase).data(), &tool,
-                           std::to_underlying(Tool::Erase));
-        ImGui::SameLine();
         ImGui::RadioButton(ShortcutLabel(Text::Select, ActionId::ToolSelect).data(), &tool,
                            std::to_underlying(Tool::Select));
         ImGui::SameLine();
@@ -509,7 +506,11 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
         tools.tool = static_cast<Tool>(tool);
         ImGui::Separator();
         if (tools.tool == Tool::Paint) {
-            ImGui::ColorEdit4(TextLabel(Text::Color), &tools.paint.color.r);
+            if (tools.paint.blendMode == BlendMode::Erase) {
+                ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.paint.eraseColor.r);
+            } else {
+                ImGui::ColorEdit4(TextLabel(Text::Color), &tools.paint.color.r);
+            }
             int blendMode = std::to_underlying(tools.paint.blendMode);
             const auto blendModeNames = TextsGet(kBlendModeTexts);
             if (ImGui::Combo(TextLabel(Text::Blend), &blendMode, blendModeNames.data(),
@@ -518,10 +519,6 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
             }
             BrushSourceEdit(window);
             BrushEdit(window, tools.paint.brush);
-        } else if (tools.tool == Tool::Erase) {
-            ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.erase.color.r);
-            BrushSourceEdit(window);
-            BrushEdit(window, tools.erase.brush);
         } else if (tools.tool == Tool::Select || tools.tool == Tool::Lasso) {
             const auto opNames = TextsGet(kSelectionOpTexts);
             int op = std::to_underlying(tools.selectionOp);
@@ -679,7 +676,7 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     if (adjust.mode == BrushAdjustMode::None || gAppState.canvasViews[adjust.view].window != window) {
         return;
     }
-    const BrushState& brush = ToolBrush(tools, adjust.tool);
+    const BrushState& brush = tools.paint.brush;
     const float scale = windowState.dpiScale;
     const ImVec2 center(adjust.centerX, adjust.centerY);
     constexpr ImU32 kStrong = IM_COL32(40, 130, 230, 255);
@@ -1382,7 +1379,7 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
     } else {
         Text title = Text::HelpPaintBrush;
         std::span<const HelpEntry> gestures = kHelpPaint;
-        if (tools.tool == Tool::Erase) {
+        if (tools.tool == Tool::Paint && tools.paint.blendMode == BlendMode::Erase) {
             title = Text::HelpEraser;
             gestures = kHelpErase;
         } else if (tools.tool == Tool::Select) {

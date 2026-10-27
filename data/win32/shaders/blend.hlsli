@@ -7,6 +7,7 @@ static const uint kBlendMultiply = 1;
 static const uint kBlendAdd = 2;
 static const uint kBlendScreen = 3;
 static const uint kBlendNormalOkLab = 4;
+static const uint kBlendErase = 5;
 
 float3 SrgbToLinear(float3 c) {
     return lerp(c / 12.92, pow((c + 0.055) / 1.055, 2.4), step(0.04045, c));
@@ -42,6 +43,11 @@ float3 OkLabToSrgb(float3 lab) {
 
 // Premultiplied src over premultiplied dst, separable blend modes in their premultiplied form.
 float4 Blend(float4 dst, float4 src, uint mode) {
+    // Each of src's channels is how much of dst's goes. Alpha only goes as far as every channel does, so dst stays
+    // premultiplied: white erases everything, pure red only removes red.
+    if (mode == kBlendErase) {
+        return float4(dst.rgb * (1.0 - src.rgb), dst.a * (1.0 - min(src.r, min(src.g, src.b))));
+    }
     const float alpha = src.a + dst.a - src.a * dst.a;
     float3 color;
     switch (mode) {

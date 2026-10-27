@@ -75,7 +75,7 @@ float4 BrushTexture(uint t, float2 uv) {
 #include "brush.hlsli"
 
 cbuffer Stroke : register(b0) {
-    float4 color; // straight; Erase: how much of each channel goes
+    float4 color; // straight; Erase: how much of each channel goes, times its alpha
     int2 tileGridPos; // relative to the stroke's origin tile, like the dabs
     uint2 rectOrigin;
     uint dstPage;
@@ -122,11 +122,6 @@ float LassoMask(float2 pos) {
         a = b;
     }
     return saturate(0.5 + (winding != 0 ? dist : -dist));
-}
-
-// Alpha only goes as far as every channel does, so premultiplied colors stay within it.
-float4 Erase(float4 dst, float3 amount) {
-    return float4(dst.rgb * (1.0 - amount), dst.a * (1.0 - min(amount.r, min(amount.g, amount.b))));
 }
 
 // A brush compiled at runtime takes the build's root signature.
@@ -178,7 +173,7 @@ void CSMain(uint2 id : SV_DispatchThreadID) {
     const float4 src = paint * color.a;
     float4 result = Blend(below, src, blendMode);
     if (mode == kStrokeErase) {
-        result = Erase(below, src.rgb);
+        result = Blend(below, src, kBlendErase);
     } else if (mode == kStrokeReplace) {
         result = src;
     } else if (mode == kStrokeIntersect) {

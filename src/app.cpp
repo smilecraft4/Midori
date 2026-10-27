@@ -688,9 +688,7 @@ void BrushTextureLoad(std::uint32_t slot, std::filesystem::path path, bool chose
 // source names in `folder`.
 void BrushReplace(MdslBrush brush, const std::filesystem::path& folder) noexcept {
     AppState& app = gAppState;
-    for (BrushState* tool : {&app.tools.paint.brush, &app.tools.erase.brush}) {
-        BrushParamsRemap(*tool, app.brush, brush);
-    }
+    BrushParamsRemap(app.tools.paint.brush, app.brush, brush);
     for (BrushPreset& preset : app.tools.presets) {
         BrushParamsRemap(preset.brush, app.brush, brush);
     }
@@ -883,12 +881,12 @@ void BrushSourceUpdate() noexcept {
     if (adjust.mode == BrushAdjustMode::LayerOpacity) {
         return gAppState.canvases[gAppState.canvasViews[adjust.view].canvas].layers[adjust.layer].opacity;
     }
-    return BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode);
+    return BrushAdjustTarget(gAppState.tools.paint.brush, adjust.mode);
 }
 
 void BrushAdjustValueSet(const BrushAdjustState& adjust, float value) noexcept {
     if (adjust.mode != BrushAdjustMode::LayerOpacity) {
-        BrushAdjustTarget(ToolBrush(gAppState.tools, adjust.tool), adjust.mode) = value;
+        BrushAdjustTarget(gAppState.tools.paint.brush, adjust.mode) = value;
         return;
     }
     const Canvas canvas = gAppState.canvasViews[adjust.view].canvas;
@@ -976,7 +974,7 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
         return;
     }
     BrushAdjustState& adjust = app.brushAdjust;
-    adjust = BrushAdjustState{.layer = canvas.activeLayer, .view = view, .tool = app.tools.tool, .mode = mode};
+    adjust = BrushAdjustState{.layer = canvas.activeLayer, .view = view, .mode = mode};
     adjust.startValue = BrushAdjustValue(adjust);
     adjust.value = adjust.startValue;
     adjust.distance = adjust.value * BrushAdjustPixelsPerUnit(adjust, windowState->dpiScale);
@@ -1504,7 +1502,7 @@ void TransformHoldEnd() noexcept {
     if (painting) {
         radius = StrokeStampAt(stroke.brush, stroke.curves, stroke.inputs).radius;
     } else {
-        const BrushState& brush = ToolBrush(app.tools, app.tools.tool);
+        const BrushState& brush = app.tools.paint.brush;
         std::array<float, kMdslCurveFloats> curves{};
         BrushCurvesBake(brush, curves);
         radius = StrokeStampAt(brush, curves,
@@ -1534,25 +1532,16 @@ void TransformHoldEnd() noexcept {
 [[nodiscard]] StrokeBeginInfo StrokeBeginInfoFromTool(CanvasView view, StrokePoint point) noexcept {
     const ToolsState& tools = gAppState.tools;
     const Layer layer = gAppState.canvases[gAppState.canvasViews[view].canvas].activeLayer;
-    if (tools.tool == Tool::Erase) {
-        return StrokeBeginInfo{
-            .brush = tools.erase.brush,
-            .color = tools.erase.color,
-            .point = point,
-            .layer = layer,
-            .view = view,
-            .mode = StrokeMode::Erase,
-            .blendMode = BlendMode::Normal,
-        };
-    }
+    // Erasing creates no tile where there is none.
+    const bool erase = tools.paint.blendMode == BlendMode::Erase;
     return StrokeBeginInfo{
         .brush = tools.paint.brush,
-        .color = tools.paint.color,
+        .color = erase ? tools.paint.eraseColor : tools.paint.color,
         .point = point,
         .layer = layer,
         .view = view,
-        .mode = StrokeMode::Paint,
-        .blendMode = tools.paint.blendMode,
+        .mode = erase ? StrokeMode::Erase : StrokeMode::Paint,
+        .blendMode = erase ? BlendMode::Normal : tools.paint.blendMode,
     };
 }
 
@@ -2078,7 +2067,7 @@ void AppCopy(Window window, bool cut) noexcept {
             return AppEraseMode();
         case ActionId::BrushPreset:
             if (arg >= 1 && arg <= app.tools.presets.size()) {
-                ToolBrush(app.tools, app.tools.tool) = app.tools.presets[arg - 1].brush;
+                app.tools.paint.brush = app.tools.presets[arg - 1].brush;
             }
             return {};
         case ActionId::BrushRadius:
@@ -2355,7 +2344,6 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     } else {
         MIDORI_LOG_WARN("preferences not loaded, defaults used: {}", ErrorMessage(preferences.error()));
         BrushParamsDefault(gAppState.tools.paint.brush, gAppState.brush);
-        BrushParamsDefault(gAppState.tools.erase.brush, gAppState.brush);
     }
     TextLoad(gAppState.language.empty() ? PlatformLanguage() : gAppState.language);
     KeymapLoad(gAppState.keymap);
@@ -2875,16 +2863,29 @@ Result<void> AppToggleFullscreen(Window window) noexcept {
     return WindowSetDisplayMode(window, fullscreen ? WindowDisplayMode::Normal : WindowDisplayMode::Fullscreened);
 }
 
-// A stroke in progress keeps the tool it began with.
+// A stroke in progress keeps the tool and blend mode it began with.
 Result<void> AppPaintMode() noexcept {
     ZoneScopedN("AppPaintMode");
+    PaintToolState& paint = gAppState.tools.paint;
     gAppState.tools.tool = Tool::Paint;
+    if (paint.blendMode == BlendMode::Erase) {
+        paint.blendMode = paint.paintBlendMode;
+    }
     return {};
 }
 
+// Erasing with the Paint tool, or back to painting when it was.
 Result<void> AppEraseMode() noexcept {
     ZoneScopedN("AppEraseMode");
-    gAppState.tools.tool = Tool::Erase;
+    PaintToolState& paint = gAppState.tools.paint;
+    const bool erasing = gAppState.tools.tool == Tool::Paint && paint.blendMode == BlendMode::Erase;
+    gAppState.tools.tool = Tool::Paint;
+    if (erasing) {
+        paint.blendMode = paint.paintBlendMode;
+    } else if (paint.blendMode != BlendMode::Erase) {
+        paint.paintBlendMode = paint.blendMode;
+        paint.blendMode = BlendMode::Erase;
+    }
     return {};
 }
 
