@@ -1,37 +1,71 @@
 #pragma once
 
 #include "midori/color.hpp"
+#include "midori/mdsl.hpp"
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <string_view>
 #include <vector>
 
 namespace Midori {
 
-constexpr float kBrushRadiusMin = 0.5f; // canvas units
-constexpr float kBrushRadiusMax = 512.0f;
-
-// Shape and dynamics of the dabs a tool draws with, whatever the tool does with them.
-struct BrushState {
-    float radius{16.0f};  // canvas units
-    float hardness{0.9f}; // 0 fades from the center, 1 is a hard edge
-    float flow{0.5f};     // alpha of one dab
-    float opacity{1.0f};  // the most a stroke covers
-    float spacing{0.1f};  // between dabs, in diameters
-    // With pressure, no pressure to full pressure scale the property from min to max.
-    float pressureRadiusMin{0.0f};
-    float pressureRadiusMax{1.0f};
-    float pressureOpacityMin{0.0f};
-    float pressureOpacityMax{1.0f};
-    float pressureFlowMin{0.0f};
-    float pressureFlowMax{1.0f};
-    float pressureHardnessMin{0.0f};
-    float pressureHardnessMax{1.0f};
-    bool pressureRadius{true};
-    bool pressureOpacity{true};
-    bool pressureFlow{false};
-    bool pressureHardness{false};
+// What drives a brush param through a stroke, each from 0 to 1. Tilt maps its -1..1 lean to 0..1, speed reaches 1 at
+// kStrokeSpeedFull, and random is MdslDab::random, a new one each stamp.
+enum struct BrushInput : std::uint8_t {
+    None,
+    Pressure,
+    TiltX,
+    TiltY,
+    Speed,
+    Random,
+    Count_,
 };
+
+// The value of one of the brush's MdslParams. With an input, `curve` maps the input's 0 to 1 to the share of the value
+// the stamp gets.
+struct BrushParam {
+    Curve curve;
+    std::array<float, 4> value{};
+    BrushInput input{};
+};
+
+// What a tool's stamps are made with, whatever the tool does with them: the values of the brush's params and curves, in
+// the order of its MdslParams and MdslCurves. Its stamp() and paint() say what they mean.
+struct BrushState {
+    std::array<BrushParam, kMdslParamFloatsMax> params{};
+    std::array<Curve, kMdslCurvesMax> curves{};
+};
+
+// The defaults the brush's source declares.
+inline void BrushParamsDefault(BrushState& brush, const MdslBrush& source) noexcept {
+    for (std::size_t i = 0; i < source.params.size(); ++i) {
+        brush.params[i] = BrushParam{.curve = {}, .value = source.params[i].value, .input = BrushInput::None};
+    }
+    for (std::size_t i = 0; i < source.curves.size(); ++i) {
+        brush.curves[i] = source.curves[i].value;
+    }
+}
+
+// What the GPU and stamp() read of the brush's curves.
+inline void BrushCurvesBake(const BrushState& brush, std::span<float, kMdslCurveFloats> samples) noexcept {
+    for (std::size_t i = 0; i < kMdslCurvesMax; ++i) {
+        CurveBake(brush.curves[i], samples.subspan(i * kCurveSamples).first<kCurveSamples>());
+    }
+}
+
+// Its index among `params`, or -1.
+inline int BrushParamFind(std::span<const MdslParam> params, std::string_view name) noexcept {
+    const auto found = std::ranges::find(params, name, &MdslParam::name);
+    return found == params.end() ? -1 : static_cast<int>(found - params.begin());
+}
+
+inline int BrushCurveFind(std::span<const MdslCurve> curves, std::string_view name) noexcept {
+    const auto found = std::ranges::find(curves, name, &MdslCurve::name);
+    return found == curves.end() ? -1 : static_cast<int>(found - curves.begin());
+}
 
 enum struct Tool : std::uint8_t {
     Paint,

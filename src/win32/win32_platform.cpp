@@ -2,7 +2,7 @@
 
 // Packet layout: absolute positions, tip pressure, orientation (tilt), button bits and status (for
 // the eraser bit). Buttons are absolute too: the current bit set, compared against the last packet.
-#define PACKETDATA (PK_X | PK_Y | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_BUTTONS | PK_STATUS)
+#define PACKETDATA (PK_X | PK_Y | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_BUTTONS | PK_STATUS | PK_TIME)
 #define PACKETMODE 0
 #include <pktdef.h>
 
@@ -31,8 +31,10 @@
 #include <filesystem>
 #include <iterator>
 #include <numbers>
+#include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <tracy/Tracy.hpp>
@@ -136,12 +138,15 @@ int DialogTask(Window window, std::string_view title, std::string_view instructi
 // Long enough for the longest Windows path.
 constexpr DWORD kDialogPathMax = 32768;
 
-// "Name (*.ext)\0*.ext\0", the string's own terminator ending the list.
+// "Name (*.a;*.b)\0*.a;*.b\0", the string's own terminator ending the list.
 [[nodiscard]] std::wstring DialogFilter(const DialogFileInfo& info) noexcept {
-    const std::wstring extension = WideFromUtf8(info.extension);
-    std::wstring filter = WideFromUtf8(info.typeName) + L" (*." + extension + L")";
+    std::wstring patterns;
+    for (const auto part : std::views::split(info.extension, ';')) {
+        patterns += (patterns.empty() ? L"*." : L";*.") + WideFromUtf8(std::string_view(part.begin(), part.end()));
+    }
+    std::wstring filter = WideFromUtf8(info.typeName) + L" (" + patterns + L")";
     filter.push_back(L'\0');
-    filter += L"*." + extension;
+    filter += patterns;
     filter.push_back(L'\0');
     return filter;
 }
@@ -149,7 +154,7 @@ constexpr DWORD kDialogPathMax = 32768;
 [[nodiscard]] Result<std::filesystem::path> DialogFile(const DialogFileInfo& info, bool save) noexcept {
     ZoneScopedN("DialogFile");
     const std::wstring filter = DialogFilter(info);
-    const std::wstring extension = WideFromUtf8(info.extension);
+    const std::wstring extension = WideFromUtf8(info.extension.substr(0, info.extension.find(';')));
     std::wstring file = info.initial.wstring();
     file.resize(kDialogPathMax, L'\0');
 
@@ -487,6 +492,7 @@ void DispatchMouseMove(Window window, WPARAM wParam, LPARAM lParam) noexcept {
     Event event{};
     event.type = EventType::Pointer;
     event.pointer = PointerEvent{
+        .time = static_cast<double>(static_cast<DWORD>(GetMessageTime())) / 1000.0,
         .posX = static_cast<float>(GET_X_LPARAM(lParam)),
         .posY = static_cast<float>(GET_Y_LPARAM(lParam)),
         .pressure = (wParam & (MK_LBUTTON | MK_MBUTTON | MK_RBUTTON)) ? 1.0f : 0.0f,
@@ -798,6 +804,7 @@ void WintabHandlePackets(Window window) noexcept {
         Event event{};
         event.type = EventType::Pointer;
         event.pointer = PointerEvent{
+            .time = static_cast<double>(packet.pkTime) / 1000.0,
             .posX = (static_cast<float>(packet.pkX) * scaleX) - originX,
             .posY = (static_cast<float>(packet.pkY) * scaleY) - originY,
             .pressure = static_cast<float>(packet.pkNormalPressure) / wintab.maxPressure,
@@ -1373,8 +1380,9 @@ struct ComRef {
     }
 };
 
-// The first frame `decoder` reads, converted by WIC.
-[[nodiscard]] Result<PlatformImage> ImageDecode(IWICImagingFactory* factory, IWICBitmapDecoder* decoder) noexcept {
+// The first frame `decoder` reads, converted by WIC to `format`, 32 bits a pixel.
+[[nodiscard]] Result<PlatformImage> ImageDecode(IWICImagingFactory* factory, IWICBitmapDecoder* decoder,
+                                                const WICPixelFormatGUID& format) noexcept {
     ComRef<IWICBitmapFrameDecode> frame;
     ComRef<IWICFormatConverter> converter;
     UINT width = 0;
@@ -1382,8 +1390,8 @@ struct ComRef {
     if (FAILED(decoder->GetFrame(0, &frame.ptr)) || FAILED(frame.ptr->GetSize(&width, &height)) || width == 0
         || height == 0 || width > kPlatformImageSideMax || height > kPlatformImageSideMax
         || FAILED(factory->CreateFormatConverter(&converter.ptr))
-        || FAILED(converter.ptr->Initialize(frame.ptr, GUID_WICPixelFormat32bppPRGBA, WICBitmapDitherTypeNone, nullptr,
-                                            0.0, WICBitmapPaletteTypeCustom))) {
+        || FAILED(converter.ptr->Initialize(frame.ptr, format, WICBitmapDitherTypeNone, nullptr, 0.0,
+                                            WICBitmapPaletteTypeCustom))) {
         MIDORI_LOG_WARN("image of {}x{} not decoded", width, height);
         return std::unexpected(Error::ImageDecodeFailed);
     }
@@ -1402,7 +1410,8 @@ struct ComRef {
 }
 
 // An encoded image in memory, or else the file at `path`. COM must be initialized.
-[[nodiscard]] Result<PlatformImage> ImageDecode(std::span<std::byte> data, const std::wstring& path) noexcept {
+[[nodiscard]] Result<PlatformImage> ImageDecode(std::span<std::byte> data, const std::wstring& path,
+                                                const WICPixelFormatGUID& format) noexcept {
     ComRef<IWICImagingFactory> factory;
     ComRef<IWICStream> stream;
     ComRef<IWICBitmapDecoder> decoder;
@@ -1422,10 +1431,10 @@ struct ComRef {
         hr = factory.ptr->CreateDecoderFromStream(stream.ptr, nullptr, WICDecodeMetadataCacheOnDemand, &decoder.ptr);
     }
     if (FAILED(hr)) {
-        MIDORI_LOG_WARN("no WIC decoder for the clipboard's image: {:#010x}", static_cast<std::uint32_t>(hr));
+        MIDORI_LOG_WARN("no WIC decoder for the image: {:#010x}", static_cast<std::uint32_t>(hr));
         return std::unexpected(Error::ImageDecodeFailed);
     }
-    return ImageDecode(factory.ptr, decoder.ptr);
+    return ImageDecode(factory.ptr, decoder.ptr, format);
 }
 
 // A clipboard bitmap is a BMP file without its file header: put back, WIC decodes it like one. A 32-bit bitmap
@@ -1556,7 +1565,17 @@ Result<PlatformImage> PlatformClipboardImage() noexcept {
         return std::unexpected(Error::ClipboardFailed);
     }
     const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    auto image = ImageDecode(data, path);
+    auto image = ImageDecode(data, path, GUID_WICPixelFormat32bppPRGBA);
+    if (SUCCEEDED(init)) {
+        CoUninitialize();
+    }
+    return image;
+}
+
+Result<PlatformImage> PlatformImageRead(const std::filesystem::path& path) noexcept {
+    ZoneScopedN("PlatformImageRead");
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    auto image = ImageDecode({}, path.wstring(), GUID_WICPixelFormat32bppRGBA);
     if (SUCCEEDED(init)) {
         CoUninitialize();
     }

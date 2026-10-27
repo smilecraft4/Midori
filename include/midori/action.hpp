@@ -73,6 +73,10 @@ enum struct ActionId : std::uint8_t {
     SelectionTransform,
     TransformApply,
     TransformCancel,
+    BrushOpen,
+    BrushBuiltIn,
+    BrushTexture,
+    BrushExample,
     Count_,
 };
 
@@ -109,7 +113,7 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "tool.paint", .description = "Switch to the paint brush"},
     {.name = "tool.erase", .description = "Switch to the eraser"},
     {.name = "brush.preset", .description = "Give the current tool a brush preset", .argName = "number"},
-    {.name = "brush.radius", .description = "Change the brush radius"},
+    {.name = "brush.radius", .description = "Change the brush size"},
     {.name = "brush.opacity", .description = "Change the brush opacity"},
     {.name = "brush.hardness", .description = "Change the brush hardness"},
     {.name = "layer.new", .description = "New layer above the active one"},
@@ -160,6 +164,12 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
      .description = "Move, scale, turn or distort the selection and the active layer's pixels in it"},
     {.name = "transform.apply", .description = "Apply the transform"},
     {.name = "transform.cancel", .description = "Put the selection and its pixels back as they were"},
+    {.name = "brush.open", .description = "Paint with a brush file, read again whenever it changes"},
+    {.name = "brush.builtIn", .description = "Paint with the built-in round brush"},
+    {.name = "brush.texture", .description = "Pick the image one of the brush's textures reads", .argName = "index"},
+    {.name = "brush.example",
+     .description = "Paint with one of the example brushes next to Midori",
+     .argName = "index"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and

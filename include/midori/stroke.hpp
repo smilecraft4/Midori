@@ -2,12 +2,15 @@
 
 #include "midori/canvas.hpp"
 #include "midori/color.hpp"
+#include "midori/mdsl.hpp"
 #include "midori/tile.hpp"
 #include "midori/tool.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <vector>
 
 namespace Midori {
@@ -91,20 +94,23 @@ constexpr double kStrokeLassoSpacing = 2.0;
 
 // Mirrors StrokeDab in stroke.cs.hlsl. A rectangle when `width` is above 0, from (x, y), its edge antialiased.
 struct StrokeDab {
-    float x; // canvas units from the stroke's origin tile, small enough for float wherever the stroke is
+    float x;      // canvas units from the stroke's origin tile, small enough for float wherever the stroke is
     float y;
-    float radius;
-    float hardness;
-    float flow;
-    float opacity;
+    float radius; // the brush's stamp()
     float width;
     float height;
+    MdslDab inputs;
+    std::array<float, kMdslParamFloatsMax> params; // the brush's, at MdslParam::offset, with their inputs applied
 };
+static_assert(sizeof(StrokeDab) == 104);
 
 struct StrokePoint {
-    double x; // canvas units
+    double x;    // canvas units
     double y;
+    double time; // seconds, PointerEvent's
     float pressure;
+    float tiltX; // PointerEvent's
+    float tiltY;
 };
 
 struct StrokeBeginInfo {
@@ -137,16 +143,20 @@ struct StrokeTile {
 struct StrokeState {
     std::vector<StrokeDab> dabs;
     std::vector<StrokeTile> tiles;
-    BrushState brush;                // as the stroke began
+    BrushState brush;                             // as the stroke began
+    std::array<float, kMdslCurveFloats> curves{}; // brush's, baked
     Color::Srgb color;
-    StrokePoint first;               // the first input point
-    StrokePoint last;                // the last input point
-    SelectionBounds selectionBefore; // a stroke of the selection's mask: its canvas's bounds before it
-    StrokeTransform transform;       // Transform: where the pixels lifted from under selectionBefore go
-    float toNextDab{};               // canvas units along the path
-    TileGridPos origin;              // the tile of the first point, the dabs and the GPU work relative to it
+    StrokePoint first;                            // the first input point
+    StrokePoint last;                             // the last input point
+    MdslDab inputs;                               // at `last`
+    SelectionBounds selectionBefore;              // a stroke of the selection's mask: its canvas's bounds before it
+    StrokeTransform transform;                    // Transform: where the pixels lifted from under selectionBefore go
+    float toNextDab{};                            // canvas units along the path
+    std::uint32_t seed{};                         // MdslDab::random's, a new one each stroke
+    std::uint32_t stamps{};                       // placed, dropped ones included
+    TileGridPos origin;            // the tile of the first point, the dabs and the GPU work relative to it
     Layer layer{};
-    Canvas canvas{kCanvasInvalid};   // kCanvasInvalid: no stroke
+    Canvas canvas{kCanvasInvalid}; // kCanvasInvalid: no stroke
     CanvasView view{kCanvasViewInvalid};
     StrokeMode mode{};
     BlendMode blendMode{};
@@ -156,10 +166,29 @@ struct StrokeState {
     bool discard{};           // ended having put every tile back: freed without a history record
 };
 
-[[nodiscard]] constexpr float DabRadius(const BrushState& brush, float pressure) noexcept {
-    return brush.pressureRadius ? brush.radius * std::lerp(brush.pressureRadiusMin, brush.pressureRadiusMax, pressure)
-                                : brush.radius;
-}
+// Whatever stamp() returns, a stamp stays within these, so a broken brush cannot touch every tile or place a stamp at
+// every texel. Canvas units.
+constexpr float kStrokeStampRadiusMax = 1024.0f;
+constexpr float kStrokeStampSpacingMin = 0.25f;
+constexpr float kStrokeStampOffsetMax = 1024.0f; // on each axis
+
+struct StrokeStamp {
+    std::array<float, kMdslParamFloatsMax> params; // as StrokeDab::params
+    float radius;
+    float spacing;
+    float offsetX; // from the point on the path, canvas units
+    float offsetY;
+};
+
+// Canvas units per second at which BrushInput::Speed reaches 1.
+constexpr float kStrokeSpeedFull = 4000.0f;
+// Seconds over which MdslDab::velocity follows the pen, so it does not jump with every input point.
+constexpr double kStrokeVelocitySmoothing = 0.03;
+
+// The stamp `brush` places with `inputs`: its params with their inputs applied, then gAppState.brush's stamp() on them,
+// reading `curves`, its curves baked.
+StrokeStamp StrokeStampAt(const BrushState& brush, std::span<const float, kMdslCurveFloats> curves,
+                          const MdslDab& inputs) noexcept;
 
 // The GPU has a backup or dirty texels to record.
 [[nodiscard]] constexpr bool StrokeTilePending(const StrokeTile& tile) noexcept {

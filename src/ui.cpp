@@ -44,6 +44,10 @@ constexpr float kFontSize = 15.0f; // DIPs
 constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
     Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab,
 };
+constexpr std::array<Text, std::to_underlying(BrushInput::Count_)> kBrushInputTexts = {
+    Text::BrushInputNone,  Text::BrushInputPressure, Text::BrushInputTiltX,
+    Text::BrushInputTiltY, Text::BrushInputSpeed,    Text::BrushInputRandom,
+};
 constexpr std::array<Text, std::to_underlying(SelectionOp::Count_)> kSelectionOpTexts = {
     Text::SelectionReplace,   Text::SelectionAdd,     Text::SelectionSubtract,
     Text::SelectionIntersect, Text::SelectionExclude,
@@ -262,30 +266,229 @@ void MenuAction(Window window, Text label, ActionId action, bool selected = fals
     return kWindowInvalid;
 }
 
-// Whether pressure drives a property, and its value at no pressure and at full pressure, as a share of the slider's.
-void PressureEdit(Text label, bool& enabled, float& min, float& max) noexcept {
-    ImGui::PushID(std::to_underlying(label));
-    ImGui::Checkbox("##enabled", &enabled);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!enabled);
-    ImGui::DragFloatRange2(TextLabel(label), &min, &max, 0.005f, 0.0f, 1.0f, TextGet(Text::PressureMin),
-                           TextGet(Text::PressureMax), ImGuiSliderFlags_AlwaysClamp);
-    ImGui::EndDisabled();
-    ImGui::PopID();
+// The curve over [min, max], 0 at the bottom, its points marked when `points`.
+void CurveDraw(ImDrawList* draw, ImVec2 min, ImVec2 max, const Curve& curve, bool points) noexcept {
+    const float width = max.x - min.x;
+    const float height = max.y - min.y;
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
+    for (int i = 1; i < 4; ++i) {
+        const float t = static_cast<float>(i) / 4.0f;
+        draw->AddLine(ImVec2(min.x + (t * width), min.y), ImVec2(min.x + (t * width), max.y),
+                      ImGui::GetColorU32(ImGuiCol_Border));
+        draw->AddLine(ImVec2(min.x, min.y + (t * height)), ImVec2(max.x, min.y + (t * height)),
+                      ImGui::GetColorU32(ImGuiCol_Border));
+    }
+    constexpr int kSegments = 48;
+    std::array<ImVec2, kSegments + 1> line{};
+    for (int i = 0; i <= kSegments; ++i) {
+        const float x = static_cast<float>(i) / kSegments;
+        line[static_cast<std::size_t>(i)] = ImVec2(min.x + (x * width), max.y - (CurveEval(curve, x) * height));
+    }
+    draw->AddPolyline(line.data(), static_cast<int>(line.size()), ImGui::GetColorU32(ImGuiCol_PlotLines),
+                      std::max(1.0f, ImGui::GetFontSize() / 10.0f), ImDrawFlags_None);
+    if (!points) {
+        return;
+    }
+    for (std::uint32_t i = 0; i < curve.count; ++i) {
+        draw->AddCircleFilled(ImVec2(min.x + (curve.points[i].x * width), max.y - (curve.points[i].y * height)),
+                              ImGui::GetFontSize() * 0.25f, ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
+    }
 }
 
-void BrushEdit(BrushState& brush) noexcept {
+// A click adds a point, a drag moves the one under it, a right-click removes it. The first and last points stay at
+// x 0 and 1, and the others between their neighbours, so the curve stays valid.
+void CurveEdit(Curve& curve) noexcept {
+    constexpr float kGap = 0.01f;
+    const float side = ImGui::GetFontSize() * 12.0f;
+    ImGui::InvisibleButton("##edit", ImVec2(side, side));
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const CurvePoint at{
+        .x = std::clamp((mouse.x - min.x) / side, 0.0f, 1.0f),
+        .y = std::clamp((max.y - mouse.y) / side, 0.0f, 1.0f),
+    };
+    int hovered = -1;
+    float nearest = ImGui::GetFontSize() * 0.6f;
+    for (std::uint32_t i = 0; i < curve.count; ++i) {
+        const float distance =
+            std::hypot(min.x + (curve.points[i].x * side) - mouse.x, max.y - (curve.points[i].y * side) - mouse.y);
+        if (distance < nearest) {
+            nearest = distance;
+            hovered = static_cast<int>(i);
+        }
+    }
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    const ImGuiID draggingId = ImGui::GetID("##dragging");
+    int dragging = storage->GetInt(draggingId, -1);
+    if (ImGui::IsItemActivated()) {
+        dragging = hovered;
+        if (dragging < 0 && curve.count < kCurvePointsMax) {
+            std::uint32_t next = 1;
+            while (next < curve.count - 1 && curve.points[next].x < at.x) {
+                ++next;
+            }
+            if (at.x > curve.points[next - 1].x + kGap && at.x < curve.points[next].x - kGap) {
+                std::copy_backward(curve.points.begin() + next, curve.points.begin() + curve.count,
+                                   curve.points.begin() + curve.count + 1);
+                curve.points[next] = at;
+                ++curve.count;
+                dragging = static_cast<int>(next);
+            }
+        }
+    }
+    if (ImGui::IsItemActive() && dragging >= 0) {
+        const auto i = static_cast<std::uint32_t>(dragging);
+        CurvePoint& point = curve.points[i];
+        point.y = at.y;
+        if (i == 0 || i == curve.count - 1) {
+            point.x = i == 0 ? 0.0f : 1.0f;
+        } else {
+            point.x = std::clamp(at.x, curve.points[i - 1].x + kGap, curve.points[i + 1].x - kGap);
+        }
+    } else {
+        dragging = -1;
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered > 0
+        && hovered < static_cast<int>(curve.count) - 1) {
+        std::copy(curve.points.begin() + hovered + 1, curve.points.begin() + curve.count,
+                  curve.points.begin() + hovered);
+        --curve.count;
+        dragging = -1;
+    }
+    storage->SetInt(draggingId, dragging);
+    CurveDraw(ImGui::GetWindowDrawList(), min, max, curve, true);
+    if (ImGui::Button(TextLabel(Text::CurveReset))) {
+        curve = Curve{};
+    }
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + side);
+    ImGui::TextDisabled("%s", TextGet(Text::CurveHelp));
+    ImGui::PopTextWrapPos();
+}
+
+// The curve drawn as wide as `width`, a frame high; a click on it opens its editor.
+void CurveButton(Curve& curve, float width) noexcept {
+    ImGui::InvisibleButton("##curve", ImVec2(width, ImGui::GetFrameHeight()));
+    if (ImGui::IsItemClicked()) {
+        ImGui::OpenPopup("##curveEdit");
+    }
+    CurveDraw(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), curve, false);
+    if (ImGui::BeginPopup("##curveEdit")) {
+        CurveEdit(curve);
+        ImGui::EndPopup();
+    }
+}
+
+void BrushEdit(Window window, BrushState& brush) noexcept {
     ZoneScopedN("BrushEdit");
-    ImGui::SliderFloat(ShortcutLabel(Text::Radius, ActionId::BrushRadius).data(), &brush.radius, kBrushRadiusMin,
-                       kBrushRadiusMax, "%.1f", ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat(ShortcutLabel(Text::Hardness, ActionId::BrushHardness).data(), &brush.hardness, 0.0f, 1.0f);
-    ImGui::SliderFloat(TextLabel(Text::Flow), &brush.flow, 0.0f, 1.0f);
-    ImGui::SliderFloat(ShortcutLabel(Text::Opacity, ActionId::BrushOpacity).data(), &brush.opacity, 0.0f, 1.0f);
-    ImGui::SliderFloat(TextLabel(Text::Spacing), &brush.spacing, 0.01f, 1.0f);
-    PressureEdit(Text::PressureRadius, brush.pressureRadius, brush.pressureRadiusMin, brush.pressureRadiusMax);
-    PressureEdit(Text::PressureHardness, brush.pressureHardness, brush.pressureHardnessMin, brush.pressureHardnessMax);
-    PressureEdit(Text::PressureFlow, brush.pressureFlow, brush.pressureFlowMin, brush.pressureFlowMax);
-    PressureEdit(Text::PressureOpacity, brush.pressureOpacity, brush.pressureOpacityMin, brush.pressureOpacityMax);
+    // The brush's params, named by its source and not translated: each with the input that drives it, and with one,
+    // the curve from the input to the share of the value. Then its curves and its textures.
+    const MdslBrush& source = gAppState.brush;
+    const auto inputNames = TextsGet(kBrushInputTexts);
+    float inputWidth = 0.0f;
+    for (const char* name : inputNames) {
+        inputWidth = std::max(inputWidth, ImGui::CalcTextSize(name).x);
+    }
+    inputWidth += (ImGui::GetStyle().FramePadding.x * 2.0f) + ImGui::GetFrameHeight();
+    if (!ImGui::BeginTable("##params", 4, ImGuiTableFlags_SizingStretchProp)) {
+        return;
+    }
+    ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthFixed, inputWidth);
+    ImGui::TableSetupColumn("##inputCurve", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    const auto name = [](const std::string& text) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::TableNextColumn();
+    };
+    for (std::size_t i = 0; i < source.params.size(); ++i) {
+        const MdslParam& param = source.params[i];
+        BrushParam& value = brush.params[i];
+        ImGui::PushID(static_cast<int>(i));
+        name(param.name);
+        // A range over two decades, like a size, gets a logarithmic slider so its small values stay reachable.
+        const bool logarithmic = param.min > 0.0f && param.max >= 100.0f * param.min;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SliderScalarN("##value", ImGuiDataType_Float, value.value.data(),
+                             static_cast<int>(MdslComponents(param.type)), &param.min, &param.max, "%.3g",
+                             logarithmic ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None);
+        ImGui::TableNextColumn();
+        int input = std::to_underlying(value.input);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##input", &input, inputNames.data(), static_cast<int>(inputNames.size()))) {
+            value.input = static_cast<BrushInput>(input);
+        }
+        ImGui::SetItemTooltip("%s", TextGet(Text::BrushInput));
+        ImGui::TableNextColumn();
+        if (value.input != BrushInput::None) {
+            CurveButton(value.curve, ImGui::GetContentRegionAvail().x);
+        }
+        ImGui::PopID();
+    }
+    for (std::size_t i = 0; i < source.curves.size(); ++i) {
+        ImGui::PushID(static_cast<int>(kMdslParamFloatsMax + i));
+        name(source.curves[i].name);
+        CurveButton(brush.curves[i], ImGui::GetContentRegionAvail().x);
+        ImGui::PopID();
+    }
+    for (std::size_t i = 0; i < source.textures.size(); ++i) {
+        const BrushTextureState& texture = gAppState.brushTextures[i];
+        ImGui::PushID(static_cast<int>(kMdslParamFloatsMax + kMdslCurvesMax + i));
+        name(source.textures[i].name);
+        const std::string file =
+            texture.path.empty() ? std::string(TextGet(Text::BrushTextureNone)) : PathUtf8(texture.path.filename());
+        if (ImGui::Button(std::format("{}###texture", file).c_str(), ImVec2(-FLT_MIN, 0.0f))) {
+            ActionRequestPush(window, ActionId::BrushTexture, static_cast<std::uint32_t>(i));
+        }
+        if (!texture.error.empty()) {
+            ImGui::TableNextColumn();
+            ImGui::TextColored(ImVec4(0.9f, 0.31f, 0.27f, 1.0f), "(!)");
+            ImGui::SetItemTooltip("%s", texture.error.c_str());
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
+// Where the brush comes from, and why its last change does not paint yet.
+void BrushSourceEdit(Window window) noexcept {
+    const BrushSourceState& source = gAppState.brushSource;
+    const std::string name =
+        source.path.empty() ? std::string(TextGet(Text::BrushBuiltIn)) : PathUtf8(source.path.filename());
+    // The example brushes, picked like any brush file.
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##source", name.c_str())) {
+        const std::vector<std::filesystem::path>& examples = gAppState.brushExamples;
+        for (std::size_t i = 0; i < examples.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(PathUtf8(examples[i].filename()).c_str(), examples[i] == source.path)) {
+                ActionRequestPush(window, ActionId::BrushExample, static_cast<std::uint32_t>(i));
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::Button(TextLabel(Text::BrushOpen))) {
+        ActionRequestPush(window, ActionId::BrushOpen);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(source.path.empty() || gAppState.stroke.canvas != kCanvasInvalid);
+    if (ImGui::Button(TextLabel(Text::BrushBuiltIn))) {
+        ActionRequestPush(window, ActionId::BrushBuiltIn);
+    }
+    ImGui::EndDisabled();
+    if (source.compiling || source.ready) {
+        ImGui::TextDisabled("%s", TextGet(Text::BrushCompiling));
+    }
+    if (!source.error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 80, 70, 255));
+        ImGui::TextWrapped("%s", source.error.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::Separator();
 }
 
 void ToolWindow(Window window, ToolsState& tools) noexcept {
@@ -313,10 +516,12 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
                              static_cast<int>(blendModeNames.size()))) {
                 tools.paint.blendMode = static_cast<BlendMode>(blendMode);
             }
-            BrushEdit(tools.paint.brush);
+            BrushSourceEdit(window);
+            BrushEdit(window, tools.paint.brush);
         } else if (tools.tool == Tool::Erase) {
             ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.erase.color.r);
-            BrushEdit(tools.erase.brush);
+            BrushSourceEdit(window);
+            BrushEdit(window, tools.erase.brush);
         } else if (tools.tool == Tool::Select || tools.tool == Tool::Lasso) {
             const auto opNames = TextsGet(kSelectionOpTexts);
             int op = std::to_underlying(tools.selectionOp);
@@ -481,14 +686,13 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     constexpr ImU32 kFaint = IM_COL32(40, 130, 230, 120);
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-    float value = 0.0f;
+    const int param = BrushAdjustParam(gAppState.brush.params, adjust.mode);
+    float value = brush.params[static_cast<std::size_t>(std::max(param, 0))].value[0];
     if (adjust.mode == BrushAdjustMode::Radius) {
-        const float radius = brush.radius * std::abs(gAppState.canvasViews[adjust.view].viewport.zoomX) * scale;
+        const float radius = value * std::abs(gAppState.canvasViews[adjust.view].viewport.zoomX) * scale;
         drawList->AddCircle(center, radius, kStrong, 0, 2.0f * scale);
-        value = brush.radius;
     } else {
         const float range = kBrushAdjustRangeDips * scale;
-        value = adjust.mode == BrushAdjustMode::Opacity ? brush.opacity : brush.hardness;
         if (adjust.mode == BrushAdjustMode::LayerOpacity) {
             value = gAppState.canvases[gAppState.canvasViews[adjust.view].canvas].layers[adjust.layer].opacity;
         }

@@ -7,6 +7,7 @@
 #include "midori/tile.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iterator>
 #include <vector>
@@ -17,13 +18,23 @@ namespace Midori {
 
 namespace {
 
-// Keeps a tiny brush from emitting thousands of dabs per canvas unit.
-constexpr float kDabSpacingMin = 0.25f;
-// One texel at level 0, the narrowest a dab's mask gets.
-constexpr float kDabRadiusSolid = 1.0f;
-
-[[nodiscard]] float DabSpacing(const BrushState& brush, float pressure) noexcept {
-    return std::max(2.0f * DabRadius(brush, pressure) * brush.spacing, kDabSpacingMin);
+float BrushInputValue(BrushInput input, const MdslDab& inputs) noexcept {
+    switch (input) {
+        case BrushInput::Pressure:
+            return inputs.pressure;
+        case BrushInput::TiltX:
+            return (inputs.tiltX + 1.0f) * 0.5f;
+        case BrushInput::TiltY:
+            return (inputs.tiltY + 1.0f) * 0.5f;
+        case BrushInput::Speed:
+            return std::hypot(inputs.velocityX, inputs.velocityY) / kStrokeSpeedFull;
+        case BrushInput::Random:
+            return inputs.random;
+        case BrushInput::None:
+        case BrushInput::Count_:
+            break;
+    }
+    return 1.0f;
 }
 
 // How many updates an ended stroke waits for its tiles to stream in before what they missed is dropped.
@@ -178,40 +189,64 @@ void BoxTouch(StrokeState& stroke, Layer layer, float minX, float minY, float ma
     }
 }
 
-void DabAdd(StrokeState& stroke, StrokePoint point) noexcept {
-    ZoneScopedN("DabAdd");
-    if (stroke.dabs.size() >= kStrokeDabMax) {
-        return;
+// 0..1, the same for the same seed and stamp, so a stroke's stamps keep theirs. PCG's output hash.
+float StampRandom(std::uint32_t seed, std::uint32_t stamp) noexcept {
+    std::uint32_t h = ((seed + stamp) * 747796405U) + 2891336453U;
+    h = ((h >> ((h >> 28U) + 4U)) ^ h) * 277803737U;
+    h = (h >> 22U) ^ h;
+    return static_cast<float>(h >> 8U) * 0x1p-24f;
+}
+
+// The inputs at `point`, the stroke's at its last point before: the velocity follows the pen over
+// kStrokeVelocitySmoothing, and the direction keeps the last one while the pen does not move.
+MdslDab InputsAt(const StrokeState& stroke, const StrokePoint& point) noexcept {
+    const MdslDab& before = stroke.inputs;
+    MdslDab inputs = before;
+    inputs.pressure = point.pressure;
+    inputs.tiltX = point.tiltX;
+    inputs.tiltY = point.tiltY;
+    inputs.time = static_cast<float>(std::max(point.time - stroke.first.time, 0.0));
+    const double dx = point.x - stroke.last.x;
+    const double dy = point.y - stroke.last.y;
+    const double length = std::hypot(dx, dy);
+    inputs.along = before.along + static_cast<float>(length);
+    if (length > 0.0) {
+        inputs.directionX = static_cast<float>(dx / length);
+        inputs.directionY = static_cast<float>(dy / length);
     }
-    const BrushState& brush = stroke.brush;
-    const float radius = DabRadius(brush, point.pressure);
-    const float opacity =
-        brush.pressureOpacity
-            ? brush.opacity * std::lerp(brush.pressureOpacityMin, brush.pressureOpacityMax, point.pressure)
-            : brush.opacity;
-    // A dab's mask is at least a texel wide, so dabs pressure shrinks below one would each still pull the coverage up
-    // to the full opacity, packed at the minimum spacing: a hard hairline. Below a texel their cap shrinks with them
-    // instead. A brush set that small keeps its own opacity.
-    const float fade = std::min(radius / std::min(brush.radius, kDabRadiusSolid), 1.0f);
+    // Clocks count in milliseconds, so points can share a time: they keep the velocity until one does not.
+    if (const double dt = point.time - stroke.last.time; dt > 0.0) {
+        const auto follow = static_cast<float>(1.0 - std::exp(-dt / kStrokeVelocitySmoothing));
+        inputs.velocityX = std::lerp(before.velocityX, static_cast<float>(dx / dt), follow);
+        inputs.velocityY = std::lerp(before.velocityY, static_cast<float>(dy / dt), follow);
+    }
+    return inputs;
+}
+
+// Its distance to the next stamp, which takes `inputs` and the stroke's next random value. The stamp is dropped once
+// the stroke holds kStrokeDabMax.
+float DabAdd(StrokeState& stroke, double x, double y, MdslDab inputs) noexcept {
+    ZoneScopedN("DabAdd");
+    inputs.random = StampRandom(stroke.seed, stroke.stamps++);
+    const StrokeStamp stamp = StrokeStampAt(stroke.brush, stroke.curves, inputs);
+    if (stroke.dabs.size() >= kStrokeDabMax) {
+        return stamp.spacing;
+    }
     const StrokeDab dab{
-        .x = static_cast<float>(point.x - (static_cast<double>(stroke.origin.x) * kTileSize)),
-        .y = static_cast<float>(point.y - (static_cast<double>(stroke.origin.y) * kTileSize)),
-        .radius = radius,
-        .hardness = brush.pressureHardness
-                      ? brush.hardness * std::lerp(brush.pressureHardnessMin, brush.pressureHardnessMax, point.pressure)
-                      : brush.hardness,
-        .flow = brush.pressureFlow
-                  ? brush.flow * std::lerp(brush.pressureFlowMin, brush.pressureFlowMax, point.pressure)
-                  : brush.flow,
-        .opacity = opacity * fade,
+        .x = static_cast<float>(x + stamp.offsetX - (static_cast<double>(stroke.origin.x) * kTileSize)),
+        .y = static_cast<float>(y + stamp.offsetY - (static_cast<double>(stroke.origin.y) * kTileSize)),
+        .radius = stamp.radius,
         .width = 0.0f,
         .height = 0.0f,
+        .inputs = inputs,
+        .params = stamp.params,
     };
     const auto index = static_cast<std::uint32_t>(stroke.dabs.size());
     stroke.dabs.push_back(dab);
     const float reach = dab.radius + 1.0f;
     BoxTouch(stroke, stroke.layer, dab.x - reach, dab.y - reach, dab.x + reach, dab.y + reach, index,
              StrokeCreates(stroke.mode));
+    return stamp.spacing;
 }
 
 // The rectangle from the first point to `point` replaces the stroke's one dab. Where the last one was is recomputed
@@ -225,11 +260,10 @@ void RectSet(StrokeState& stroke, StrokePoint point) noexcept {
         .x = local(std::min(stroke.first.x, point.x), stroke.origin.x),
         .y = local(std::min(stroke.first.y, point.y), stroke.origin.y),
         .radius = 0.0f,
-        .hardness = 1.0f,
-        .flow = 1.0f,
-        .opacity = 1.0f,
         .width = static_cast<float>(std::abs(point.x - stroke.first.x)),
         .height = static_cast<float>(std::abs(point.y - stroke.first.y)),
+        .inputs = {},
+        .params = {},
     };
     // The edge is antialiased over a texel each side.
     if (!stroke.dabs.empty()) {
@@ -270,11 +304,10 @@ void LassoAdd(StrokeState& stroke, StrokePoint point) noexcept {
         .x = static_cast<float>(point.x - (static_cast<double>(stroke.origin.x) * kTileSize)),
         .y = static_cast<float>(point.y - (static_cast<double>(stroke.origin.y) * kTileSize)),
         .radius = 0.0f,
-        .hardness = 1.0f,
-        .flow = 1.0f,
-        .opacity = 1.0f,
         .width = 0.0f,
         .height = 0.0f,
+        .inputs = {},
+        .params = {},
     });
     stroke.last = point;
     if (stroke.dabs.size() < 3) {
@@ -295,10 +328,25 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     StrokeState& stroke = gAppState.stroke;
     MIDORI_ASSERT(stroke.canvas == kCanvasInvalid, "stroke began over another");
     stroke.brush = beginInfo.brush;
+    BrushCurvesBake(stroke.brush, stroke.curves);
     stroke.color = beginInfo.color;
     stroke.first = beginInfo.point;
     stroke.last = beginInfo.point;
-    stroke.toNextDab = DabSpacing(beginInfo.brush, beginInfo.point.pressure);
+    stroke.inputs = MdslDab{
+        .pressure = beginInfo.point.pressure,
+        .tiltX = beginInfo.point.tiltX,
+        .tiltY = beginInfo.point.tiltY,
+        .velocityX = 0.0f,
+        .velocityY = 0.0f,
+        .directionX = 1.0f,
+        .directionY = 0.0f,
+        .random = 0.0f,
+        .along = 0.0f,
+        .time = 0.0f,
+    };
+    stroke.toNextDab = 0.0f;
+    stroke.seed = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+    stroke.stamps = 0;
     stroke.origin = TileGridPos{.x = static_cast<TileAxis>(std::floor(beginInfo.point.x / kTileSize)),
                                 .y = static_cast<TileAxis>(std::floor(beginInfo.point.y / kTileSize))};
     stroke.layer = beginInfo.layer;
@@ -346,7 +394,7 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
         }
     }
     if (stroke.shape == StrokeShape::Brush) {
-        DabAdd(stroke, beginInfo.point);
+        stroke.toNextDab = DabAdd(stroke, beginInfo.point.x, beginInfo.point.y, stroke.inputs);
     } else if (stroke.shape == StrokeShape::Lasso) {
         LassoAdd(stroke, beginInfo.point);
     }
@@ -370,20 +418,58 @@ void StrokeTo(StrokePoint point) noexcept {
         return;
     }
     const StrokePoint from = stroke.last;
+    const MdslDab before = stroke.inputs;
+    const MdslDab after = InputsAt(stroke, point);
     const double length = std::hypot(point.x - from.x, point.y - from.y);
     double along = stroke.toNextDab;
     while (along <= length) {
         const double t = along / length;
-        const StrokePoint dab{
-            .x = std::lerp(from.x, point.x, t),
-            .y = std::lerp(from.y, point.y, t),
-            .pressure = std::lerp(from.pressure, point.pressure, static_cast<float>(t)),
+        const auto at = static_cast<float>(t);
+        const MdslDab inputs{
+            .pressure = std::lerp(before.pressure, after.pressure, at),
+            .tiltX = std::lerp(before.tiltX, after.tiltX, at),
+            .tiltY = std::lerp(before.tiltY, after.tiltY, at),
+            .velocityX = std::lerp(before.velocityX, after.velocityX, at),
+            .velocityY = std::lerp(before.velocityY, after.velocityY, at),
+            .directionX = after.directionX,
+            .directionY = after.directionY,
+            .random = 0.0f,
+            .along = before.along + static_cast<float>(along),
+            .time = std::lerp(before.time, after.time, at),
         };
-        DabAdd(stroke, dab);
-        along += DabSpacing(stroke.brush, dab.pressure);
+        along += DabAdd(stroke, std::lerp(from.x, point.x, t), std::lerp(from.y, point.y, t), inputs);
     }
     stroke.toNextDab = static_cast<float>(along - length);
     stroke.last = point;
+    stroke.inputs = after;
+}
+
+StrokeStamp StrokeStampAt(const BrushState& brush, std::span<const float, kMdslCurveFloats> curves,
+                          const MdslDab& inputs) noexcept {
+    StrokeStamp stamp{};
+    const std::vector<MdslParam>& params = gAppState.brush.params;
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        const BrushParam& param = brush.params[i];
+        const float scale = CurveEval(param.curve, BrushInputValue(param.input, inputs));
+        for (std::uint32_t c = 0; c < MdslComponents(params[i].type); ++c) {
+            stamp.params[params[i].offset + c] =
+                param.input == BrushInput::None ? param.value[c] : param.value[c] * scale;
+        }
+    }
+    const MdslStamp result = MdslStampRun(gAppState.brush.stamp, MdslStampInput{
+                                                                     .params = stamp.params,
+                                                                     .curves = curves,
+                                                                     .dab = inputs,
+                                                                 });
+    // Written so a NaN fails each test and takes the bound.
+    stamp.radius = result.radius > 0.0f ? std::min(result.radius, kStrokeStampRadiusMax) : 0.0f;
+    stamp.spacing = result.spacing >= kStrokeStampSpacingMin ? result.spacing : kStrokeStampSpacingMin;
+    const auto offset = [](float value) {
+        return std::isnan(value) ? 0.0f : std::clamp(value, -kStrokeStampOffsetMax, kStrokeStampOffsetMax);
+    };
+    stamp.offsetX = offset(result.offsetX);
+    stamp.offsetY = offset(result.offsetY);
+    return stamp;
 }
 
 void StrokeTransformTo(const StrokeTransform& transform) noexcept {

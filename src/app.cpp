@@ -1,4 +1,5 @@
 #include "midori/app.hpp"
+#include "midori/embed/round_mdsl.h"
 #include "midori/graphics.hpp"
 #include "midori/history.hpp"
 #include "midori/job.hpp"
@@ -15,9 +16,11 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <string_view>
@@ -335,7 +338,12 @@ struct ViewPoint {
     const ViewPoint point = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
     // Moving the view by minus the point's offset brings the canvas point under it to the center.
     const Viewport under = ViewportMove(viewState.viewport, -point.x, -point.y);
-    return StrokePoint{.x = under.posX, .y = under.posY, .pressure = pressure};
+    return StrokePoint{.x = under.posX,
+                       .y = under.posY,
+                       .time = gAppState.pointerTime,
+                       .pressure = pressure,
+                       .tiltX = gAppState.pointerTiltX,
+                       .tiltY = gAppState.pointerTiltY};
 }
 
 // Starts a frame: the root folder tiles any view's client area overlaps get the new frame as `visibleFrame`, and the
@@ -636,18 +644,239 @@ void ViewStep(Window window, bool forward) noexcept {
     }
 }
 
-[[nodiscard]] float& BrushAdjustTarget(BrushState& brush, BrushAdjustMode mode) noexcept {
-    switch (mode) {
-        case BrushAdjustMode::Radius:
-            return brush.radius;
-        case BrushAdjustMode::Opacity:
-            return brush.opacity;
-        case BrushAdjustMode::Hardness:
-        case BrushAdjustMode::LayerOpacity:
-        case BrushAdjustMode::None:
+// How often a brush file is looked at for changes.
+constexpr std::chrono::milliseconds kBrushCheckInterval{500};
+
+// A param or curve keeps its value while the new brush has one of the same name and type; the others start from its
+// defaults.
+void BrushParamsRemap(BrushState& brush, const MdslBrush& from, const MdslBrush& to) noexcept {
+    const BrushState before = brush;
+    BrushParamsDefault(brush, to);
+    for (std::size_t i = 0; i < to.params.size(); ++i) {
+        const int j = BrushParamFind(from.params, to.params[i].name);
+        if (j >= 0 && from.params[static_cast<std::size_t>(j)].type == to.params[i].type) {
+            brush.params[i] = before.params[static_cast<std::size_t>(j)];
+        }
+    }
+    for (std::size_t i = 0; i < to.curves.size(); ++i) {
+        if (const int j = BrushCurveFind(from.curves, to.curves[i].name); j >= 0) {
+            brush.curves[i] = before.curves[static_cast<std::size_t>(j)];
+        }
+    }
+}
+
+// Reads the image at `path` into the brush's texture `slot`; none when it cannot be read.
+void BrushTextureLoad(std::uint32_t slot, std::filesystem::path path, bool chosen) noexcept {
+    BrushTextureState& texture = gAppState.brushTextures[slot];
+    texture = BrushTextureState{.path = std::move(path), .writeTime = {}, .error = {}, .chosen = chosen};
+    Result<PlatformImage> image = std::unexpected(Error::ImageDecodeFailed);
+    if (!texture.path.empty()) {
+        std::error_code ec;
+        texture.writeTime = std::filesystem::last_write_time(texture.path, ec);
+        image = PlatformImageRead(texture.path);
+        if (!image) {
+            texture.error = std::format("{}: {}", PathUtf8(texture.path.filename()), ErrorMessage(image.error()));
+        }
+    }
+    if (const auto set = GraphicsBrushTextureSet(slot, image ? &*image : nullptr); !set) {
+        texture.error = std::format("{}: {}", PathUtf8(texture.path.filename()), ErrorMessage(set.error()));
+    }
+}
+
+// Every tool and preset follows, so only between strokes: a stroke's dabs hold the params of the brush it began with.
+// A texture keeps the image chosen for it while the new brush has one of the same name; the others read the one its
+// source names in `folder`.
+void BrushReplace(MdslBrush brush, const std::filesystem::path& folder) noexcept {
+    AppState& app = gAppState;
+    for (BrushState* tool : {&app.tools.paint.brush, &app.tools.erase.brush}) {
+        BrushParamsRemap(*tool, app.brush, brush);
+    }
+    for (BrushPreset& preset : app.tools.presets) {
+        BrushParamsRemap(preset.brush, app.brush, brush);
+    }
+    const auto before = app.brushTextures;
+    for (std::uint32_t i = 0; i < kMdslTexturesMax; ++i) {
+        std::filesystem::path path;
+        bool chosen = false;
+        if (i < brush.textures.size()) {
+            const auto old = std::ranges::find(app.brush.textures, brush.textures[i].name, &MdslTexture::name);
+            const auto j = static_cast<std::size_t>(old - app.brush.textures.begin());
+            if (old != app.brush.textures.end() && before[j].chosen) {
+                path = before[j].path;
+                chosen = true;
+            } else if (!brush.textures[i].path.empty() && !folder.empty()) {
+                path = folder
+                     / std::filesystem::path(
+                           std::u8string(brush.textures[i].path.begin(), brush.textures[i].path.end()));
+            }
+        }
+        if (path != before[i].path || !before[i].error.empty()) {
+            BrushTextureLoad(i, path, chosen);
+        }
+        app.brushTextures[i].chosen = chosen;
+    }
+    app.brush = std::move(brush);
+}
+
+// A texture's image read again when its file changed, between strokes: every frame repaints a stroke whole.
+void BrushTexturesUpdate() noexcept {
+    if (gAppState.stroke.canvas != kCanvasInvalid) {
+        return;
+    }
+    for (std::uint32_t i = 0; i < kMdslTexturesMax; ++i) {
+        const BrushTextureState& texture = gAppState.brushTextures[i];
+        std::error_code ec;
+        if (!texture.path.empty() && std::filesystem::last_write_time(texture.path, ec) != texture.writeTime && !ec) {
+            BrushTextureLoad(i, texture.path, texture.chosen);
+        }
+    }
+}
+
+// Its pipeline compiles on another thread; BrushSourceUpdate takes it once ready.
+void BrushCompile(MdslBrush brush, bool builtIn) noexcept {
+    BrushSourceState& source = gAppState.brushSource;
+    source.pending = std::move(brush);
+    source.builtIn = builtIn;
+    source.compiling = true;
+    source.ready = false;
+    GraphicsBrushCompile(source.pending.hlsl);
+}
+
+// round.mdsl as Midori was built with it.
+void BrushBuiltInCompile() noexcept {
+    auto brush = MdslTranslate(round_mdsl);
+    MIDORI_ASSERT_ALWAYS(brush.has_value(), "round.mdsl: {}", brush ? "" : brush.error().message);
+    BrushCompile(std::move(*brush), true);
+}
+
+// While no brush paints yet, a brush file that gives none leaves the built-in one to.
+void BrushFallBack() noexcept {
+    const BrushSourceState& source = gAppState.brushSource;
+    if (!GraphicsBrushLoaded() && !((source.compiling || source.ready) && source.builtIn)) {
+        BrushBuiltInCompile();
+    }
+}
+
+// Translated on the main thread, which is quick; its pipeline compiles on another.
+void BrushSourceRead() noexcept {
+    BrushSourceState& source = gAppState.brushSource;
+    std::error_code ec;
+    const auto writeTime = std::filesystem::last_write_time(source.path, ec);
+    if (ec || writeTime == source.writeTime) {
+        return;
+    }
+    source.writeTime = writeTime;
+    std::ifstream file(source.path, std::ios::binary);
+    if (!file) {
+        source.error = std::format("{}: cannot be read", PathUtf8(source.path.filename()));
+        BrushFallBack();
+        return;
+    }
+    std::stringstream text;
+    text << file.rdbuf();
+    auto brush = MdslTranslate(text.str());
+    if (!brush) {
+        source.error = std::format("{}:{}:{}: {}", PathUtf8(source.path.filename()), brush.error().line,
+                                   brush.error().column, brush.error().message);
+        BrushFallBack();
+        return;
+    }
+    source.error.clear();
+    BrushCompile(std::move(*brush), false);
+}
+
+// An empty path is the built-in brush. Either is taken once compiled, after the stroke going on.
+void BrushSourceSet(const std::filesystem::path& path) noexcept {
+    BrushSourceState& source = gAppState.brushSource;
+    source = BrushSourceState{.path = path};
+    if (path.empty()) {
+        BrushBuiltInCompile();
+    }
+}
+
+// Reads the brush file when it changed, then takes the brush once its pipeline is ready and no stroke is going on.
+void BrushSourceUpdate() noexcept {
+    BrushSourceState& source = gAppState.brushSource;
+    if (const auto now = std::chrono::steady_clock::now();
+        !source.path.empty() && now - source.checkTime >= kBrushCheckInterval) {
+        source.checkTime = now;
+        BrushSourceRead();
+        BrushTexturesUpdate();
+    }
+    std::string log;
+    switch (GraphicsBrushPoll(log)) {
+        case GraphicsBrushStatus::Ready:
+            source.ready = source.compiling;
+            source.compiling = false;
+            break;
+        case GraphicsBrushStatus::Failed:
+            if (source.compiling) {
+                source.error = std::move(log);
+            }
+            source.compiling = false;
+            if (!source.builtIn) {
+                BrushFallBack();
+            }
+            break;
+        case GraphicsBrushStatus::None:
+        case GraphicsBrushStatus::Compiling:
             break;
     }
-    return brush.hardness;
+    if (source.ready && gAppState.stroke.canvas == kCanvasInvalid) {
+        GraphicsBrushUse();
+        BrushReplace(std::move(source.pending), source.path.parent_path());
+        source.pending = {};
+        source.ready = false;
+    }
+}
+
+[[nodiscard]] Result<void> AppBrushOpen(Window window) noexcept {
+    ZoneScopedN("AppBrushOpen");
+    const DialogFileInfo info{
+        .initial = {},
+        .typeName = TextGet(Text::BrushFileType),
+        .extension = "mdsl",
+        .window = window,
+    };
+    gAppState.modal = true;
+    auto path = DialogFileOpen(info);
+    gAppState.modal = false;
+    if (!path) {
+        AppError(window, TextGet(Text::ErrorFileDialog), path.error());
+        return std::unexpected(path.error());
+    }
+    if (!path->empty()) {
+        BrushSourceSet(*path);
+    }
+    return {};
+}
+
+// A picked image stays the texture's until the brush has no texture of that name.
+[[nodiscard]] Result<void> AppBrushTextureOpen(Window window, std::uint32_t slot) noexcept {
+    ZoneScopedN("AppBrushTextureOpen");
+    const DialogFileInfo info{
+        .initial = gAppState.brushTextures[slot].path,
+        .typeName = TextGet(Text::BrushImageFileType),
+        .extension = "png;jpg;jpeg;bmp;tif;tiff;webp",
+        .window = window,
+    };
+    gAppState.modal = true;
+    auto path = DialogFileOpen(info);
+    gAppState.modal = false;
+    if (!path) {
+        AppError(window, TextGet(Text::ErrorFileDialog), path.error());
+        return std::unexpected(path.error());
+    }
+    if (!path->empty()) {
+        BrushTextureLoad(slot, *path, true);
+    }
+    return {};
+}
+
+// BrushAdjustBegin only starts for a brush that has the param.
+[[nodiscard]] float& BrushAdjustTarget(BrushState& brush, BrushAdjustMode mode) noexcept {
+    const int param = BrushAdjustParam(gAppState.brush.params, mode);
+    return brush.params[static_cast<std::size_t>(std::max(param, 0))].value[0];
 }
 
 [[nodiscard]] float BrushAdjustValue(const BrushAdjustState& adjust) noexcept {
@@ -700,8 +929,13 @@ void BrushAdjustApply() noexcept {
     } else if (HasAnyFlag(gAppState.keyMods, KeyMod::Alt) && value > 0.0f) {
         value = std::exp2(std::round(std::log2(value)));
     }
-    value = adjust.mode == BrushAdjustMode::Radius ? std::clamp(value, kBrushRadiusMin, kBrushRadiusMax)
-                                                   : std::clamp(value, 0.0f, 1.0f);
+    if (adjust.mode == BrushAdjustMode::LayerOpacity) {
+        value = std::clamp(value, 0.0f, 1.0f);
+    } else {
+        const MdslParam& param =
+            gAppState.brush.params[static_cast<std::size_t>(BrushAdjustParam(gAppState.brush.params, adjust.mode))];
+        value = std::clamp(value, param.min, param.max);
+    }
     // Whole canvas units from 1 up; only a sub-unit brush keeps a fraction. `adjust.value` keeps the fraction, so Shift
     // still moves it smoothly toward the next whole unit.
     if (adjust.mode == BrushAdjustMode::Radius && value >= 1.0f) {
@@ -717,7 +951,8 @@ void BrushAdjustCancel() noexcept {
     adjust = {};
 }
 
-// brush.radius, brush.opacity and brush.hardness set the current tool's brush, layer.opacity the active layer's
+// brush.radius, brush.opacity and brush.hardness set the current tool's brush params named size, opacity and hardness,
+// layer.opacity the active layer's
 // opacity, from the pointer's distance to a center placed so the current value starts under the pointer. Not while
 // navigating or stroking.
 void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
@@ -735,6 +970,9 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     const CanvasState& canvas = app.canvases[app.canvasViews[view].canvas];
     if (mode == BrushAdjustMode::LayerOpacity
         && (canvas.activeLayer == kLayerInvalid || canvas.merge.result != kLayerInvalid)) {
+        return;
+    }
+    if (mode != BrushAdjustMode::LayerOpacity && BrushAdjustParam(app.brush.params, mode) < 0) {
         return;
     }
     BrushAdjustState& adjust = app.brushAdjust;
@@ -1262,12 +1500,32 @@ void TransformHoldEnd() noexcept {
     const float scale = std::abs(app.canvasViews[view].viewport.zoomX) * windowState->dpiScale;
     const StrokeState& stroke = app.stroke;
     const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended && stroke.view == view;
+    float radius = 0.0f;
+    if (painting) {
+        radius = StrokeStampAt(stroke.brush, stroke.curves, stroke.inputs).radius;
+    } else {
+        const BrushState& brush = ToolBrush(app.tools, app.tools.tool);
+        std::array<float, kMdslCurveFloats> curves{};
+        BrushCurvesBake(brush, curves);
+        radius = StrokeStampAt(brush, curves,
+                               MdslDab{
+                                   .pressure = 1.0f,
+                                   .tiltX = app.pointerTiltX,
+                                   .tiltY = app.pointerTiltY,
+                                   .velocityX = 0.0f,
+                                   .velocityY = 0.0f,
+                                   .directionX = 1.0f,
+                                   .directionY = 0.0f,
+                                   .random = 0.5f,
+                                   .along = 0.0f,
+                                   .time = 0.0f,
+                               })
+                     .radius;
+    }
     return BrushOutlineState{
         .x = app.pointerX,
         .y = app.pointerY,
-        .radius =
-            (painting ? DabRadius(stroke.brush, stroke.last.pressure) : ToolBrush(app.tools, app.tools.tool).radius)
-            * scale,
+        .radius = radius * scale,
         .lineWidth = std::max(1.0f, std::round(windowState->dpiScale)),
         .shown = true,
     };
@@ -1726,7 +1984,7 @@ void AppCopy(Window window, bool cut) noexcept {
             const bool selecting = tool == Tool::Select || tool == Tool::Lasso;
             if (const CanvasState& target = gAppState.canvases[gAppState.canvasViews[view].canvas];
                 target.history.pending != 0 || target.merge.result != kLayerInvalid
-                || (!selecting && !LayerPaintable(target, target.activeLayer))) {
+                || (!selecting && (!GraphicsBrushLoaded() || !LayerPaintable(target, target.activeLayer)))) {
                 return false;
             }
             // The mouse has no pressure: 1 while a button is held.
@@ -1960,6 +2218,18 @@ void AppCopy(Window window, bool cut) noexcept {
         case ActionId::SelectionDelete:
             SelectionDelete(window);
             return {};
+        case ActionId::BrushOpen:
+            return AppBrushOpen(window);
+        case ActionId::BrushBuiltIn:
+            BrushSourceSet({});
+            return {};
+        case ActionId::BrushTexture:
+            return arg < kMdslTexturesMax ? AppBrushTextureOpen(window, arg) : Result<void>{};
+        case ActionId::BrushExample:
+            if (arg < gAppState.brushExamples.size()) {
+                BrushSourceSet(gAppState.brushExamples[arg]);
+            }
+            return {};
         case ActionId::Count_:
             break;
     }
@@ -2040,7 +2310,8 @@ void ActionEnd(ActionId action) noexcept {
 [[nodiscard]] bool AppBusy(bool streaming) noexcept {
     const AppState& app = gAppState;
     const StrokeState& stroke = app.stroke;
-    if (streaming || app.paste.canvas != kCanvasInvalid || !app.historyPool.ops.empty()
+    if (streaming || app.paste.canvas != kCanvasInvalid || !app.historyPool.ops.empty() || app.brushSource.compiling
+        || app.brushSource.ready
         || (stroke.canvas != kCanvasInvalid
             && (stroke.ended || std::ranges::any_of(stroke.tiles, StrokeTilePending)))) {
         return true;
@@ -2066,8 +2337,13 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     MIDORI_LOG_INFO("{} v{} {}-{} {}", MIDORI_NAME, MIDORI_VERSION_STRING, MIDORI_COMPILER, MIDORI_ARCHITECTURE,
                     MIDORI_PROFILE);
 
+    // The params the preferences are read for, until the brush BrushSourceSet picks below compiles.
+    auto brush = MdslTranslate(round_mdsl);
+    MIDORI_ASSERT_ALWAYS(brush.has_value(), "round.mdsl: {}", brush ? "" : brush.error().message);
+    gAppState.brush = std::move(*brush);
+
     // Before any window opens: new windows show the panels the preferences keep.
-    if (const auto preferences = PreferencesLoad()) {
+    if (const auto preferences = PreferencesLoad(gAppState.brush)) {
         gAppState.tools = preferences->tools;
         gUiState.preferences = preferences->ui;
         gAppState.windowPlacement = preferences->window;
@@ -2078,10 +2354,29 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gAppState.language = preferences->language;
     } else {
         MIDORI_LOG_WARN("preferences not loaded, defaults used: {}", ErrorMessage(preferences.error()));
+        BrushParamsDefault(gAppState.tools.paint.brush, gAppState.brush);
+        BrushParamsDefault(gAppState.tools.erase.brush, gAppState.brush);
     }
     TextLoad(gAppState.language.empty() ? PlatformLanguage() : gAppState.language);
     KeymapLoad(gAppState.keymap);
     UiFontsLoad();
+
+    // Painting starts with brushes/round.mdsl, so editing it shows at once; the built-in brush when it is missing.
+    std::filesystem::path start;
+    if (const auto folder = PlatformExecutableFolder()) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(*folder / "brushes", ec), end; !ec && it != end; it.increment(ec)) {
+            if (it->path().extension() == ".mdsl") {
+                gAppState.brushExamples.push_back(it->path());
+            }
+        }
+        std::ranges::sort(gAppState.brushExamples);
+        if (const auto round = std::ranges::find(gAppState.brushExamples, *folder / "brushes" / "round.mdsl");
+            round != gAppState.brushExamples.end()) {
+            start = *round;
+        }
+    }
+    BrushSourceSet(start);
 
     // GraphicsInit created atlas 0. The clear page is held by no tile.
     gAppState.atlas.count = 1;
@@ -2127,9 +2422,12 @@ Result<void> AppEvent(Event event) noexcept {
     if (event.type == EventType::Key) {
         gAppState.keyMods = event.key.keyMods;
     } else if (event.type == EventType::Pointer) {
+        gAppState.pointerTime = event.pointer.time;
         gAppState.pointerX = event.pointer.posX;
         gAppState.pointerY = event.pointer.posY;
         gAppState.pointerPressure = event.pointer.pressure;
+        gAppState.pointerTiltX = event.pointer.tiltX;
+        gAppState.pointerTiltY = event.pointer.tiltY;
     }
     const bool uiWants = UiEvent(event);
     if (BrushAdjust(event) || Navigate(event, uiWants) || TransformEvent(event, uiWants) || Paint(event, uiWants)) {
@@ -2227,6 +2525,7 @@ Result<void> AppUpdate() noexcept {
     }
     TilesMarkVisible();
     StrokeUpdate();
+    BrushSourceUpdate();
     PasteUpdate();
     for (const CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid) {
@@ -2277,7 +2576,7 @@ void AppTerminate() noexcept {
         .recentFiles = gAppState.recentFiles,
         .language = gAppState.language,
     };
-    if (const auto res = PreferencesSave(preferences); !res) {
+    if (const auto res = PreferencesSave(preferences, gAppState.brush); !res) {
         MIDORI_LOG_ERROR("PreferencesSave failed: {}", ErrorMessage(res.error()));
     }
     gAppState.canvasViews = {};
@@ -2545,6 +2844,15 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
             return arg < app.recentFiles.size() ? Text::Count_ : Text::ReasonNoRecent;
         case ActionId::CanvasRecentClear:
             return app.recentFiles.empty() ? Text::ReasonNoRecent : Text::Count_;
+        case ActionId::BrushBuiltIn:
+            return app.stroke.canvas != kCanvasInvalid ? Text::ReasonPainting : Text::Count_;
+        case ActionId::BrushTexture:
+            if (arg >= app.brush.textures.size()) {
+                return Text::ReasonNoTexture;
+            }
+            return app.stroke.canvas != kCanvasInvalid ? Text::ReasonPainting : Text::Count_;
+        case ActionId::BrushExample:
+            return arg < app.brushExamples.size() ? Text::Count_ : Text::ReasonNoExample;
         default:
             return Text::Count_;
     }

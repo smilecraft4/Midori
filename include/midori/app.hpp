@@ -12,6 +12,7 @@
 #include "midori/tool.hpp"
 #include "midori/ui.hpp"
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -51,6 +52,23 @@ enum struct BrushAdjustMode : std::uint8_t {
     Hardness,
     LayerOpacity, // of `layer`, not the brush
 };
+
+// Among `params`, or -1: what a brush adjust sets, the param named size for Radius, opacity for Opacity and hardness
+// for Hardness.
+inline int BrushAdjustParam(std::span<const MdslParam> params, BrushAdjustMode mode) noexcept {
+    switch (mode) {
+        case BrushAdjustMode::Radius:
+            return BrushParamFind(params, "size");
+        case BrushAdjustMode::Opacity:
+            return BrushParamFind(params, "opacity");
+        case BrushAdjustMode::Hardness:
+            return BrushParamFind(params, "hardness");
+        case BrushAdjustMode::LayerOpacity:
+        case BrushAdjustMode::None:
+            break;
+    }
+    return -1;
+}
 
 // The one brush value, or layer opacity, being set by the pointer's distance from a fixed center, on `view`. The brush
 // or layer holds the value live; canceling puts `startValue` back, keeping a layer opacity records one undo step.
@@ -141,6 +159,28 @@ struct BrushOutlineState {
     bool shown;
 };
 
+// Where the brush every tool paints with comes from: round.mdsl built in, or a .mdsl file read again whenever it
+// changes. A new brush replaces AppState::brush once its pipeline compiled and no stroke is going on.
+struct BrushSourceState {
+    std::filesystem::path path;                      // empty: round.mdsl as built in
+    std::filesystem::file_time_type writeTime;       // `path`'s when last read
+    std::chrono::steady_clock::time_point checkTime; // when `path` was last looked at
+    MdslBrush pending;                               // translated, its pipeline compiling or ready
+    std::string error; // why the last change does not paint: the translator's, at line:col of `path`, or the compiler's
+    bool compiling;    // `pending`'s pipeline
+    bool builtIn;      // `pending` is round.mdsl as built in, `path` notwithstanding
+    bool ready;        // it compiled, waiting for the stroke to end
+};
+
+// The image one of the brush's textures reads, by its index in MdslBrush::textures. The brush's source names one,
+// next to its file, unless one was chosen in the Brush window; it is read again whenever it changes.
+struct BrushTextureState {
+    std::filesystem::path path;                // empty: none, white
+    std::filesystem::file_time_type writeTime; // `path`'s when last read
+    std::string error;                         // why `path` gives no image
+    bool chosen;                               // kept while the brush has a texture of the same name
+};
+
 // Owned by the main thread. A canvas id indexes `canvases`, a canvas view id indexes `canvasViews`.
 // Pointer and keyboard state is the devices', not any one view's.
 struct AppState {
@@ -158,9 +198,13 @@ struct AppState {
     PasteState paste;
     CopyState copy;
     ToolsState tools;
-    KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
-    std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax
-    std::vector<ActionRequest> actionRequests;      // picked by the UI, run by the next AppUpdate
+    MdslBrush brush; // what every tool paints with, from `brushSource`
+    BrushSourceState brushSource;
+    std::array<BrushTextureState, kMdslTexturesMax> brushTextures;
+    std::vector<std::filesystem::path> brushExamples; // the .mdsl files in brushes/ next to the exe, by name
+    KeymapState keymap;                               // keybinds.json beside preferences.json, else kDefaultBindings
+    std::vector<ActionId> recentActions;              // the most recent first, up to kRecentActionsMax
+    std::vector<ActionRequest> actionRequests;        // picked by the UI, run by the next AppUpdate
     std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
     std::string language;                           // the preference, a code of kLanguages or empty for the system's
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
@@ -169,10 +213,13 @@ struct AppState {
     float zoomMax{kViewportZoomMax};
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible
     // tile grid positions, so a tile with an older `visibleFrame` is shown nowhere.
+    double pointerTime; // the last pointer event's
     std::uint32_t frame;
-    float pointerX; // last pointer position, client-area physical pixels of the window it moved in
+    float pointerX;     // last pointer position, client-area physical pixels of the window it moved in
     float pointerY;
     float pointerPressure;
+    float pointerTiltX;
+    float pointerTiltY;
     KeyMod keyMods; // as of the last key event
     bool spaceDown;
     bool busy;      // AppBusy as of the last update: every window with a canvas presents each vsync

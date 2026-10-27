@@ -113,7 +113,7 @@ struct PlatformMemory {
 
 [[nodiscard]] PlatformMemory PlatformMemoryGet() noexcept;
 
-// RGBA8 with premultiplied alpha, rows top to bottom without padding.
+// RGBA8 with premultiplied alpha, straight from PlatformImageRead, rows top to bottom without padding.
 struct PlatformImage {
     std::vector<std::byte> pixels;
     std::uint32_t width;
@@ -132,6 +132,9 @@ constexpr std::uint32_t kPlatformImageSideMax = 16384;
 [[nodiscard]] std::uint32_t PlatformClipboardSequence() noexcept;
 // Replaces what the clipboard holds with the image, as PNG and as a bitmap with alpha, which other apps paste.
 [[nodiscard]] Result<void> PlatformClipboardSetImage(Window window, const PlatformImage& image) noexcept;
+
+// The image file at `path`, PNG, JPEG and whatever else the system decodes, its alpha straight.
+[[nodiscard]] Result<PlatformImage> PlatformImageRead(const std::filesystem::path& path) noexcept;
 
 // The first of the system's UI fonts for `script` that is installed.
 [[nodiscard]] Result<std::filesystem::path> PlatformFontPath(FontScript script) noexcept;
@@ -168,7 +171,7 @@ void DialogError(Window window, std::string_view title, std::string_view instruc
 struct DialogFileInfo {
     std::filesystem::path initial; // save: the suggested file
     std::string_view typeName;     // UTF-8, as the file type filter shows it
-    std::string_view extension;    // without the dot
+    std::string_view extension;    // without the dot; several split by ';', the first the default
     Window window{kWindowInvalid};
 };
 

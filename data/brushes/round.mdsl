@@ -1,0 +1,59 @@
+// round.mdsl, Midori's default brush. Saved, it is painted with at once.
+
+param float size = 4 range(0.5, 512);
+param float spacing = 0.1 range(0.01, 1);
+param float hardness = 0.9 range(0, 1);
+param float flow = 0.5 range(0, 1);
+param float opacity = 1 range(0, 1);
+
+// struct StampInput {
+//     float pressure    0..1, 1 with a mouse.
+//     vec2  tilt        -1..1 per axis, 0 upright.
+//     vec2  velocity    canvas units per second.
+//     vec2  direction   where the path goes, unit length.
+//     float random      0..1, a new one each stamp.
+//     float along       canvas units along the stroke.
+//     float time        seconds since the stroke began.
+// }
+//
+// struct StampOutput {
+//     float radius      canvas units, up to 1024. 0 or less: the stamp paints nothing.
+//     float spacing     canvas units to the next stamp, at least 0.25.
+//     vec2  offset      canvas units from the point on the path, for jitter. The next stamp is still spaced from the
+//                       path, not from this one.
+// }
+StampOutput stamp(StampInput input) {
+    StampOutput output;
+    
+    output.radius = size;
+    output.spacing = spacing * size * 2.0;
+
+    return output;
+}
+
+// struct PaintInput {
+//     ...               all of StampInput's, the stamp's.
+//     vec2  local       -1..1 across the stamp, 0 at its centre.
+//     float radius      the stamp's.
+//     vec4  color       the tool's, straight.
+//     vec2  position    the texel's, in canvas units.
+// }
+//
+// struct PaintOutput {
+//     vec3  color       straight, 0..1.
+//     float amount      0..1, how far the stamp pulls the texel toward the color at the opacity.
+//     float opacity     0..1, the most the stroke covers. Stamps that overlap never go past it, so a stroke at 0.5
+//                       opacity stays at 0.5 however many times it crosses itself.
+// }
+PaintOutput paint(PaintInput input) {
+    PaintOutput output;
+
+    // Below a texel wide, the opacity shrinks with the stamp so a hairline stays thin.
+    float edge = max((1.0 - hardness) * input.radius, 1.0);
+    float tip = smoothstep(0.0, 1.0, (1.0 - length(input.local)) * input.radius / edge);
+    output.color = input.color.rgb;
+    output.amount = tip * flow;
+    output.opacity = opacity * min(input.radius, 1.0);
+
+    return output;
+}

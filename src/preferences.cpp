@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <json.hpp>
 #include <tracy/Tracy.hpp>
@@ -33,6 +35,9 @@ constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kB
     "normal", "multiply", "add", "screen", "normalOkLab",
 };
 constexpr std::array<std::string_view, 4> kToolNames = {"paint", "erase", "select", "lasso"};
+constexpr std::array<std::string_view, std::to_underlying(BrushInput::Count_)> kBrushInputNames = {
+    "none", "pressure", "tiltX", "tiltY", "speed", "random",
+};
 constexpr std::array<std::string_view, std::to_underlying(CanvasFilter::Count_)> kCanvasFilterNames = {
     "nearest", "bilinear", "bicubic", "mitchell", "lanczos2", "lanczos3",
 };
@@ -97,29 +102,83 @@ void Read(const Json& json, const char* key, Color::Srgb& color) noexcept {
     return name == names.end() ? -1 : static_cast<int>(name - names.begin());
 }
 
-void ReadBrush(const Json& json, BrushState& brush) noexcept {
+// [[x, y], ...], kept only when it makes a valid curve.
+void Read(const Json& json, const char* key, Curve& curve) noexcept {
+    const auto found = json.find(key);
+    if (found == json.end() || !found->is_array() || found->size() < 2 || found->size() > kCurvePointsMax) {
+        return;
+    }
+    Curve read{};
+    read.count = static_cast<std::uint32_t>(found->size());
+    for (std::uint32_t i = 0; i < read.count; ++i) {
+        const Json& point = (*found)[i];
+        if (!point.is_array() || point.size() != 2 || !point[0].is_number() || !point[1].is_number()) {
+            return;
+        }
+        read.points[i] = CurvePoint{.x = point[0].get<float>(), .y = point[1].get<float>()};
+    }
+    if (CurveValid(read)) {
+        curve = read;
+    }
+}
+
+[[nodiscard]] Json CurveJson(const Curve& curve) noexcept {
+    Json points = Json::array();
+    for (std::uint32_t i = 0; i < curve.count; ++i) {
+        points.push_back(Json::array({curve.points[i].x, curve.points[i].y}));
+    }
+    return points;
+}
+
+// By name, so a param keeps its value when the brush's source moves it. A value takes as many numbers as the param has
+// components, each within the param's range.
+void ReadBrushParams(const Json& json, BrushState& brush, std::span<const MdslParam> params) noexcept {
+    const auto found = json.find("params");
+    if (found == json.end() || !found->is_object()) {
+        return;
+    }
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        const auto entry = found->find(params[i].name);
+        if (entry == found->end() || !entry->is_object()) {
+            continue;
+        }
+        BrushParam& param = brush.params[i];
+        const std::uint32_t components = MdslComponents(params[i].type);
+        if (const auto value = entry->find("value");
+            value != entry->end() && value->is_array() && value->size() == components
+            && std::ranges::all_of(*value, [](const Json& number) { return number.is_number(); })) {
+            for (std::uint32_t c = 0; c < components; ++c) {
+                param.value[c] = std::clamp((*value)[c].get<float>(), params[i].min, params[i].max);
+            }
+        }
+        if (const int input = ReadName(*entry, "input", kBrushInputNames); input >= 0) {
+            param.input = static_cast<BrushInput>(input);
+        }
+        Read(*entry, "curve", param.curve);
+        // Before curves took their place, the curve's 0 to 1 scaled the value from min to max.
+        float min = 0.0f;
+        float max = 1.0f;
+        Read(*entry, "min", min, 0.0f, 1.0f);
+        Read(*entry, "max", max, min, 1.0f);
+        for (std::uint32_t p = 0; p < param.curve.count; ++p) {
+            param.curve.points[p].y = std::lerp(min, max, param.curve.points[p].y);
+        }
+    }
+}
+
+// Starts from the defaults of the brush's source.
+void ReadBrush(const Json& json, BrushState& brush, const MdslBrush& source) noexcept {
+    BrushParamsDefault(brush, source);
     const auto found = json.find("brush");
     if (found == json.end() || !found->is_object()) {
         return;
     }
-    // The ranges the tool window's sliders allow.
-    Read(*found, "radius", brush.radius, kBrushRadiusMin, kBrushRadiusMax);
-    Read(*found, "hardness", brush.hardness, 0.0f, 1.0f);
-    Read(*found, "flow", brush.flow, 0.0f, 1.0f);
-    Read(*found, "opacity", brush.opacity, 0.0f, 1.0f);
-    Read(*found, "spacing", brush.spacing, 0.01f, 1.0f);
-    Read(*found, "pressureRadius", brush.pressureRadius);
-    Read(*found, "pressureOpacity", brush.pressureOpacity);
-    Read(*found, "pressureRadiusMin", brush.pressureRadiusMin, 0.0f, 1.0f);
-    Read(*found, "pressureRadiusMax", brush.pressureRadiusMax, brush.pressureRadiusMin, 1.0f);
-    Read(*found, "pressureOpacityMin", brush.pressureOpacityMin, 0.0f, 1.0f);
-    Read(*found, "pressureOpacityMax", brush.pressureOpacityMax, brush.pressureOpacityMin, 1.0f);
-    Read(*found, "pressureFlow", brush.pressureFlow);
-    Read(*found, "pressureFlowMin", brush.pressureFlowMin, 0.0f, 1.0f);
-    Read(*found, "pressureFlowMax", brush.pressureFlowMax, brush.pressureFlowMin, 1.0f);
-    Read(*found, "pressureHardness", brush.pressureHardness);
-    Read(*found, "pressureHardnessMin", brush.pressureHardnessMin, 0.0f, 1.0f);
-    Read(*found, "pressureHardnessMax", brush.pressureHardnessMax, brush.pressureHardnessMin, 1.0f);
+    ReadBrushParams(*found, brush, source.params);
+    if (const auto curves = found->find("curves"); curves != found->end() && curves->is_object()) {
+        for (std::size_t i = 0; i < source.curves.size(); ++i) {
+            Read(*curves, source.curves[i].name.c_str(), brush.curves[i]);
+        }
+    }
 }
 
 // Of kDisplayModeNames: minimized and hidden reopen normal.
@@ -137,26 +196,22 @@ void ReadBrush(const Json& json, BrushState& brush) noexcept {
     return kDisplayModeNames[0];
 }
 
-[[nodiscard]] Json BrushJson(const BrushState& brush) noexcept {
-    return Json{
-        {"radius", brush.radius},
-        {"hardness", brush.hardness},
-        {"flow", brush.flow},
-        {"opacity", brush.opacity},
-        {"spacing", brush.spacing},
-        {"pressureRadius", brush.pressureRadius},
-        {"pressureOpacity", brush.pressureOpacity},
-        {"pressureRadiusMin", brush.pressureRadiusMin},
-        {"pressureRadiusMax", brush.pressureRadiusMax},
-        {"pressureOpacityMin", brush.pressureOpacityMin},
-        {"pressureOpacityMax", brush.pressureOpacityMax},
-        {"pressureFlow", brush.pressureFlow},
-        {"pressureFlowMin", brush.pressureFlowMin},
-        {"pressureFlowMax", brush.pressureFlowMax},
-        {"pressureHardness", brush.pressureHardness},
-        {"pressureHardnessMin", brush.pressureHardnessMin},
-        {"pressureHardnessMax", brush.pressureHardnessMax},
-    };
+[[nodiscard]] Json BrushJson(const BrushState& brush, const MdslBrush& source) noexcept {
+    const std::span<const MdslParam> params = source.params;
+    Json paramsJson = Json::object();
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        const BrushParam& param = brush.params[i];
+        paramsJson[params[i].name] = Json{
+            {"value", std::vector<float>(param.value.begin(), param.value.begin() + MdslComponents(params[i].type))},
+            {"input", kBrushInputNames[std::to_underlying(param.input)]},
+            {"curve", CurveJson(param.curve)},
+        };
+    }
+    Json curvesJson = Json::object();
+    for (std::size_t i = 0; i < source.curves.size(); ++i) {
+        curvesJson[source.curves[i].name] = CurveJson(brush.curves[i]);
+    }
+    return Json{{"params", paramsJson}, {"curves", curvesJson}};
 }
 
 [[nodiscard]] Json ColorJson(const Color::Srgb& color) noexcept {
@@ -165,9 +220,11 @@ void ReadBrush(const Json& json, BrushState& brush) noexcept {
 
 } // namespace
 
-Result<Preferences> PreferencesLoad() noexcept {
+Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
     ZoneScopedN("PreferencesLoad");
     Preferences preferences{};
+    BrushParamsDefault(preferences.tools.paint.brush, brush);
+    BrushParamsDefault(preferences.tools.erase.brush, brush);
     const auto path = PreferencesPath();
     if (!path) {
         return std::unexpected(path.error());
@@ -202,7 +259,7 @@ Result<Preferences> PreferencesLoad() noexcept {
     Read(root, "zoomMax", preferences.zoomMax, kViewportZoomMin, kViewportZoomMax);
     preferences.zoomMax = std::max(preferences.zoomMax, preferences.zoomMin);
     if (const auto paint = root.find("paint"); paint != root.end() && paint->is_object()) {
-        ReadBrush(*paint, preferences.tools.paint.brush);
+        ReadBrush(*paint, preferences.tools.paint.brush, brush);
         Read(*paint, "color", preferences.tools.paint.color);
         if (const int blendMode = ReadName(*paint, "blendMode", kBlendModeNames); blendMode >= 0) {
             preferences.tools.paint.blendMode = static_cast<BlendMode>(blendMode);
@@ -214,7 +271,7 @@ Result<Preferences> PreferencesLoad() noexcept {
                 continue;
             }
             BrushPreset preset{};
-            ReadBrush(entry, preset.brush);
+            ReadBrush(entry, preset.brush, brush);
             if (const auto name = entry.find("name"); name != entry.end() && name->is_string()) {
                 const std::string& text = name->get_ref<const std::string&>();
                 std::copy_n(text.begin(), std::min(text.size(), preset.name.size() - 1), preset.name.begin());
@@ -223,7 +280,7 @@ Result<Preferences> PreferencesLoad() noexcept {
         }
     }
     if (const auto erase = root.find("erase"); erase != root.end() && erase->is_object()) {
-        ReadBrush(*erase, preferences.tools.erase.brush);
+        ReadBrush(*erase, preferences.tools.erase.brush, brush);
         Read(*erase, "color", preferences.tools.erase.color);
     }
     if (const auto ui = root.find("ui"); ui != root.end() && ui->is_object()) {
@@ -267,7 +324,7 @@ Result<Preferences> PreferencesLoad() noexcept {
     return preferences;
 }
 
-Result<void> PreferencesSave(const Preferences& preferences) noexcept {
+Result<void> PreferencesSave(const Preferences& preferences, const MdslBrush& brush) noexcept {
     ZoneScopedN("PreferencesSave");
     const auto path = PreferencesPath();
     if (!path) {
@@ -294,7 +351,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
     }
     Json brushPresets = Json::array();
     for (const BrushPreset& preset : tools.presets) {
-        brushPresets.push_back(Json{{"name", preset.name.data()}, {"brush", BrushJson(preset.brush)}});
+        brushPresets.push_back(Json{{"name", preset.name.data()}, {"brush", BrushJson(preset.brush, brush)}});
     }
     Json recentFiles = Json::array();
     for (const std::filesystem::path& file : preferences.recentFiles) {
@@ -309,13 +366,13 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         {"zoomMax", preferences.zoomMax},
         {"paint",
          {
-             {"brush", BrushJson(tools.paint.brush)},
+             {"brush", BrushJson(tools.paint.brush, brush)},
              {"color", ColorJson(tools.paint.color)},
              {"blendMode", kBlendModeNames[std::to_underlying(tools.paint.blendMode)]},
          }},
         {"erase",
          {
-             {"brush", BrushJson(tools.erase.brush)},
+             {"brush", BrushJson(tools.erase.brush, brush)},
              {"color", ColorJson(tools.erase.color)},
          }},
         {"ui",

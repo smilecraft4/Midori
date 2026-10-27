@@ -13,6 +13,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
 include(MidoriShaders)
+include(MidoriEmbed)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -88,9 +89,11 @@ set(MIDORI_SOURCES
     src/base.cpp
     src/canvas.cpp
     src/color.cpp
+    src/curve.cpp
     src/history.cpp
     src/job.cpp
     src/layer.cpp
+    src/mdsl.cpp
     src/preferences.cpp
     src/stroke.cpp
     src/text.cpp
@@ -103,11 +106,13 @@ set(MIDORI_SOURCES_WIN32
     src/win32/win32_main.cpp
     src/win32/win32_platform.cpp
     src/win32/win32_graphics.cpp
+    src/win32/win32_shader.cpp
 )
 
 set(MIDORI_SHADERS_WIN32
     data/win32/shaders/atlas.hlsli
     data/win32/shaders/blend.hlsli
+    data/win32/shaders/brush.hlsli
     data/win32/shaders/common.hlsli
     data/win32/shaders/tile.vs.hlsl
     data/win32/shaders/tile.ps.hlsl
@@ -191,11 +196,22 @@ target_precompile_headers(midori PRIVATE
     <string_view>
 )
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp comdlg32 comctl32 shell32 ole32 windowscodecs)
+target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp d3dcompiler comdlg32 comctl32 shell32 ole32 windowscodecs)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})
 
-# Translations are read from lang/ next to the exe.
+# Every brush is compiled at runtime into the stroke shader, so its source and includes are in the exe. So is round.mdsl,
+# the built-in brush, painted with when brushes/round.mdsl cannot be.
+midori_target_embed(midori
+    data/brushes/round.mdsl
+    data/win32/shaders/stroke.cs.hlsl
+    data/win32/shaders/atlas.hlsli
+    data/win32/shaders/blend.hlsli
+)
+
+# Translations are read from lang/ next to the exe, and brushes from brushes/, round.mdsl there the one painted with at
+# start.
 add_custom_command(TARGET midori POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/lang $<TARGET_FILE_DIR:midori>/lang
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/brushes $<TARGET_FILE_DIR:midori>/brushes
 )

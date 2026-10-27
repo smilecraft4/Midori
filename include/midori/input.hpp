@@ -383,6 +383,7 @@ struct ButtonEvent {
 // a button is held). Tilt is the pen's lean projected on the tablet, -1..1 per axis (0 = upright),
 // +x right and +y down like the position.
 struct PointerEvent {
+    double time; // seconds, counted in milliseconds from an unspecified start
     float posX;
     float posY;
     float pressure;

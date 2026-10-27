@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 
 struct ImGuiContext;
 
@@ -45,6 +46,27 @@ struct GraphicsMemory {
 };
 
 [[nodiscard]] GraphicsMemory GraphicsMemoryGet() noexcept;
+
+enum struct GraphicsBrushStatus : std::uint8_t {
+    None,  // nothing compiling, nothing to report
+    Compiling,
+    Ready, // compiled, painting once GraphicsBrushUse
+    Failed,
+};
+
+// The stroke pipeline for a brush, from its MdslBrush::hlsl, compiled away from the main thread. One compiles at a
+// time: asked for while one runs, it follows and the one before is dropped.
+void GraphicsBrushCompile(std::string hlsl) noexcept;
+// Ready or Failed once per compile that is not dropped; Failed sets `log` to the compiler's errors.
+GraphicsBrushStatus GraphicsBrushPoll(std::string& log) noexcept;
+// The last Ready pipeline paints what the next submits record. Never during a stroke: its dabs hold the old brush's
+// params.
+void GraphicsBrushUse() noexcept;
+// A brush's pipeline is in use. Until one is, the stroke pipeline only paints the selection.
+bool GraphicsBrushLoaded() noexcept;
+// The image brush texture `slot` reads, below kMdslTexturesMax, its alpha straight; null for none. Outside any submit,
+// and waits for the GPU.
+[[nodiscard]] Result<void> GraphicsBrushTextureSet(std::uint32_t slot, const PlatformImage* image) noexcept;
 
 // GraphicsInit creates atlas 0; the others are created in order, outside any submit. Its pages start undefined.
 [[nodiscard]] Result<void> GraphicsTileAtlasCreate(TileAtlas atlas) noexcept;

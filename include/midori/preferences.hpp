@@ -7,6 +7,7 @@
 #include "midori/ui.hpp"
 #include <cstddef>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -29,8 +30,9 @@ struct Preferences {
 
 // The defaults while there is no file yet. A file that is not JSON is set aside as preferences.json.bad, so the next
 // save does not lose it, and Error::PreferencesFailed returned.
-[[nodiscard]] Result<Preferences> PreferencesLoad() noexcept;
+// Brush param values and curves are kept by their names in `brush`, the brush every tool paints with.
+[[nodiscard]] Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept;
 // Written aside then renamed over the file, so a failed save leaves the last one whole.
-[[nodiscard]] Result<void> PreferencesSave(const Preferences& preferences) noexcept;
+[[nodiscard]] Result<void> PreferencesSave(const Preferences& preferences, const MdslBrush& brush) noexcept;
 
 } // namespace Midori
