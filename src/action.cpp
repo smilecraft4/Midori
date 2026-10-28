@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -36,6 +37,8 @@ constexpr std::array kModNames = {
     ModName{.name = "Super", .mod = KeyMod::Super, .key = Key::LeftSuper},
 };
 
+constexpr std::array<std::string_view, 3> kActionKindNames = {"Press", "Repeat", "Hold"};
+
 [[nodiscard]] std::string_view Trim(std::string_view text) noexcept {
     const std::size_t first = text.find_first_not_of(' ');
     if (first == std::string_view::npos) {
@@ -56,12 +59,28 @@ constexpr std::array kModNames = {
     std::string keys;
     for (const ModName& mod : kModNames) {
         if (HasAnyFlag(chord.mods, mod.mod)) {
+            if (!keys.empty()) {
+                keys += '+';
+            }
             keys += PlatformKeyName(mod.key);
-            keys += '+';
         }
     }
-    keys += PlatformKeyName(chord.key);
+    if (chord.key != Key::Unknown) {
+        if (!keys.empty()) {
+            keys += '+';
+        }
+        keys += PlatformKeyName(chord.key);
+    }
     return keys;
+}
+
+// A Hold action is only ever held. Another is held only when it reads its Hold bindings.
+bool TriggerFits(ActionId action, ActionKind trigger) noexcept {
+    const ActionInfo& info = kActions[std::to_underlying(action)];
+    if (info.kind == ActionKind::Hold) {
+        return trigger == ActionKind::Hold;
+    }
+    return trigger != ActionKind::Hold || info.holdable;
 }
 
 // Either side of a modifier as both, as bindings write them.
@@ -99,13 +118,21 @@ constexpr std::array kModNames = {
     return true;
 }
 
-// keybinds.json's entries. When it is missing an empty array is written there, so the user has a file to edit.
-[[nodiscard]] Json BindingsRead() noexcept {
+Result<std::filesystem::path> BindingsPath() noexcept {
     const auto settings = PlatformUserSettingsPath();
     if (!settings) {
+        return std::unexpected(settings.error());
+    }
+    return *settings / MIDORI_NAME / "keybinds.json";
+}
+
+// keybinds.json's entries. When it is missing an empty array is written there, so the user has a file to edit.
+[[nodiscard]] Json BindingsRead() noexcept {
+    const auto bindingsPath = BindingsPath();
+    if (!bindingsPath) {
         return Json::array();
     }
-    const std::filesystem::path path = *settings / MIDORI_NAME / "keybinds.json";
+    const std::filesystem::path& path = *bindingsPath;
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         std::error_code ec;
@@ -128,7 +155,7 @@ constexpr std::array kModNames = {
 // The sum of ChordMatch over the first `count` pending chords, -1 when one does not match. A one-key Hold binding also
 // matches with more modifiers held, which it may read, as navigation does for its modes.
 [[nodiscard]] int PendingMatch(const KeymapState& keymap, const KeyBinding& binding, std::uint8_t count) noexcept {
-    const bool hold = binding.length == 1 && kActions[std::to_underlying(binding.action)].kind == ActionKind::Hold;
+    const bool hold = binding.trigger == ActionKind::Hold;
     int score = 0;
     for (std::uint8_t c = 0; c < count; ++c) {
         KeyMod carried = c == 0 ? KeyMod::None : keymap.pending[c].mods & keymap.pending[c - 1].mods;
@@ -170,8 +197,23 @@ constexpr std::array kModNames = {
 
 } // namespace
 
-Result<KeyBinding> KeyBindingParse(std::string_view keys) noexcept {
-    KeyBinding binding{.length = 0};
+Result<KeyBinding> KeyBindingParse(std::string_view keys, ActionKind trigger) noexcept {
+    KeyBinding binding{.length = 0, .trigger = trigger};
+    keys = Trim(keys);
+    if (keys.ends_with(')')) {
+        const std::size_t open = keys.rfind('(');
+        if (open == std::string_view::npos) {
+            return std::unexpected(Error::KeyBindingInvalid);
+        }
+        const std::string_view name = Trim(keys.substr(open + 1, keys.size() - open - 2));
+        const auto kind =
+            std::ranges::find_if(kActionKindNames, [&](std::string_view k) { return EqualsIgnoreCase(k, name); });
+        if (kind == kActionKindNames.end()) {
+            return std::unexpected(Error::KeyBindingInvalid);
+        }
+        binding.trigger = static_cast<ActionKind>(kind - kActionKindNames.begin());
+        keys = keys.substr(0, open);
+    }
     for (;;) {
         const std::size_t comma = keys.find(',');
         std::string_view chord = Trim(keys.substr(0, comma));
@@ -192,12 +234,24 @@ Result<KeyBinding> KeyBindingParse(std::string_view keys) noexcept {
         }
         const std::string_view name = Trim(chord);
         const auto key = std::ranges::find_if(kKeyNames, [&](std::string_view k) { return EqualsIgnoreCase(k, name); });
-        if (key == kKeyNames.end() || key == kKeyNames.begin()) {
+        const auto mod =
+            std::ranges::find_if(kModNames, [&](const ModName& m) { return EqualsIgnoreCase(m.name, name); });
+        if (mod != kModNames.end()) {
+            out.mods |= mod->mod;
+        } else if (key == kKeyNames.end() || key == kKeyNames.begin()) {
             return std::unexpected(Error::KeyBindingInvalid);
+        } else {
+            out.key = static_cast<Key>(key - kKeyNames.begin());
         }
-        out.key = static_cast<Key>(key - kKeyNames.begin());
         if (comma == std::string_view::npos) {
+            const bool hold = binding.trigger == ActionKind::Hold;
+            if ((hold && binding.length > 1) || (!hold && out.key == Key::Unknown)) {
+                return std::unexpected(Error::KeyBindingInvalid);
+            }
             return binding;
+        }
+        if (out.key == Key::Unknown) {
+            return std::unexpected(Error::KeyBindingInvalid);
         }
         keys.remove_prefix(comma + 1);
     }
@@ -207,9 +261,10 @@ void KeymapLoad(KeymapState& keymap) noexcept {
     ZoneScopedN("KeymapLoad");
     keymap = KeymapState{};
     for (const KeyBindingText& text : kDefaultBindings) {
-        auto binding = KeyBindingParse(text.keys);
-        if (!binding) {
-            MIDORI_LOG_ERROR("default binding \"{}\": {}", text.keys, ErrorMessage(binding.error()));
+        auto binding = KeyBindingParse(text.keys, kActions[std::to_underlying(text.action)].kind);
+        if (!binding || !TriggerFits(text.action, binding->trigger)) {
+            MIDORI_LOG_ERROR("default binding \"{}\": {}", text.keys,
+                             binding ? "the action is not bound that way" : ErrorMessage(binding.error()));
             continue;
         }
         binding->arg = text.arg;
@@ -230,13 +285,20 @@ void KeymapLoad(KeymapState& keymap) noexcept {
         }
         const bool none = action->get_ref<const std::string&>() == "none";
         const auto info = std::ranges::find(kActions, action->get_ref<const std::string&>(), &ActionInfo::name);
-        auto binding = KeyBindingParse(keys->get_ref<const std::string&>());
-        if ((info == kActions.end() && !none) || !binding) {
-            MIDORI_LOG_WARN("keybinds.json: {}: {}, skipped", entry.dump(),
-                            info == kActions.end() ? "no such action" : ErrorMessage(binding.error()));
+        const ActionId id = none ? ActionId::Count_ : static_cast<ActionId>(info - kActions.begin());
+        auto binding = KeyBindingParse(keys->get_ref<const std::string&>(),
+                                       none || info == kActions.end() ? ActionKind::Press : info->kind);
+        if ((info == kActions.end() && !none) || !binding || (!none && !TriggerFits(id, binding->trigger))) {
+            std::string_view reason = "the action is not bound that way";
+            if (info == kActions.end() && !none) {
+                reason = "no such action";
+            } else if (!binding) {
+                reason = ErrorMessage(binding.error());
+            }
+            MIDORI_LOG_WARN("keybinds.json: {}: {}, skipped", entry.dump(), reason);
             continue;
         }
-        binding->action = none ? ActionId::Count_ : static_cast<ActionId>(info - kActions.begin());
+        binding->action = id;
         if (const auto arg = entry.find("arg"); arg != entry.end() && arg->is_number_unsigned()) {
             binding->arg = arg->get<std::uint32_t>();
         }
@@ -270,6 +332,11 @@ void KeymapLoad(KeymapState& keymap) noexcept {
             }
             keys += ChordKeys(binding.chords[i]);
         }
+        if (binding.trigger != kActions[std::to_underlying(binding.action)].kind) {
+            keys += " (";
+            keys += kActionKindNames[std::to_underlying(binding.trigger)];
+            keys += ')';
+        }
         keymap.keys.push_back(std::move(keys));
     }
 }
@@ -280,6 +347,92 @@ const char* KeymapKeys(const KeymapState& keymap, ActionId action) noexcept {
         return "";
     }
     return keymap.keys[static_cast<std::size_t>(binding - keymap.bindings.begin())].c_str();
+}
+
+Result<void> KeymapBind(KeymapState& keymap, std::string_view keys, ActionId action, std::uint32_t arg,
+                        ActionContext context) noexcept {
+    const ActionInfo& info = kActions[std::to_underlying(action)];
+    std::optional<KeyBinding> binding;
+    if (!Trim(keys).empty()) {
+        const auto parsed = KeyBindingParse(keys, info.kind);
+        if (!parsed || !TriggerFits(action, parsed->trigger)) {
+            return std::unexpected(Error::KeyBindingInvalid);
+        }
+        binding = *parsed;
+        binding->arg = arg;
+        binding->action = action;
+        binding->context = context;
+    }
+    const auto path = BindingsPath();
+    if (!path) {
+        return std::unexpected(path.error());
+    }
+    // Its own entries go, and its other bindings, the defaults' among them, are unbound by their keys.
+    Json entries = Json::array();
+    for (const Json& entry : BindingsRead()) {
+        const auto name = entry.find("action");
+        const auto value = entry.find("arg");
+        const std::uint64_t entryArg =
+            value != entry.end() && value->is_number_unsigned() ? value->get<std::uint64_t>() : 0;
+        if (name == entry.end() || !name->is_string() || name->get_ref<const std::string&>() != info.name
+            || entryArg != arg) {
+            entries.push_back(entry);
+        }
+    }
+    for (const KeyBinding& bound : keymap.bindings) {
+        if (bound.action == action && bound.arg == arg) {
+            entries.push_back(Json{{"keys", KeyBindingKeys(bound)},
+                                   {"action", "none"},
+                                   {"context", kContextNames[std::to_underlying(bound.context)]}});
+        }
+    }
+    if (binding) {
+        entries.push_back(Json{{"keys", KeyBindingKeys(*binding)},
+                               {"action", info.name},
+                               {"arg", arg},
+                               {"context", kContextNames[std::to_underlying(context)]}});
+    }
+    {
+        std::ofstream out(*path, std::ios::binary | std::ios::trunc);
+        out << entries.dump(4) << '\n';
+        if (!out) {
+            MIDORI_LOG_ERROR("writing {} failed", PathUtf8(*path));
+            return std::unexpected(Error::PreferencesFailed);
+        }
+    }
+    KeymapLoad(keymap);
+    return {};
+}
+
+std::string KeyBindingKeys(const KeyBinding& binding) noexcept {
+    std::string text;
+    for (std::uint8_t i = 0; i < binding.length; ++i) {
+        if (i > 0) {
+            text += ", ";
+        }
+        const KeyChord chord = binding.chords[i];
+        const std::size_t start = text.size();
+        for (const ModName& mod : kModNames) {
+            if (HasAnyFlag(chord.mods, mod.mod)) {
+                if (text.size() > start) {
+                    text += '+';
+                }
+                text += mod.name;
+            }
+        }
+        if (chord.key != Key::Unknown) {
+            if (text.size() > start) {
+                text += '+';
+            }
+            text += kKeyNames[std::to_underlying(chord.key)];
+        }
+    }
+    if (binding.action < ActionId::Count_ && binding.trigger != kActions[std::to_underlying(binding.action)].kind) {
+        text += '(';
+        text += kActionKindNames[std::to_underlying(binding.trigger)];
+        text += ')';
+    }
+    return text;
 }
 
 std::int32_t KeymapPress(KeymapState& keymap, KeyChord chord, ActionContext context) noexcept {
@@ -293,7 +446,7 @@ std::int32_t KeymapPress(KeymapState& keymap, KeyChord chord, ActionContext cont
         bool longer = false;
         for (std::size_t i = 0; i < keymap.bindings.size(); ++i) {
             const KeyBinding& binding = keymap.bindings[i];
-            if (binding.context > context || binding.length <= length) {
+            if (binding.context > context || binding.length <= length || binding.chords[0].key == Key::Unknown) {
                 continue;
             }
             // An inner context outweighs any chord matches: 2 per exact chord at most.
@@ -329,6 +482,32 @@ std::int32_t KeymapPress(KeymapState& keymap, KeyChord chord, ActionContext cont
 
 bool KeymapContinues(const KeymapState& keymap, const KeyBinding& binding) noexcept {
     return binding.length > keymap.pendingLength && PendingMatch(keymap, binding, keymap.pendingLength) >= 0;
+}
+
+std::int32_t KeymapHeld(const KeymapState& keymap, ActionId action, ActionContext context, KeyMod mods) noexcept {
+    mods = ModsGeneric(mods);
+    std::int32_t best = -1;
+    int bestScore = -1;
+    for (std::size_t i = 0; i < keymap.bindings.size(); ++i) {
+        const KeyBinding& binding = keymap.bindings[i];
+        const KeyChord chord = binding.chords[0];
+        if (binding.action != action || binding.trigger != ActionKind::Hold || binding.context > context
+            || (chord.mods & mods) != chord.mods
+            || (chord.key != Key::Unknown && !keymap.down[std::to_underlying(chord.key)])) {
+            continue;
+        }
+        int keys = chord.key == Key::Unknown ? 0 : 1;
+        for (const ModName& mod : kModNames) {
+            keys += HasAnyFlag(chord.mods, mod.mod) ? 1 : 0;
+        }
+        // An inner context breaks a tie.
+        const int score = (keys * std::to_underlying(ActionContext::Count_)) + std::to_underlying(binding.context);
+        if (score > bestScore) {
+            best = static_cast<std::int32_t>(i);
+            bestScore = score;
+        }
+    }
+    return best;
 }
 
 float FuzzyScore(std::string_view needle, std::string_view haystack) noexcept {

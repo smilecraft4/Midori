@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <iterator>
+#include <span>
 #include <vector>
 
 #include <tracy/Tracy.hpp>
@@ -228,7 +229,8 @@ MdslDab InputsAt(const StrokeState& stroke, const StrokePoint& point) noexcept {
 float DabAdd(StrokeState& stroke, double x, double y, MdslDab inputs) noexcept {
     ZoneScopedN("DabAdd");
     inputs.random = StampRandom(stroke.seed, stroke.stamps++);
-    const StrokeStamp stamp = StrokeStampAt(stroke.brush, stroke.curves, inputs);
+    const StrokeStamp stamp = StrokeStampAt(gAppState.tools.shaders[stroke.shader].brush, stroke.brush, stroke.curves,
+                                            inputs);
     if (stroke.dabs.size() >= kStrokeDabMax) {
         return stamp.spacing;
     }
@@ -276,6 +278,75 @@ void RectSet(StrokeState& stroke, StrokePoint point) noexcept {
     }
     BoxTouch(stroke, stroke.layer, dab.x - 1.0f, dab.y - 1.0f, dab.x + dab.width + 1.0f, dab.y + dab.height + 1.0f, 0,
              StrokeCreates(stroke.mode));
+}
+
+// One stamp for the whole fill, at the stroke's inputs now: its radius is how far in from the edge the brush reaches.
+StrokeDab FillStamp(StrokeState& stroke) noexcept {
+    MdslDab inputs = stroke.inputs;
+    inputs.random = StampRandom(stroke.seed, 0);
+    const StrokeStamp stamp =
+        StrokeStampAt(gAppState.tools.shaders[stroke.shader].brush, stroke.brush, stroke.curves, inputs);
+    return StrokeDab{
+        .x = 0.0f,
+        .y = 0.0f,
+        .radius = stamp.radius,
+        .width = 0.0f,
+        .height = 0.0f,
+        .inputs = inputs,
+        .params = stamp.params,
+    };
+}
+
+// The fill's corners' box and a texel around: the brush stops at the shape's edge. Fewer than 3 corners cover nothing.
+void FillTouch(StrokeState& stroke) noexcept {
+    if (stroke.dabs.size() < 4) {
+        return;
+    }
+    const auto corners = std::span(stroke.dabs).subspan(1);
+    BoxTouch(stroke, stroke.layer, std::ranges::min(corners, {}, &StrokeDab::x).x - 1.0f,
+             std::ranges::min(corners, {}, &StrokeDab::y).y - 1.0f,
+             std::ranges::max(corners, {}, &StrokeDab::x).x + 1.0f,
+             std::ranges::max(corners, {}, &StrokeDab::y).y + 1.0f, 0, StrokeCreates(stroke.mode));
+}
+
+// A corner in canvas units from the stroke's origin tile.
+StrokeDab FillCorner(const StrokeState& stroke, double x, double y) noexcept {
+    return StrokeDab{
+        .x = static_cast<float>(x - (static_cast<double>(stroke.origin.x) * kTileSize)),
+        .y = static_cast<float>(y - (static_cast<double>(stroke.origin.y) * kTileSize)),
+        .radius = 0.0f,
+        .width = 0.0f,
+        .height = 0.0f,
+        .inputs = {},
+        .params = {},
+    };
+}
+
+// The stamp follows the inputs, so every move recomputes the whole shape, and where it was so shrinking puts back what
+// it had covered. A lasso takes the point as a corner kStrokeLassoSpacing screen pixels past the last one.
+void FillTo(StrokeState& stroke, StrokePoint point) noexcept {
+    ZoneScopedN("FillTo");
+    FillTouch(stroke);
+    stroke.inputs = InputsAt(stroke, point);
+    stroke.last = point;
+    if (stroke.shape == StrokeShape::FillRect) {
+        const StrokePoint& first = stroke.first;
+        stroke.dabs.resize(1);
+        stroke.dabs.push_back(FillCorner(stroke, first.x, first.y));
+        stroke.dabs.push_back(FillCorner(stroke, point.x, first.y));
+        stroke.dabs.push_back(FillCorner(stroke, point.x, point.y));
+        stroke.dabs.push_back(FillCorner(stroke, first.x, point.y));
+    } else {
+        const StrokeDab corner = FillCorner(stroke, point.x, point.y);
+        const StrokeDab& last = stroke.dabs.back();
+        const double zoom = std::abs(gAppState.canvasViews[stroke.view].viewport.zoomX);
+        if (stroke.dabs.size() <= kStrokeLassoPointsMax
+            && std::hypot(corner.x - last.x, corner.y - last.y) * zoom >= kStrokeLassoSpacing) {
+            stroke.dabs.push_back(corner);
+        }
+    }
+    stroke.dabs.front() = FillStamp(stroke);
+    FillTouch(stroke);
 }
 
 // Where the pixels lifted from under the selection's bounds land through `transform`, and a texel around for the
@@ -328,6 +399,7 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     StrokeState& stroke = gAppState.stroke;
     MIDORI_ASSERT(stroke.canvas == kCanvasInvalid, "stroke began over another");
     stroke.brush = beginInfo.brush;
+    stroke.shader = beginInfo.shader;
     BrushCurvesBake(stroke.brush, stroke.curves);
     stroke.color = beginInfo.color;
     stroke.first = beginInfo.point;
@@ -397,6 +469,11 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
         stroke.toNextDab = DabAdd(stroke, beginInfo.point.x, beginInfo.point.y, stroke.inputs);
     } else if (stroke.shape == StrokeShape::Lasso) {
         LassoAdd(stroke, beginInfo.point);
+    } else if (stroke.shape == StrokeShape::FillRect || stroke.shape == StrokeShape::FillLasso) {
+        stroke.dabs.push_back(FillStamp(stroke));
+        if (stroke.shape == StrokeShape::FillLasso) {
+            stroke.dabs.push_back(FillCorner(stroke, beginInfo.point.x, beginInfo.point.y));
+        }
     }
 }
 
@@ -407,6 +484,10 @@ void StrokeTo(StrokePoint point) noexcept {
     if (stroke.shape == StrokeShape::Rect) {
         RectSet(stroke, point);
         stroke.last = point;
+        return;
+    }
+    if (stroke.shape == StrokeShape::FillRect || stroke.shape == StrokeShape::FillLasso) {
+        FillTo(stroke, point);
         return;
     }
     if (stroke.shape == StrokeShape::Lasso) {
@@ -444,10 +525,10 @@ void StrokeTo(StrokePoint point) noexcept {
     stroke.inputs = after;
 }
 
-StrokeStamp StrokeStampAt(const BrushState& brush, std::span<const float, kMdslCurveFloats> curves,
-                          const MdslDab& inputs) noexcept {
+StrokeStamp StrokeStampAt(const MdslBrush& source, const BrushState& brush,
+                          std::span<const float, kMdslCurveFloats> curves, const MdslDab& inputs) noexcept {
     StrokeStamp stamp{};
-    const std::vector<MdslParam>& params = gAppState.brush.params;
+    const std::vector<MdslParam>& params = source.params;
     for (std::size_t i = 0; i < params.size(); ++i) {
         const BrushParam& param = brush.params[i];
         const float scale = CurveEval(param.curve, BrushInputValue(param.input, inputs));
@@ -456,7 +537,7 @@ StrokeStamp StrokeStampAt(const BrushState& brush, std::span<const float, kMdslC
                 param.input == BrushInput::None ? param.value[c] : param.value[c] * scale;
         }
     }
-    const MdslStamp result = MdslStampRun(gAppState.brush.stamp, MdslStampInput{
+    const MdslStamp result = MdslStampRun(source.stamp, MdslStampInput{
                                                                      .params = stamp.params,
                                                                      .curves = curves,
                                                                      .dab = inputs,

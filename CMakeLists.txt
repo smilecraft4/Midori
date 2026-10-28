@@ -98,6 +98,7 @@ set(MIDORI_SOURCES
     src/stroke.cpp
     src/text.cpp
     src/tile.cpp
+    src/tool.cpp
     src/ui.cpp
     src/viewport.cpp
 )

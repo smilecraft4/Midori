@@ -29,12 +29,18 @@ namespace {
 using Json = nlohmann::json;
 
 // Bumped when a value changes meaning, so a later version can read an older file.
-constexpr int kPreferencesVersion = 1;
-// Names rather than numbers, so the file reads and edits by hand. Indexed by BlendMode and Tool.
+constexpr int kPreferencesVersion = 2;
+// Names rather than numbers, so the file reads and edits by hand. Indexed by the enums they name.
 constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kBlendModeNames = {
     "normal", "multiply", "add", "screen", "normalOkLab", "erase",
 };
-constexpr std::array<std::string_view, 3> kToolNames = {"paint", "select", "lasso"};
+constexpr std::array<std::string_view, 3> kToolShapeNames = {"path", "box", "lasso"};
+constexpr std::array<std::string_view, 2> kToolTargetNames = {"layer", "selection"};
+constexpr std::array<std::string_view, std::to_underlying(SelectionOp::Count_)> kSelectionOpNames = {
+    "replace", "add", "subtract", "intersect", "exclude",
+};
+// Bumped like kPreferencesVersion, for tools.json and workspace.json.
+constexpr int kToolsVersion = 1;
 constexpr std::array<std::string_view, std::to_underlying(BrushInput::Count_)> kBrushInputNames = {
     "none", "pressure", "tiltX", "tiltY", "speed", "random",
 };
@@ -49,12 +55,61 @@ constexpr std::array kDisplayModes = {WindowDisplayMode::Normal, WindowDisplayMo
 constexpr int kWindowSizeMin = 64;
 constexpr int kWindowSizeMax = 32768;
 
-[[nodiscard]] Result<std::filesystem::path> PreferencesPath() noexcept {
+// A file of the app's folder under PlatformUserSettingsPath.
+Result<std::filesystem::path> SettingsPath(std::string_view name) noexcept {
     const auto settings = PlatformUserSettingsPath();
     if (!settings) {
         return std::unexpected(settings.error());
     }
-    return *settings / MIDORI_NAME / "preferences.json";
+    return *settings / MIDORI_NAME / name;
+}
+
+// Null when the file is missing. One that is not JSON is set aside as <file>.bad, so the next write does not lose it.
+Json JsonFileRead(const std::filesystem::path& path) noexcept {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return Json();
+    }
+    Json root = Json::parse(file, nullptr, false);
+    file.close();
+    if (root.is_discarded()) {
+        std::filesystem::path bad = path;
+        bad += ".bad";
+        std::error_code ec;
+        std::filesystem::rename(path, bad, ec);
+        MIDORI_LOG_WARN("{} is not valid JSON, set aside as {}", PathUtf8(path), PathUtf8(bad));
+        return Json();
+    }
+    return root;
+}
+
+// Written aside then renamed over the file, so a failed write leaves the last one whole. A file name not valid UTF-16
+// would make invalid UTF-8; replaced rather than failing.
+Result<void> JsonFileWrite(const std::filesystem::path& path, const Json& root) noexcept {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+        MIDORI_LOG_ERROR("creating {} failed: {}", PathUtf8(path.parent_path()), ec.message());
+        return std::unexpected(Error::PreferencesFailed);
+    }
+    const std::string text = root.dump(4, ' ', false, Json::error_handler_t::replace);
+    std::filesystem::path temp = path;
+    temp += ".tmp";
+    {
+        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+        file.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!file) {
+            MIDORI_LOG_ERROR("writing {} failed", PathUtf8(temp));
+            return std::unexpected(Error::PreferencesFailed);
+        }
+    }
+    std::filesystem::rename(temp, path, ec);
+    if (ec) {
+        MIDORI_LOG_ERROR("replacing {} failed: {}", PathUtf8(path), ec.message());
+        std::filesystem::remove(temp, ec);
+        return std::unexpected(Error::PreferencesFailed);
+    }
+    return {};
 }
 
 // Each Read leaves `value` as it is unless `json[key]` holds the right kind of value. Nothing here throws: the file is
@@ -68,6 +123,13 @@ void Read(const Json& json, const char* key, float& value, float min, float max)
 void Read(const Json& json, const char* key, int& value, int min, int max) noexcept {
     if (const auto found = json.find(key); found != json.end() && found->is_number_integer()) {
         value = static_cast<int>(std::clamp(found->get<std::int64_t>(), std::int64_t{min}, std::int64_t{max}));
+    }
+}
+
+void Read(const Json& json, const char* key, std::uint32_t& value) noexcept {
+    if (const auto found = json.find(key); found != json.end() && found->is_number_unsigned()
+                                           && found->get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max()) {
+        value = static_cast<std::uint32_t>(found->get<std::uint64_t>());
     }
 }
 
@@ -218,13 +280,140 @@ void ReadBrush(const Json& json, BrushState& brush, const MdslBrush& source) noe
     return Json::array({color.r, color.g, color.b, color.a});
 }
 
+// The brushes folder next to Midori, which tools.json names shaders from.
+std::filesystem::path BrushesFolder() noexcept {
+    const auto folder = PlatformExecutableFolder();
+    return folder ? *folder / "brushes" : std::filesystem::path();
+}
+
+// brushes/round.mdsl, so editing it shows at once; the built-in one when it is missing.
+std::filesystem::path ShaderDefault() noexcept {
+    std::filesystem::path path = BrushesFolder() / "round.mdsl";
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec) ? path : std::filesystem::path();
+}
+
+// Relative to the brushes folder when inside it, empty for the built-in shader.
+std::string ShaderPathWrite(const std::filesystem::path& path) noexcept {
+    if (path.empty()) {
+        return {};
+    }
+    const std::filesystem::path relative = path.lexically_relative(BrushesFolder());
+    if (!relative.empty() && *relative.begin() != "..") {
+        return PathUtf8(relative);
+    }
+    return PathUtf8(path);
+}
+
+// The tool's shader, ShaderDefault without one, the built-in one when the shaders are full.
+std::uint32_t ReadShader(const Json& json, ToolsState& tools) noexcept {
+    std::filesystem::path path = ShaderDefault();
+    if (const auto found = json.find("shader"); found != json.end() && found->is_string()) {
+        const std::string& utf8 = found->get_ref<const std::string&>();
+        path = std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+        if (!path.empty() && path.is_relative()) {
+            path = BrushesFolder() / path;
+        }
+    }
+    const std::uint32_t shader = ToolShaderAdd(tools, path);
+    return shader < kToolShadersMax ? shader : 0;
+}
+
+// The defaults of the tool's shader for what `json` misses; id 0 when it has none.
+ToolState ReadTool(const Json& json, ToolsState& tools) noexcept {
+    ToolState tool{};
+    tool.shader = ReadShader(json, tools);
+    ReadBrush(json, tool.brush, ToolSource(tools, tool));
+    Read(json, "id", tool.id);
+    if (const auto name = json.find("name"); name != json.end() && name->is_string()) {
+        const std::string& text = name->get_ref<const std::string&>();
+        std::copy_n(text.begin(), std::min(text.size(), tool.name.size() - 1), tool.name.begin());
+    }
+    if (const int blendMode = ReadName(json, "blendMode", kBlendModeNames); blendMode >= 0) {
+        tool.blendMode = static_cast<BlendMode>(blendMode);
+    }
+    if (const int op = ReadName(json, "selectionOp", kSelectionOpNames); op >= 0) {
+        tool.selectionOp = static_cast<SelectionOp>(op);
+    }
+    if (const int target = ReadName(json, "target", kToolTargetNames); target >= 0) {
+        tool.target = static_cast<ToolTarget>(target);
+    }
+    if (const int shape = ReadName(json, "shape", kToolShapeNames); shape >= 0) {
+        tool.shape = static_cast<ToolShape>(shape);
+    }
+    // For now a Selection takes a Box or a Lasso only.
+    if (tool.target == ToolTarget::Selection && tool.shape == ToolShape::Path) {
+        tool.shape = ToolShape::Box;
+    }
+    return tool;
+}
+
+Json ToolJson(const ToolState& tool, const ToolsState& tools) noexcept {
+    return Json{
+        {"id", tool.id},
+        {"name", tool.name.data()},
+        {"target", kToolTargetNames[std::to_underlying(tool.target)]},
+        {"shape", kToolShapeNames[std::to_underlying(tool.shape)]},
+        {"blendMode", kBlendModeNames[std::to_underlying(tool.blendMode)]},
+        {"selectionOp", kSelectionOpNames[std::to_underlying(tool.selectionOp)]},
+        {"shader", ShaderPathWrite(tools.shaders[tool.shader].path)},
+        {"brush", BrushJson(tool.brush, ToolSource(tools, tool))},
+    };
+}
+
+// With ShaderDefault.
+ToolState ToolMake(std::uint32_t id, std::string_view name, ToolTarget target, ToolShape shape, BlendMode blendMode,
+                   ToolsState& tools) noexcept {
+    ToolState tool{.id = id, .blendMode = blendMode, .shape = shape, .target = target};
+    tool.shader = ToolShaderAdd(tools, ShaderDefault());
+    tool.shader = tool.shader < kToolShadersMax ? tool.shader : 0;
+    BrushParamsDefault(tool.brush, ToolSource(tools, tool));
+    std::copy_n(name.begin(), std::min(name.size(), tool.name.size() - 1), tool.name.begin());
+    return tool;
+}
+
+// A Pen, an Eraser, and a drawer of Rectangle and Lasso, which kDefaultBindings key B, E and M. An older
+// preferences.json's paint brush goes to the Pen, its brush presets into the Pen's drawer.
+void ToolsDefault(ToolsState& tools, const Json& preferences) noexcept {
+    tools.library.push_back(ToolMake(1, "Pen", ToolTarget::Layer, ToolShape::Path, BlendMode::Normal, tools));
+    tools.library.push_back(ToolMake(2, "Eraser", ToolTarget::Layer, ToolShape::Path, BlendMode::Erase, tools));
+    tools.library.push_back(ToolMake(3, "Rectangle", ToolTarget::Selection, ToolShape::Box, BlendMode::Normal, tools));
+    tools.library.push_back(ToolMake(4, "Lasso", ToolTarget::Selection, ToolShape::Lasso, BlendMode::Normal, tools));
+    tools.slots = {
+        ToolbarSlot{.tools = {1}, .id = 1, .last = 1},
+        ToolbarSlot{.tools = {2}, .id = 2, .last = 2},
+        ToolbarSlot{.tools = {3, 4}, .id = 3, .last = 3},
+    };
+    tools.current = 1;
+    tools.slot = 1;
+    if (!preferences.is_object()) {
+        return;
+    }
+    for (const char* key : {"tool", "paint"}) {
+        if (const auto paint = preferences.find(key); paint != preferences.end() && paint->is_object()) {
+            ReadBrush(*paint, tools.library[0].brush, ToolSource(tools, tools.library[0]));
+            break;
+        }
+    }
+    if (const auto presets = preferences.find("brushPresets"); presets != preferences.end() && presets->is_array()) {
+        for (const Json& entry : *presets) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            ToolState tool = ReadTool(entry, tools);
+            tool.id = static_cast<std::uint32_t>(tools.library.size()) + 1;
+            tools.library.push_back(tool);
+            tools.slots[0].tools.push_back(tool.id);
+        }
+    }
+}
+
 } // namespace
 
-Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
+Result<Preferences> PreferencesLoad() noexcept {
     ZoneScopedN("PreferencesLoad");
     Preferences preferences{};
-    BrushParamsDefault(preferences.tools.paint.brush, brush);
-    const auto path = PreferencesPath();
+    const auto path = SettingsPath("preferences.json");
     if (!path) {
         return std::unexpected(path.error());
     }
@@ -251,41 +440,19 @@ Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
     if (const int filter = ReadName(root, "canvasFilter", kCanvasFilterNames); filter >= 0) {
         preferences.canvasFilter = static_cast<CanvasFilter>(filter);
     }
-    if (const int tool = ReadName(root, "tool", kToolNames); tool >= 0) {
-        preferences.tools.tool = static_cast<Tool>(tool);
-    }
     Read(root, "zoomMin", preferences.zoomMin, kViewportZoomMin, kViewportZoomMax);
     Read(root, "zoomMax", preferences.zoomMax, kViewportZoomMin, kViewportZoomMax);
     preferences.zoomMax = std::max(preferences.zoomMax, preferences.zoomMin);
+    // Version 1 kept the color with the paint tool.
     if (const auto paint = root.find("paint"); paint != root.end() && paint->is_object()) {
-        ReadBrush(*paint, preferences.tools.paint.brush, brush);
-        Read(*paint, "color", preferences.tools.paint.color);
-        Read(*paint, "eraseColor", preferences.tools.paint.eraseColor);
-        if (const int blendMode = ReadName(*paint, "blendMode", kBlendModeNames); blendMode >= 0) {
-            preferences.tools.paint.blendMode = static_cast<BlendMode>(blendMode);
-        }
-        if (const int blendMode = ReadName(*paint, "paintBlendMode", kBlendModeNames);
-            blendMode >= 0 && blendMode != std::to_underlying(BlendMode::Erase)) {
-            preferences.tools.paint.paintBlendMode = static_cast<BlendMode>(blendMode);
-        }
+        Read(*paint, "color", preferences.color);
     }
-    if (const auto presets = root.find("brushPresets"); presets != root.end() && presets->is_array()) {
-        for (const Json& entry : *presets) {
-            if (!entry.is_object()) {
-                continue;
-            }
-            BrushPreset preset{};
-            ReadBrush(entry, preset.brush, brush);
-            if (const auto name = entry.find("name"); name != entry.end() && name->is_string()) {
-                const std::string& text = name->get_ref<const std::string&>();
-                std::copy_n(text.begin(), std::min(text.size(), preset.name.size() - 1), preset.name.begin());
-            }
-            preferences.tools.presets.push_back(preset);
-        }
-    }
+    Read(root, "color", preferences.color);
     if (const auto ui = root.find("ui"); ui != root.end() && ui->is_object()) {
         Read(*ui, "viewShown", preferences.ui.viewShown);
         Read(*ui, "toolShown", preferences.ui.toolShown);
+        Read(*ui, "toolbarShown", preferences.ui.toolbarShown);
+        Read(*ui, "toolsShown", preferences.ui.toolsShown);
         Read(*ui, "layersShown", preferences.ui.layersShown);
         Read(*ui, "helpShown", preferences.ui.helpShown);
         Read(*ui, "menuBarShown", preferences.ui.menuBarShown);
@@ -324,20 +491,13 @@ Result<Preferences> PreferencesLoad(const MdslBrush& brush) noexcept {
     return preferences;
 }
 
-Result<void> PreferencesSave(const Preferences& preferences, const MdslBrush& brush) noexcept {
+Result<void> PreferencesSave(const Preferences& preferences) noexcept {
     ZoneScopedN("PreferencesSave");
-    const auto path = PreferencesPath();
+    const auto path = SettingsPath("preferences.json");
     if (!path) {
         return std::unexpected(path.error());
     }
-    std::error_code ec;
-    std::filesystem::create_directories(path->parent_path(), ec);
-    if (ec) {
-        MIDORI_LOG_ERROR("creating {} failed: {}", PathUtf8(path->parent_path()), ec.message());
-        return std::unexpected(Error::PreferencesFailed);
-    }
 
-    const ToolsState& tools = preferences.tools;
     const WindowCreateInfo& window = preferences.window;
     // Only what is known: the defaults stay out of the file.
     Json windowJson{{"displayMode", DisplayModeName(window.displayMode)}};
@@ -349,10 +509,6 @@ Result<void> PreferencesSave(const Preferences& preferences, const MdslBrush& br
         windowJson["x"] = window.x;
         windowJson["y"] = window.y;
     }
-    Json brushPresets = Json::array();
-    for (const BrushPreset& preset : tools.presets) {
-        brushPresets.push_back(Json{{"name", preset.name.data()}, {"brush", BrushJson(preset.brush, brush)}});
-    }
     Json recentFiles = Json::array();
     for (const std::filesystem::path& file : preferences.recentFiles) {
         recentFiles.push_back(PathUtf8(file));
@@ -360,51 +516,104 @@ Result<void> PreferencesSave(const Preferences& preferences, const MdslBrush& br
     const Json root{
         {"version", kPreferencesVersion},
         {"language", preferences.language},
-        {"tool", kToolNames[std::to_underlying(tools.tool)]},
         {"canvasFilter", kCanvasFilterNames[std::to_underlying(preferences.canvasFilter)]},
         {"zoomMin", preferences.zoomMin},
         {"zoomMax", preferences.zoomMax},
-        {"paint",
-         {
-             {"brush", BrushJson(tools.paint.brush, brush)},
-             {"color", ColorJson(tools.paint.color)},
-             {"eraseColor", ColorJson(tools.paint.eraseColor)},
-             {"blendMode", kBlendModeNames[std::to_underlying(tools.paint.blendMode)]},
-             {"paintBlendMode", kBlendModeNames[std::to_underlying(tools.paint.paintBlendMode)]},
-         }},
+        {"color", ColorJson(preferences.color)},
         {"ui",
          {
              {"viewShown", preferences.ui.viewShown},
              {"toolShown", preferences.ui.toolShown},
+             {"toolbarShown", preferences.ui.toolbarShown},
+             {"toolsShown", preferences.ui.toolsShown},
              {"layersShown", preferences.ui.layersShown},
              {"helpShown", preferences.ui.helpShown},
              {"menuBarShown", preferences.ui.menuBarShown},
              {"imguiSettings", preferences.ui.imguiSettings},
          }},
-        {"brushPresets", brushPresets},
         {"window", windowJson},
         {"recentFiles", recentFiles},
     };
-    // A file name not valid UTF-16 would make invalid UTF-8; replaced rather than failing the save.
-    const std::string text = root.dump(4, ' ', false, Json::error_handler_t::replace);
+    return JsonFileWrite(*path, root);
+}
 
-    std::filesystem::path temp = *path;
-    temp += ".tmp";
-    {
-        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-        file.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!file) {
-            MIDORI_LOG_ERROR("writing {} failed", PathUtf8(temp));
-            return std::unexpected(Error::PreferencesFailed);
+ToolsState ToolsLoad(const MdslBrush& builtIn) noexcept {
+    ZoneScopedN("ToolsLoad");
+    ToolsState tools{};
+    tools.shaders.push_back(ToolShader{.brush = builtIn});
+    const auto libraryPath = SettingsPath("tools.json");
+    const Json library = libraryPath ? JsonFileRead(*libraryPath) : Json();
+    if (library.is_object()) {
+        if (const auto list = library.find("tools"); list != library.end() && list->is_array()) {
+            for (const Json& entry : *list) {
+                const ToolState tool = entry.is_object() ? ReadTool(entry, tools) : ToolState{};
+                if (tool.id == 0 || ToolFind(tools, tool.id)) {
+                    MIDORI_LOG_WARN("tools.json: {} has no id of its own, skipped", entry.dump());
+                    continue;
+                }
+                tools.library.push_back(tool);
+            }
+        }
+        Read(library, "current", tools.current);
+    }
+    if (tools.library.empty()) {
+        const auto preferencesPath = SettingsPath("preferences.json");
+        ToolsDefault(tools, preferencesPath ? JsonFileRead(*preferencesPath) : Json());
+        return tools;
+    }
+    const auto workspacePath = SettingsPath("workspace.json");
+    const Json workspace = workspacePath ? JsonFileRead(*workspacePath) : Json();
+    if (workspace.is_object()) {
+        if (const auto slots = workspace.find("toolbar"); slots != workspace.end() && slots->is_array()) {
+            for (const Json& entry : *slots) {
+                ToolbarSlot slot{};
+                Read(entry, "id", slot.id);
+                Read(entry, "last", slot.last);
+                if (const auto ids = entry.find("tools"); ids != entry.end() && ids->is_array()) {
+                    for (const Json& id : *ids) {
+                        if (id.is_number_unsigned() && id.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max()
+                            && !std::ranges::contains(slot.tools, id.get<std::uint32_t>())) {
+                            slot.tools.push_back(id.get<std::uint32_t>());
+                        }
+                    }
+                }
+                if (slot.id == 0 || ToolbarSlotFind(tools, slot.id)) {
+                    MIDORI_LOG_WARN("workspace.json: {} has no id of its own, skipped", entry.dump());
+                    continue;
+                }
+                tools.slots.push_back(std::move(slot));
+            }
+        }
+        Read(workspace, "slot", tools.slot);
+    } else {
+        for (const ToolState& tool : tools.library) {
+            ToolbarSlotAdd(tools, tool.id);
         }
     }
-    std::filesystem::rename(temp, *path, ec);
-    if (ec) {
-        MIDORI_LOG_ERROR("replacing {} failed: {}", PathUtf8(*path), ec.message());
-        std::filesystem::remove(temp, ec);
-        return std::unexpected(Error::PreferencesFailed);
+    ToolsFix(tools);
+    return tools;
+}
+
+Result<void> ToolsSave(const ToolsState& tools) noexcept {
+    ZoneScopedN("ToolsSave");
+    const auto libraryPath = SettingsPath("tools.json");
+    const auto workspacePath = SettingsPath("workspace.json");
+    if (!libraryPath || !workspacePath) {
+        return std::unexpected(libraryPath ? workspacePath.error() : libraryPath.error());
     }
-    return {};
+    Json library = Json::array();
+    for (const ToolState& tool : tools.library) {
+        library.push_back(ToolJson(tool, tools));
+    }
+    Json slots = Json::array();
+    for (const ToolbarSlot& slot : tools.slots) {
+        slots.push_back(Json{{"id", slot.id}, {"tools", slot.tools}, {"last", slot.last}});
+    }
+    const auto saved = JsonFileWrite(
+        *libraryPath, Json{{"version", kToolsVersion}, {"current", tools.current}, {"tools", library}});
+    const auto arranged =
+        JsonFileWrite(*workspacePath, Json{{"version", kToolsVersion}, {"slot", tools.slot}, {"toolbar", slots}});
+    return saved ? arranged : saved;
 }
 
 } // namespace Midori

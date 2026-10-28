@@ -98,7 +98,7 @@ constexpr UINT kTilePoolFirstView = 0;
 constexpr UINT kTilePoolFirstUav = kTilePoolFirstView + kTileAtlasMax;
 constexpr UINT kTileAtlasDebugView = kTilePoolFirstUav + kTileAtlasMax;
 constexpr UINT kBrushTextureFirstView = kTileAtlasDebugView + 1;
-constexpr UINT kUiTextureFirstView = kBrushTextureFirstView + kMdslTexturesMax;
+constexpr UINT kUiTextureFirstView = kBrushTextureFirstView + (kToolShadersMax * kMdslTexturesMax);
 constexpr UINT kCanvasViewConstantCount = sizeof(CanvasViewConstants) / sizeof(std::uint32_t);
 static_assert(kCanvasViewConstantCount == 13, "must match num32BitConstants in TILE_ROOT_SIGNATURE");
 // One window's brush outline. Mirrors the BrushOutline cbuffer in brush_outline.hlsli.
@@ -655,7 +655,9 @@ void RecordStroke() noexcept {
     const std::size_t frameDabs = std::size_t{state.allocatorIndex} * kStrokeDabMax;
     std::ranges::copy(stroke.dabs, state.strokeDabsMapped + frameDabs);
     state.list->SetComputeRootSignature(state.strokeRootSignature);
-    state.list->SetPipelineState(state.strokeBrushPipeline ? state.strokeBrushPipeline : state.strokePipeline);
+    const std::uint32_t shader = stroke.shader;
+    ID3D12PipelineState* brushPipeline = state.strokeBrushPipelines[shader];
+    state.list->SetPipelineState(brushPipeline ? brushPipeline : state.strokePipeline);
     state.list->SetComputeRootShaderResourceView(kStrokeDabsRootParameter, state.strokeDabs->GetGPUVirtualAddress()
                                                                                + (frameDabs * sizeof(StrokeDab)));
     state.list->SetComputeRootDescriptorTable(kStrokeTilePoolRootParameter, ViewGpu(kTilePoolFirstUav));
@@ -664,13 +666,14 @@ void RecordStroke() noexcept {
     brush->origin = stroke.origin;
     brush->textures = 0;
     for (std::uint32_t i = 0; i < kMdslTexturesMax; ++i) {
-        brush->textures |= state.brushTextures[i] ? 1u << i : 0u;
+        brush->textures |= state.brushTextures[shader][i] ? 1u << i : 0u;
     }
     brush->pad = 0;
     brush->curves = stroke.curves;
     state.list->SetComputeRootConstantBufferView(kStrokeBrushRootParameter,
                                                  state.strokeBrush->GetGPUVirtualAddress() + brushOffset);
-    state.list->SetComputeRootDescriptorTable(kStrokeBrushTexturesRootParameter, ViewGpu(kBrushTextureFirstView));
+    state.list->SetComputeRootDescriptorTable(kStrokeBrushTexturesRootParameter,
+                                              ViewGpu(kBrushTextureFirstView + (shader * kMdslTexturesMax)));
     TilePoolsTransition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     const Color::Srgb color = stroke.color;
@@ -1349,6 +1352,11 @@ void RecordTileDownloads() noexcept {
     return result;
 }
 
+struct BrushCompileJob {
+    std::string hlsl;
+    std::uint32_t brush;
+};
+
 // A brush pipeline compiling on `thread`: it reads `hlsl`, writes `pipeline` and `log`, then sets `done`. The rest is
 // the main thread's. The thread only uses the device and the stroke root signature, which last from GraphicsInit to
 // GraphicsTerminate.
@@ -1356,11 +1364,11 @@ struct BrushCompileState {
     std::jthread thread;
     std::string hlsl;
     std::string log;
-    std::string queued;            // asked for while `thread` ran
-    ID3D12PipelineState* pipeline; // null on failure
+    std::vector<BrushCompileJob> queued; // asked for while `thread` ran, one per brush
+    ID3D12PipelineState* pipeline;       // null on failure
     std::atomic<bool> done;
+    std::uint32_t brush;                 // whose `hlsl` it is
     bool running;
-    bool hasQueued;
 };
 
 BrushCompileState gBrushCompile{};
@@ -1394,8 +1402,9 @@ void BrushCompileRun() noexcept {
     compile.done.store(true, std::memory_order_release);
 }
 
-void BrushCompileStart(std::string hlsl) noexcept {
+void BrushCompileStart(std::uint32_t brush, std::string hlsl) noexcept {
     BrushCompileState& compile = gBrushCompile;
+    compile.brush = brush;
     compile.hlsl = std::move(hlsl);
     compile.done.store(false, std::memory_order_relaxed);
     compile.running = true;
@@ -1772,7 +1781,7 @@ Result<void> GraphicsInit(GraphicsInitInfo initInfo) noexcept {
             return fail("ID3D12Resource::Map", hr);
         }
         state.strokeBrushMapped = static_cast<std::byte*>(mapped);
-        for (UINT i = 0; i < kMdslTexturesMax; ++i) {
+        for (UINT i = 0; i < kToolShadersMax * kMdslTexturesMax; ++i) {
             state.device->CreateShaderResourceView(nullptr, &kBrushTextureSrvDesc, ViewCpu(kBrushTextureFirstView + i));
         }
     }
@@ -1893,8 +1902,10 @@ void GraphicsTerminate() noexcept {
     Release(state.compositeRootSignature);
     Release(state.strokeDabs);
     Release(state.strokeBrush);
-    for (ID3D12Resource*& texture : state.brushTextures) {
-        Release(texture);
+    for (auto& textures : state.brushTextures) {
+        for (ID3D12Resource*& texture : textures) {
+            Release(texture);
+        }
     }
     Release(state.transformPipeline);
     Release(state.transformRootSignature);
@@ -1902,8 +1913,10 @@ void GraphicsTerminate() noexcept {
         gBrushCompile.thread.join();
     }
     Release(gBrushCompile.pipeline);
-    Release(state.strokeBrushReady);
-    Release(state.strokeBrushPipeline);
+    for (std::uint32_t i = 0; i < kToolShadersMax; ++i) {
+        Release(state.strokeBrushReady[i]);
+        Release(state.strokeBrushPipelines[i]);
+    }
     Release(state.strokeBrushRetired);
     Release(state.strokePipeline);
     Release(state.strokeRootSignature);
@@ -2105,17 +2118,22 @@ std::uint64_t GraphicsCompletedFence() noexcept {
     return gGraphicsState.fence->GetCompletedValue();
 }
 
-void GraphicsBrushCompile(std::string hlsl) noexcept {
+void GraphicsBrushCompile(std::uint32_t brush, std::string hlsl) noexcept {
+    MIDORI_ASSERT(brush < kToolShadersMax, "brush {}", brush);
     BrushCompileState& compile = gBrushCompile;
-    if (compile.running) {
-        compile.queued = std::move(hlsl);
-        compile.hasQueued = true;
+    if (!compile.running) {
+        BrushCompileStart(brush, std::move(hlsl));
         return;
     }
-    BrushCompileStart(std::move(hlsl));
+    if (const auto job = std::ranges::find(compile.queued, brush, &BrushCompileJob::brush);
+        job != compile.queued.end()) {
+        job->hlsl = std::move(hlsl);
+        return;
+    }
+    compile.queued.push_back(BrushCompileJob{.hlsl = std::move(hlsl), .brush = brush});
 }
 
-GraphicsBrushStatus GraphicsBrushPoll(std::string& log) noexcept {
+GraphicsBrushStatus GraphicsBrushPoll(std::uint32_t& brush, std::string& log) noexcept {
     GraphicsState& state = gGraphicsState;
     BrushCompileState& compile = gBrushCompile;
     if (state.strokeBrushRetired && GraphicsCompletedFence() >= state.strokeBrushRetiredFence) {
@@ -2129,45 +2147,54 @@ GraphicsBrushStatus GraphicsBrushPoll(std::string& log) noexcept {
     }
     compile.thread.join();
     compile.running = false;
-    if (compile.hasQueued) {
-        Release(compile.pipeline);
-        compile.hasQueued = false;
-        BrushCompileStart(std::move(compile.queued));
+    const std::uint32_t done = compile.brush;
+    ID3D12PipelineState* pipeline = std::exchange(compile.pipeline, nullptr);
+    std::string compileLog = std::move(compile.log);
+    const bool dropped = std::ranges::contains(compile.queued, done, &BrushCompileJob::brush);
+    if (!compile.queued.empty()) {
+        BrushCompileJob job = std::move(compile.queued.front());
+        compile.queued.erase(compile.queued.begin());
+        BrushCompileStart(job.brush, std::move(job.hlsl));
+    }
+    if (dropped) {
+        Release(pipeline);
         return GraphicsBrushStatus::Compiling;
     }
-    if (!compile.pipeline) {
-        log = std::move(compile.log);
+    brush = done;
+    if (!pipeline) {
+        log = std::move(compileLog);
         return GraphicsBrushStatus::Failed;
     }
-    if (!compile.log.empty()) {
-        MIDORI_LOG_WARN("brush compiled with warnings: {}", compile.log);
+    if (!compileLog.empty()) {
+        MIDORI_LOG_WARN("brush compiled with warnings: {}", compileLog);
     }
-    Release(state.strokeBrushReady);
-    state.strokeBrushReady = std::exchange(compile.pipeline, nullptr);
+    Release(state.strokeBrushReady[done]);
+    state.strokeBrushReady[done] = pipeline;
     return GraphicsBrushStatus::Ready;
 }
 
-void GraphicsBrushUse() noexcept {
+void GraphicsBrushUse(std::uint32_t brush) noexcept {
     GraphicsState& state = gGraphicsState;
-    if (!state.strokeBrushReady) {
+    if (brush >= kToolShadersMax || !state.strokeBrushReady[brush]) {
         return;
     }
-    BrushPipelineRetire(state.strokeBrushPipeline);
-    state.strokeBrushPipeline = std::exchange(state.strokeBrushReady, nullptr);
+    BrushPipelineRetire(state.strokeBrushPipelines[brush]);
+    state.strokeBrushPipelines[brush] = std::exchange(state.strokeBrushReady[brush], nullptr);
 }
 
-bool GraphicsBrushLoaded() noexcept {
-    return gGraphicsState.strokeBrushPipeline != nullptr;
+bool GraphicsBrushLoaded(std::uint32_t brush) noexcept {
+    return brush < kToolShadersMax && gGraphicsState.strokeBrushPipelines[brush] != nullptr;
 }
 
-Result<void> GraphicsBrushTextureSet(std::uint32_t slot, const PlatformImage* image) noexcept {
+Result<void> GraphicsBrushTextureSet(std::uint32_t brush, std::uint32_t slot, const PlatformImage* image) noexcept {
     ZoneScopedN("GraphicsBrushTextureSet");
     GraphicsState& state = gGraphicsState;
-    MIDORI_ASSERT(slot < kMdslTexturesMax, "brush texture {}", slot);
+    MIDORI_ASSERT(brush < kToolShadersMax && slot < kMdslTexturesMax, "brush {} texture {}", brush, slot);
+    const UINT view = kBrushTextureFirstView + (brush * kMdslTexturesMax) + slot;
     // The frames in flight may read the one it replaces.
     WaitIdle();
-    Release(state.brushTextures[slot]);
-    state.device->CreateShaderResourceView(nullptr, &kBrushTextureSrvDesc, ViewCpu(kBrushTextureFirstView + slot));
+    Release(state.brushTextures[brush][slot]);
+    state.device->CreateShaderResourceView(nullptr, &kBrushTextureSrvDesc, ViewCpu(view));
     if (!image) {
         return {};
     }
@@ -2212,8 +2239,8 @@ Result<void> GraphicsBrushTextureSet(std::uint32_t slot, const PlatformImage* im
     ListExecuteAndWait();
     (*upload)->Release();
 
-    state.brushTextures[slot] = texture;
-    state.device->CreateShaderResourceView(texture, &kBrushTextureSrvDesc, ViewCpu(kBrushTextureFirstView + slot));
+    state.brushTextures[brush][slot] = texture;
+    state.device->CreateShaderResourceView(texture, &kBrushTextureSrvDesc, ViewCpu(view));
     return {};
 }
 

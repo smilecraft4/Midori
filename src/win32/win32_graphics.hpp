@@ -21,6 +21,7 @@
 
 #include "midori/graphics.hpp" // IWYU pragma: export
 #include "midori/mdsl.hpp"
+#include "midori/tool.hpp"
 
 namespace Midori {
 
@@ -93,8 +94,9 @@ struct GraphicsState {
     ID3D12PipelineState* outlinePipeline;
     ID3D12RootSignature* strokeRootSignature;    // embedded in stroke.cs.hlsl
     ID3D12PipelineState* strokePipeline;         // round.mdsl's, built in
-    ID3D12PipelineState* strokeBrushPipeline;    // a brush compiled at runtime, painting in place of strokePipeline
-    ID3D12PipelineState* strokeBrushReady;       // compiled, waiting for GraphicsBrushUse
+    // Brushes compiled at runtime, by ToolShader index, each painting its strokes in place of strokePipeline.
+    std::array<ID3D12PipelineState*, kToolShadersMax> strokeBrushPipelines;
+    std::array<ID3D12PipelineState*, kToolShadersMax> strokeBrushReady; // compiled, waiting for GraphicsBrushUse
     ID3D12PipelineState* strokeBrushRetired;     // replaced, released once the GPU passes strokeBrushRetiredFence
     ID3D12RootSignature* transformRootSignature; // embedded in transform.cs.hlsl
     ID3D12PipelineState* transformPipeline;
@@ -113,7 +115,7 @@ struct GraphicsState {
     StrokeDab* strokeDabsMapped;
     ID3D12Resource* strokeBrush;                 // upload heap, one Brush cbuffer per frame in flight
     std::byte* strokeBrushMapped;
-    std::array<ID3D12Resource*, kMdslTexturesMax> brushTextures; // null: none
+    std::array<std::array<ID3D12Resource*, kMdslTexturesMax>, kToolShadersMax> brushTextures; // null: none
     ID3D12DescriptorHeap* views;                 // shader visible: the tile pool SRVs and UAVs, then UI textures
     // Texture2DArray per atlas, one slice per cell; null until created, in order.
     std::array<ID3D12Resource*, kTileAtlasMax> tilePools;

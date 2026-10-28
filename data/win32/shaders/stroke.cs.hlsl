@@ -24,6 +24,8 @@ static const uint kStrokeMaskEmpty = 0xFFFFFFFE;
 // StrokeShape in stroke.hpp.
 static const uint kStrokeBrush = 0;
 static const uint kStrokeLasso = 2;
+static const uint kStrokeFillRect = 4;
+static const uint kStrokeFillLasso = 5;
 
 // StrokeDab in stroke.hpp, its inputs MdslDab in mdsl.hpp.
 struct StrokeDab {
@@ -124,6 +126,57 @@ float LassoMask(float2 pos) {
     return saturate(0.5 + (winding != 0 ? dist : -dist));
 }
 
+// The distance from `pos` to the polygon through dabs[1, dabEnd), closed, positive inside by the nonzero winding rule;
+// `nearest` is the closest point of its outline.
+float FillDistance(float2 pos, out float2 nearest) {
+    int winding = 0;
+    float best = 1e30;
+    nearest = pos;
+    float2 a = dabs[dabEnd - 1].pos;
+    for (uint i = 1; i < dabEnd; ++i) {
+        const float2 b = dabs[i].pos;
+        const float2 ab = b - a;
+        const float side = ab.x * (pos.y - a.y) - (pos.x - a.x) * ab.y;
+        if (a.y <= pos.y) {
+            if (b.y > pos.y && side > 0.0) {
+                ++winding;
+            }
+        } else if (b.y <= pos.y && side < 0.0) {
+            --winding;
+        }
+        const float2 q = a + saturate(dot(pos - a, ab) / max(dot(ab, ab), 1e-12)) * ab;
+        const float2 to = pos - q;
+        if (dot(to, to) < best) {
+            best = dot(to, to);
+            nearest = q;
+        }
+        a = b;
+    }
+    return winding != 0 ? sqrt(best) : -sqrt(best);
+}
+
+// The brush once per texel over the polygon, like a stamp stretched to the shape: `local` points out to the nearest
+// edge, its length 1 on the edge and 0 the stamp's radius in, so the brush's falloff runs along the edge and its middle
+// fills the inside.
+float4 FillPaint(float2 pos, float2 canvasPos) {
+    const StrokeDab dab = dabs[0];
+    if (dabEnd < 4 || dab.radius <= 0.0) {
+        return 0.0;
+    }
+    float2 nearest;
+    const float inside = FillDistance(pos, nearest);
+    const float gap = abs(inside);
+    float2 outward = float2(1.0, 0.0);
+    if (gap > 1e-4) {
+        outward = (inside > 0.0 ? nearest - pos : pos - nearest) / gap;
+    }
+    const float2 local = outward * max(1.0 - inside / dab.radius, 0.0);
+    // The inputs in the order of kInputs in mdsl.cpp.
+    const Paint stamp = BrushPaint(local, dab.radius, color, dab.pressure, dab.tilt, canvasPos, dab.velocity,
+                                   dab.direction, dab.random, dab.along, dab.time, dab.params);
+    return float4(saturate(stamp.color), 1.0) * saturate(stamp.opacity) * saturate(stamp.amount);
+}
+
 // A brush compiled at runtime takes the build's root signature.
 #ifndef MIDORI_RUNTIME
 [RootSignature(STROKE_ROOT_SIGNATURE)]
@@ -144,6 +197,8 @@ void CSMain(uint2 id : SV_DispatchThreadID) {
     if (shape == kStrokeLasso) {
         const float coverage = LassoMask(pos);
         paint = float4(color.rgb * coverage, coverage);
+    } else if (shape == kStrokeFillRect || shape == kStrokeFillLasso) {
+        paint = FillPaint(pos, canvasPos);
     } else {
         for (uint i = dabFirst; i < dabEnd; ++i) {
             const StrokeDab dab = dabs[i];

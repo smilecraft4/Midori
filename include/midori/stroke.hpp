@@ -31,6 +31,9 @@ enum struct StrokeShape : std::uint8_t {
     Rect,      // one dab, the rectangle from the first point to the last
     Lasso,     // the polygon through the dabs, one per point, closed back to the first
     Transform, // no dab: the selected pixels of the layer and the selection with them, placed by StrokeState::transform
+    FillRect,  // the brush over a polygon: dabs[0] is its stamp, the rectangle from the first point to the last its
+               // four corners after it
+    FillLasso, // the same over the polygon through the points, closed back to the first
 };
 
 // Canvas units to canvas units, projectively: (xx x + xy y + x, yx x + yy y + y) / (wx x + wy y + w). The divisor
@@ -115,13 +118,14 @@ struct StrokePoint {
 
 struct StrokeBeginInfo {
     BrushState brush;
-    Color::Srgb color; // Paint: the paint. Erase: how much of each channel goes, see PaintToolState::eraseColor
+    Color::Srgb color; // Paint: the paint. Erase: how much of each channel goes, white for all of them
     StrokePoint point;
     Layer layer;
     CanvasView view;
     StrokeMode mode;
     BlendMode blendMode; // Paint only
     StrokeShape shape;
+    std::uint32_t shader{}; // ToolsState::shaders, whose stamp() places the dabs and whose pipeline paints them
 };
 
 struct StrokeTile {
@@ -161,6 +165,7 @@ struct StrokeState {
     StrokeMode mode{};
     BlendMode blendMode{};
     StrokeShape shape{};
+    std::uint32_t shader{};   // as StrokeBeginInfo's
     std::uint32_t endFrame{}; // gAppState.frame when it ended
     bool ended{};             // the GPU records what is left, then StrokeUpdate frees the backups
     bool discard{};           // ended having put every tile back: freed without a history record
@@ -185,10 +190,10 @@ constexpr float kStrokeSpeedFull = 4000.0f;
 // Seconds over which MdslDab::velocity follows the pen, so it does not jump with every input point.
 constexpr double kStrokeVelocitySmoothing = 0.03;
 
-// The stamp `brush` places with `inputs`: its params with their inputs applied, then gAppState.brush's stamp() on them,
-// reading `curves`, its curves baked.
-StrokeStamp StrokeStampAt(const BrushState& brush, std::span<const float, kMdslCurveFloats> curves,
-                          const MdslDab& inputs) noexcept;
+// The stamp `brush` places with `inputs`: its params with their inputs applied, then `source`'s stamp() on them,
+// reading `curves`, its curves baked. `brush` follows `source`'s params.
+StrokeStamp StrokeStampAt(const MdslBrush& source, const BrushState& brush,
+                          std::span<const float, kMdslCurveFloats> curves, const MdslDab& inputs) noexcept;
 
 // The GPU has a backup or dirty texels to record.
 [[nodiscard]] constexpr bool StrokeTilePending(const StrokeTile& tile) noexcept {

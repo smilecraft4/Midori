@@ -52,6 +52,9 @@ constexpr std::array<Text, std::to_underlying(SelectionOp::Count_)> kSelectionOp
     Text::SelectionReplace,   Text::SelectionAdd,     Text::SelectionSubtract,
     Text::SelectionIntersect, Text::SelectionExclude,
 };
+// ToolShape's, from Box: the shapes of a Selection.
+constexpr std::array<Text, 2> kSelectionShapeTexts = {Text::Box, Text::Lasso};
+constexpr std::array<Text, 3> kShapeTexts = {Text::ShapePath, Text::Box, Text::Lasso};
 constexpr std::array<Text, std::to_underlying(CanvasFilter::Count_)> kFilterTexts = {
     Text::FilterNearest,  Text::FilterBilinear, Text::FilterBicubic,
     Text::FilterMitchell, Text::FilterLanczos2, Text::FilterLanczos3,
@@ -379,11 +382,11 @@ void CurveButton(Curve& curve, float width) noexcept {
     }
 }
 
-void BrushEdit(Window window, BrushState& brush) noexcept {
+void BrushEdit(Window window, BrushState& brush, const ToolShader& shader) noexcept {
     ZoneScopedN("BrushEdit");
     // The brush's params, named by its source and not translated: each with the input that drives it, and with one,
     // the curve from the input to the share of the value. Then its curves and its textures.
-    const MdslBrush& source = gAppState.brush;
+    const MdslBrush& source = shader.brush;
     const auto inputNames = TextsGet(kBrushInputTexts);
     float inputWidth = 0.0f;
     for (const char* name : inputNames) {
@@ -435,7 +438,7 @@ void BrushEdit(Window window, BrushState& brush) noexcept {
         ImGui::PopID();
     }
     for (std::size_t i = 0; i < source.textures.size(); ++i) {
-        const BrushTextureState& texture = gAppState.brushTextures[i];
+        const BrushTextureState& texture = shader.textures[i];
         ImGui::PushID(static_cast<int>(kMdslParamFloatsMax + kMdslCurvesMax + i));
         name(source.textures[i].name);
         const std::string file =
@@ -453,9 +456,27 @@ void BrushEdit(Window window, BrushState& brush) noexcept {
     ImGui::EndTable();
 }
 
-// Where the brush comes from, and why its last change does not paint yet.
-void BrushSourceEdit(Window window) noexcept {
-    const BrushSourceState& source = gAppState.brushSource;
+// A square button with a circular arrow, for reading a file again.
+bool ReloadButton(const char* id) noexcept {
+    const float size = ImGui::GetFrameHeight();
+    const bool pressed = ImGui::Button(id, ImVec2(size, size));
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 center(min.x + (size * 0.5f), min.y + (size * 0.5f));
+    const float radius = size * 0.26f;
+    const float head = size * 0.14f;
+    const ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    // Clockwise from the right to the top, the arrow pointing on along the circle.
+    draw->PathArcTo(center, radius, 0.0f, 1.5f * std::numbers::pi_v<float>, 16);
+    draw->PathStroke(color, std::max(1.0f, size * 0.08f), ImDrawFlags_None);
+    const ImVec2 end(center.x, center.y - radius);
+    draw->AddTriangleFilled(ImVec2(end.x + head, end.y), ImVec2(end.x - (head * 0.5f), end.y - head),
+                            ImVec2(end.x - (head * 0.5f), end.y + head), color);
+    return pressed;
+}
+
+// Where the tool's shader comes from, and why it, or its last change, does not paint yet.
+void BrushSourceEdit(Window window, const ToolShader& source) noexcept {
     const std::string name =
         source.path.empty() ? std::string(TextGet(Text::BrushBuiltIn)) : PathUtf8(source.path.filename());
     // The example brushes, picked like any brush file.
@@ -480,6 +501,16 @@ void BrushSourceEdit(Window window) noexcept {
         ActionRequestPush(window, ActionId::BrushBuiltIn);
     }
     ImGui::EndDisabled();
+#if !defined(MIDORI_DEBUG)
+    // Debug builds read it again whenever its file changes.
+    ImGui::SameLine();
+    ImGui::BeginDisabled(ActionBlocked(window, ActionId::BrushReload, 0) != Text::Count_);
+    if (ReloadButton("##reload")) {
+        ActionRequestPush(window, ActionId::BrushReload);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", TextGet(Text::BrushReload));
+#endif
     if (source.compiling || source.ready) {
         ImGui::TextDisabled("%s", TextGet(Text::BrushCompiling));
     }
@@ -494,37 +525,222 @@ void BrushSourceEdit(Window window) noexcept {
 void ToolWindow(Window window, ToolsState& tools) noexcept {
     ZoneScopedN("ToolWindow");
     if (ImGui::Begin(TextLabel(Text::Tool), &gUiState.toolShown[window])) {
-        int tool = std::to_underlying(tools.tool);
-        ImGui::RadioButton(ShortcutLabel(Text::Paint, ActionId::ToolPaint).data(), &tool,
-                           std::to_underlying(Tool::Paint));
+        ToolState& tool = ToolCurrent(tools);
+        ImGui::TextUnformatted(tool.name.data());
+        if (ImGui::RadioButton(TextLabel(Text::Layer), tool.target == ToolTarget::Layer)) {
+            tool.target = ToolTarget::Layer;
+        }
         ImGui::SameLine();
-        ImGui::RadioButton(ShortcutLabel(Text::Select, ActionId::ToolSelect).data(), &tool,
-                           std::to_underlying(Tool::Select));
-        ImGui::SameLine();
-        ImGui::RadioButton(ShortcutLabel(Text::Lasso, ActionId::ToolLasso).data(), &tool,
-                           std::to_underlying(Tool::Lasso));
-        tools.tool = static_cast<Tool>(tool);
-        ImGui::Separator();
-        if (tools.tool == Tool::Paint) {
-            if (tools.paint.blendMode == BlendMode::Erase) {
-                ImGui::ColorEdit4(TextLabel(Text::Removes), &tools.paint.eraseColor.r);
-            } else {
-                ImGui::ColorEdit4(TextLabel(Text::Color), &tools.paint.color.r);
+        if (ImGui::RadioButton(TextLabel(Text::Selection), tool.target == ToolTarget::Selection)) {
+            tool.target = ToolTarget::Selection;
+            if (tool.shape == ToolShape::Path) {
+                tool.shape = ToolShape::Box;
             }
-            int blendMode = std::to_underlying(tools.paint.blendMode);
+        }
+        ImGui::Separator();
+        if (tool.target == ToolTarget::Layer) {
+            const auto shapeNames = TextsGet(kShapeTexts);
+            int shape = std::to_underlying(tool.shape);
+            if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(), static_cast<int>(shapeNames.size()))) {
+                tool.shape = static_cast<ToolShape>(shape);
+            }
+            ImGui::ColorEdit4(TextLabel(Text::Color), &tools.color.r);
+            int blendMode = std::to_underlying(tool.blendMode);
             const auto blendModeNames = TextsGet(kBlendModeTexts);
             if (ImGui::Combo(TextLabel(Text::Blend), &blendMode, blendModeNames.data(),
                              static_cast<int>(blendModeNames.size()))) {
-                tools.paint.blendMode = static_cast<BlendMode>(blendMode);
+                tool.blendMode = static_cast<BlendMode>(blendMode);
             }
-            BrushSourceEdit(window);
-            BrushEdit(window, tools.paint.brush);
-        } else if (tools.tool == Tool::Select || tools.tool == Tool::Lasso) {
+            BrushSourceEdit(window, tools.shaders[tool.shader]);
+            BrushEdit(window, tool.brush, tools.shaders[tool.shader]);
+        } else {
+            const auto shapeNames = TextsGet(kSelectionShapeTexts);
+            int shape = std::to_underlying(tool.shape) - std::to_underlying(ToolShape::Box);
+            if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(), static_cast<int>(shapeNames.size()))) {
+                tool.shape = static_cast<ToolShape>(shape + std::to_underlying(ToolShape::Box));
+            }
             const auto opNames = TextsGet(kSelectionOpTexts);
-            int op = std::to_underlying(tools.selectionOp);
+            int op = std::to_underlying(tool.selectionOp);
             if (ImGui::Combo(TextLabel(Text::SelectionOpLabel), &op, opNames.data(),
                              static_cast<int>(opNames.size()))) {
                 ActionRequestPush(window, ActionId::SelectionOp, static_cast<std::uint32_t>(op));
+            }
+        }
+    }
+    ImGui::End();
+}
+
+// keybinds.json's form of the slot's keys, to edit: Enter binds the slot to them in place of its keys, empty unbinds
+// it.
+void SlotKeysEdit(Window window, std::uint32_t slot) noexcept {
+    std::array<char, 64>& text = gUiState.slotKeys[window];
+    if (ImGui::IsWindowAppearing()) {
+        text = {};
+        gUiState.slotKeysInvalid[window] = false;
+        const KeymapState& keymap = gAppState.keymap;
+        const auto binding = std::ranges::find_if(
+            keymap.bindings, [&](const KeyBinding& b) { return b.action == ActionId::ToolbarSlot && b.arg == slot; });
+        if (binding != keymap.bindings.end()) {
+            const std::string keys = KeyBindingKeys(*binding);
+            std::copy_n(keys.begin(), std::min(keys.size(), text.size() - 1), text.begin());
+        }
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
+    if (ImGui::InputText(TextLabel(Text::Keys), text.data(), text.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (KeymapBind(gAppState.keymap, text.data(), ActionId::ToolbarSlot, slot, ActionContext::Canvas)) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            gUiState.slotKeysInvalid[window] = true;
+        }
+    }
+    if (gUiState.slotKeysInvalid[window]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 80, 70, 255));
+        ImGui::TextUnformatted(TextGet(Text::KeysInvalid));
+        ImGui::PopStyleColor();
+    }
+    ImGui::TextDisabled("%s", TextGet(Text::KeysHelp));
+}
+
+// A button per slot, showing the tool it picks, its corner marked when it is a drawer. Right-click one to set its keys
+// or remove it, or elsewhere to make the current tool a new slot.
+void ToolbarWindow(Window window, ToolsState& tools) noexcept {
+    ZoneScopedN("ToolbarWindow");
+    if (ImGui::Begin(TextLabel(Text::Toolbar), &gUiState.toolbarShown[window])) {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        float lastRight = 0.0f;
+        std::uint32_t removed = 0;
+        for (std::size_t i = 0; i < tools.slots.size(); ++i) {
+            const ToolbarSlot& slot = tools.slots[i];
+            const bool active = tools.slot == slot.id;
+            const ToolState* tool =
+                ToolFind(tools, active && std::ranges::contains(slot.tools, tools.current) ? tools.current : slot.last);
+            const char* name = tool ? tool->name.data() : "";
+            const float width = ImGui::CalcTextSize(name, nullptr, true).x + (style.FramePadding.x * 2.0f);
+            if (i > 0 && lastRight + style.ItemSpacing.x + width <= right) {
+                ImGui::SameLine();
+            }
+            ImGui::PushID(static_cast<int>(slot.id));
+            if (active) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetColorU32(ImGuiCol_ButtonActive));
+            }
+            if (ImGui::Button(name)) {
+                ActionRequestPush(window, ActionId::ToolbarSlot, slot.id);
+            }
+            if (active) {
+                ImGui::PopStyleColor();
+            }
+            const ImVec2 max = ImGui::GetItemRectMax();
+            lastRight = max.x;
+            if (slot.tools.size() > 1) {
+                const float size = std::floor(ImGui::GetFontSize() * 0.4f);
+                ImGui::GetWindowDrawList()->AddTriangleFilled(
+                    ImVec2(max.x - size, max.y), max, ImVec2(max.x, max.y - size), ImGui::GetColorU32(ImGuiCol_Text));
+            }
+            if (const char* keys = BindingKeys(ActionId::ToolbarSlot, slot.id);
+                *keys != '\0' && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+                ImGui::SetTooltip("%s", keys);
+            }
+            if (ImGui::BeginPopupContextItem("slot")) {
+                SlotKeysEdit(window, slot.id);
+                ImGui::Separator();
+                if (ImGui::MenuItem(TextLabel(Text::SlotRemove))) {
+                    removed = slot.id;
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+        if (removed != 0) {
+            std::erase_if(tools.slots, [&](const ToolbarSlot& slot) { return slot.id == removed; });
+            if (tools.slot == removed) {
+                tools.slot = 0;
+            }
+        }
+        if (ImGui::BeginPopupContextWindow("toolbar",
+                                           ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
+            if (ImGui::MenuItem(TextLabel(Text::SlotNew))) {
+                ToolbarSlotAdd(tools, tools.current);
+            }
+            ImGui::EndPopup();
+        }
+    }
+    ImGui::End();
+}
+
+// The active slot's tools: a click picks one, a double-click renames it. Right-click one to rename, duplicate, remove
+// or delete it, or elsewhere to add one of the library's.
+void ToolsWindow(Window window, ToolsState& tools) noexcept {
+    ZoneScopedN("ToolsWindow");
+    if (ImGui::Begin(TextLabel(Text::Tools), &gUiState.toolsShown[window])) {
+        ToolbarSlot* slot = ToolbarSlotFind(tools, tools.slot);
+        if (!slot) {
+            ImGui::TextDisabled("%s", TextGet(Text::NoSlot));
+        } else {
+            std::uint32_t& renaming = gUiState.toolRenaming[window];
+            std::uint32_t removed = 0;
+            for (const std::uint32_t id : slot->tools) {
+                ToolState* tool = ToolFind(tools, id);
+                if (!tool) {
+                    continue;
+                }
+                ImGui::PushID(static_cast<int>(id));
+                if (renaming == id) {
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::IsWindowAppearing() || !ImGui::IsAnyItemActive()) {
+                        ImGui::SetKeyboardFocusHere();
+                    }
+                    const bool entered =
+                        ImGui::InputText("##rename", tool->name.data(), tool->name.size(),
+                                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                    if (entered || ImGui::IsItemDeactivated()) {
+                        renaming = 0;
+                    }
+                } else {
+                    if (ImGui::Selectable(tool->name.data(), id == tools.current,
+                                          ImGuiSelectableFlags_AllowDoubleClick)) {
+                        ActionRequestPush(window, ActionId::ToolSelect, id);
+                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                            renaming = id;
+                        }
+                    }
+                    if (ImGui::BeginPopupContextItem("tool")) {
+                        if (ImGui::MenuItem(TextLabel(Text::ToolRename))) {
+                            renaming = id;
+                        }
+                        MenuAction(window, Text::ToolDuplicate, ActionId::ToolDuplicate, false, id);
+                        if (ImGui::MenuItem(TextLabel(Text::ToolRemove), nullptr, false, slot->tools.size() > 1)) {
+                            removed = id;
+                        }
+                        MenuAction(window, Text::ToolDelete, ActionId::ToolDelete, false, id);
+                        ImGui::EndPopup();
+                    }
+                }
+                ImGui::PopID();
+            }
+            if (removed != 0) {
+                std::erase(slot->tools, removed);
+                if (slot->last == removed) {
+                    slot->last = slot->tools.front();
+                }
+            }
+            if (ImGui::BeginPopupContextWindow("tools",
+                                               ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
+                if (ImGui::BeginMenu(TextLabel(Text::ToolAdd))) {
+                    for (const ToolState& tool : tools.library) {
+                        if (std::ranges::contains(slot->tools, tool.id)) {
+                            continue;
+                        }
+                        ImGui::PushID(static_cast<int>(tool.id));
+                        if (ImGui::MenuItem(tool.name.data())) {
+                            slot->tools.push_back(tool.id);
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::EndPopup();
             }
         }
     }
@@ -619,51 +835,62 @@ void TransformOverlay(Window window, const WindowState& windowState) noexcept {
     }
 }
 
-// The view's position, zoom and rotation in the bottom right corner, and above it the active layer's name, blend mode
-// and opacity, with how many more are selected. Small and faint so it never draws the eye, behind the UI windows and
-// shown with them hidden too.
-void ViewInfoOverlay(const WindowState& windowState, const Viewport& viewport, const CanvasState& canvas) noexcept {
-    ZoneScopedN("ViewInfoOverlay");
-    std::array<char, 128> viewText{};
-    const char* flip = "";
-    if (viewport.zoomX < 0.0f && viewport.zoomY < 0.0f) {
-        flip = " flip XY";
-    } else if (viewport.zoomX < 0.0f) {
-        flip = " flip X";
-    } else if (viewport.zoomY < 0.0f) {
-        flip = " flip Y";
+// In the bottom right corner, from the bottom line up: the view's position, zoom and rotation, the active layer's name,
+// blend mode and opacity with how many more are selected, then the current tool with its blend mode or selection
+// operation. Faint so it never draws the eye, behind the UI windows and shown with them hidden too. Without a canvas,
+// only the tool.
+void StateOverlay(const WindowState& windowState, const Viewport* viewport, const CanvasState* canvas,
+                  const ToolsState& tools) noexcept {
+    ZoneScopedN("StateOverlay");
+    std::array<std::array<char, 128>, 3> lines{};
+    if (viewport) {
+        const char* flip = "";
+        if (viewport->zoomX < 0.0f && viewport->zoomY < 0.0f) {
+            flip = " flip XY";
+        } else if (viewport->zoomX < 0.0f) {
+            flip = " flip X";
+        } else if (viewport->zoomY < 0.0f) {
+            flip = " flip Y";
+        }
+        // The texel under the view center.
+        std::format_to_n(lines[0].data(), lines[0].size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
+                         static_cast<std::int64_t>(std::floor(viewport->posX)),
+                         static_cast<std::int64_t>(std::floor(viewport->posY)), std::abs(viewport->zoomX) * 100.0f,
+                         viewport->rot * 180.0f / std::numbers::pi_v<float>, flip);
     }
-    // The texel under the view center.
-    std::format_to_n(viewText.data(), viewText.size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
-                     static_cast<std::int64_t>(std::floor(viewport.posX)),
-                     static_cast<std::int64_t>(std::floor(viewport.posY)), std::abs(viewport.zoomX) * 100.0f,
-                     viewport.rot * 180.0f / std::numbers::pi_v<float>, flip);
-    std::array<char, 128> layerText{};
-    if (const Layer active = canvas.activeLayer; active != kLayerInvalid) {
-        const LayerState& layer = canvas.layers[active];
-        const std::size_t selected = LayersSelected(canvas).size();
-        const char* name = canvas.layerNames[active].data();
+    if (const Layer active = canvas ? canvas->activeLayer : kLayerInvalid; active != kLayerInvalid) {
+        const LayerState& layer = canvas->layers[active];
+        const std::size_t selected = LayersSelected(*canvas).size();
+        const char* name = canvas->layerNames[active].data();
         const char* blendMode = TextGet(kBlendModeTexts[std::to_underlying(layer.blendMode)]);
         const float opacity = layer.opacity * 100.0f;
         if (selected > 1) {
-            std::format_to_n(layerText.data(), layerText.size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1,
+            std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1,
                              blendMode, opacity);
         } else {
-            std::format_to_n(layerText.data(), layerText.size() - 1, "{} {} {:.0f}%", name, blendMode, opacity);
+            std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} {} {:.0f}%", name, blendMode, opacity);
         }
     }
+    const ToolState& tool = ToolCurrent(tools);
+    const char* mode = tool.target == ToolTarget::Layer
+                         ? TextGet(kBlendModeTexts[std::to_underlying(tool.blendMode)])
+                         : TextGet(kSelectionOpTexts[std::to_underlying(tool.selectionOp)]);
+    std::format_to_n(lines[2].data(), lines[2].size() - 1, "{} {}", tool.name.data(), mode);
 
     ImFont* font = ImGui::GetFont();
-    const float size = ImGui::GetFontSize() * 0.85f;
-    const float margin = 8.0f * windowState.dpiScale;
+    const float size = ImGui::GetFontSize() * 1.15f;
+    const float margin = 10.0f * windowState.dpiScale;
+    const float shadow = std::max(1.0f, std::round(windowState.dpiScale));
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    // Right aligned, from the bottom line up.
     float bottom = static_cast<float>(windowState.height) - margin;
-    for (const char* text : {viewText.data(), layerText.data()}) {
-        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    for (const std::array<char, 128>& line : lines) {
+        if (line[0] == '\0') {
+            continue;
+        }
+        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, line.data());
         const ImVec2 pos(static_cast<float>(windowState.width) - extent.x - margin, bottom - extent.y);
-        drawList->AddText(font, size, ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 90), text);
-        drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 150), text);
+        drawList->AddText(font, size, ImVec2(pos.x + shadow, pos.y + shadow), IM_COL32(0, 0, 0, 100), line.data());
+        drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 170), line.data());
         bottom = pos.y;
     }
 }
@@ -676,14 +903,14 @@ void BrushAdjustOverlay(Window window, const WindowState& windowState, const Too
     if (adjust.mode == BrushAdjustMode::None || gAppState.canvasViews[adjust.view].window != window) {
         return;
     }
-    const BrushState& brush = tools.paint.brush;
+    const BrushState& brush = ToolCurrent(tools).brush;
     const float scale = windowState.dpiScale;
     const ImVec2 center(adjust.centerX, adjust.centerY);
     constexpr ImU32 kStrong = IM_COL32(40, 130, 230, 255);
     constexpr ImU32 kFaint = IM_COL32(40, 130, 230, 120);
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-    const int param = BrushAdjustParam(gAppState.brush.params, adjust.mode);
+    const int param = BrushAdjustParam(ToolSource(tools, ToolCurrent(tools)).params, adjust.mode);
     float value = brush.params[static_cast<std::size_t>(std::max(param, 0))].value[0];
     if (adjust.mode == BrushAdjustMode::Radius) {
         const float radius = value * std::abs(gAppState.canvasViews[adjust.view].viewport.zoomX) * scale;
@@ -1267,16 +1494,10 @@ constexpr std::array kHelpErase = {
 };
 constexpr std::array kHelpSelect = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureSelect},
-    HelpEntry{.keys = Text::GestureShiftDragOnly, .action = Text::GestureShiftSelect},
-    HelpEntry{.keys = Text::GestureAltDrag, .action = Text::GestureAltSelect},
-    HelpEntry{.keys = Text::GestureShiftAltDrag, .action = Text::GestureShiftAltSelect},
     HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
 };
 constexpr std::array kHelpLasso = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureLasso},
-    HelpEntry{.keys = Text::GestureShiftDragOnly, .action = Text::GestureShiftLasso},
-    HelpEntry{.keys = Text::GestureAltDrag, .action = Text::GestureAltLasso},
-    HelpEntry{.keys = Text::GestureShiftAltDrag, .action = Text::GestureShiftAltLasso},
     HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
 };
 constexpr std::array kHelpTransform = {
@@ -1379,13 +1600,13 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
     } else {
         Text title = Text::HelpPaintBrush;
         std::span<const HelpEntry> gestures = kHelpPaint;
-        if (tools.tool == Tool::Paint && tools.paint.blendMode == BlendMode::Erase) {
+        if (ToolCurrent(tools).target == ToolTarget::Layer && ToolCurrent(tools).blendMode == BlendMode::Erase) {
             title = Text::HelpEraser;
             gestures = kHelpErase;
-        } else if (tools.tool == Tool::Select) {
+        } else if (ToolCurrent(tools).target == ToolTarget::Selection && ToolCurrent(tools).shape == ToolShape::Box) {
             title = Text::HelpSelect;
             gestures = kHelpSelect;
-        } else if (tools.tool == Tool::Lasso) {
+        } else if (ToolCurrent(tools).target == ToolTarget::Selection) {
             title = Text::HelpLasso;
             gestures = kHelpLasso;
         }
@@ -1402,7 +1623,7 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
     ImGui::End();
 }
 
-// Every action without an argument, the brush presets, the window's canvas layers and the recent files that match
+// Every action without an argument, the tools, the window's canvas layers and the recent files that match
 // the query: those that would run first, then the best match, then the most recently run.
 void SearchEntriesBuild(Window window) noexcept {
     ZoneScopedN("SearchEntriesBuild");
@@ -1433,8 +1654,8 @@ void SearchEntriesBuild(Window window) noexcept {
             add(static_cast<ActionId>(i), 0, {});
         }
     }
-    for (std::size_t i = 0; i < app.tools.presets.size(); ++i) {
-        add(ActionId::BrushPreset, static_cast<std::uint32_t>(i + 1), app.tools.presets[i].name.data());
+    for (const ToolState& tool : app.tools.library) {
+        add(ActionId::ToolSelect, tool.id, tool.name.data());
     }
     if (const auto view = std::ranges::find(app.canvasViews, window, &CanvasViewState::window);
         view != app.canvasViews.end() && view->id != kCanvasViewInvalid) {
@@ -1682,7 +1903,8 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     // Every context would write the same imgui.ini.
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
-    // Its windows open where the preferences keep them instead.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // Its windows open where the preferences keep them instead, docked or not.
     ImGui::LoadIniSettingsFromMemory(gUiState.preferences.imguiSettings.data(),
                                      gUiState.preferences.imguiSettings.size());
     io.BackendPlatformName = "midori";
@@ -1705,6 +1927,9 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.menuBarShown[window] = gUiState.preferences.menuBarShown;
     gUiState.viewShown[window] = gUiState.preferences.viewShown;
     gUiState.toolShown[window] = gUiState.preferences.toolShown;
+    gUiState.toolbarShown[window] = gUiState.preferences.toolbarShown;
+    gUiState.toolsShown[window] = gUiState.preferences.toolsShown;
+    gUiState.toolRenaming[window] = 0;
     gUiState.layersShown[window] = gUiState.preferences.layersShown;
     gUiState.settingsShown[window] = false;
     gUiState.layerFoldersClosed[window].clear();
@@ -1846,10 +2071,10 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
 
     ImGui::NewFrame();
     // ImGui::ShowDemoWindow();
-    if (const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
-        viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid) {
-        ViewInfoOverlay(*state, *viewport, gAppState.canvases[view->canvas]);
-    }
+    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
+    const bool hasCanvas = viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid;
+    StateOverlay(*state, hasCanvas ? viewport : nullptr, hasCanvas ? &gAppState.canvases[view->canvas] : nullptr,
+                 tools);
     TransformOverlay(window, *state);
     WhichKeyOverlay(*state);
     if (gUiState.searchShown[window]) {
@@ -1903,6 +2128,8 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             MenuAction(window, Text::HideUi, ActionId::UiToggle, gUiState.hidden[window]);
             ImGui::Separator();
             MenuAction(window, Text::View, ActionId::PanelView, gUiState.viewShown[window]);
+            MenuAction(window, Text::Toolbar, ActionId::PanelToolbar, gUiState.toolbarShown[window]);
+            MenuAction(window, Text::Tools, ActionId::PanelTools, gUiState.toolsShown[window]);
             MenuAction(window, Text::Tool, ActionId::PanelTool, gUiState.toolShown[window]);
             MenuAction(window, Text::Layers, ActionId::PanelLayers, gUiState.layersShown[window]);
             MenuAction(window, Text::Help, ActionId::PanelHelp, gUiState.helpShown[window]);
@@ -1918,6 +2145,8 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
         }
         ImGui::EndMainMenuBar();
     }
+    // Panels dock around the canvas, which shows and takes input through the empty middle.
+    ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
     if (viewport && gUiState.viewShown[window]) {
         if (ImGui::Begin(TextLabel(Text::View), &gUiState.viewShown[window])) {
             ImGui::Text(TextGet(Text::ViewZoom), std::abs(viewport->zoomX) * 100.0f,
@@ -1943,6 +2172,12 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             ImGui::ColorEdit4(TextLabel(Text::Background), &backgroundColor->r);
         }
         ImGui::End();
+    }
+    if (gUiState.toolbarShown[window]) {
+        ToolbarWindow(window, tools);
+    }
+    if (gUiState.toolsShown[window]) {
+        ToolsWindow(window, tools);
     }
     if (gUiState.toolShown[window]) {
         ToolWindow(window, tools);
@@ -1973,6 +2208,8 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     UiPreferences& preferences = gUiState.preferences;
     preferences.viewShown = gUiState.viewShown[window];
     preferences.toolShown = gUiState.toolShown[window];
+    preferences.toolbarShown = gUiState.toolbarShown[window];
+    preferences.toolsShown = gUiState.toolsShown[window];
     preferences.layersShown = gUiState.layersShown[window];
     preferences.helpShown = gUiState.helpShown[window];
     preferences.menuBarShown = gUiState.menuBarShown[window];

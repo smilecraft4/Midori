@@ -3,6 +3,7 @@
 #include "midori/base.hpp"
 #include "midori/input.hpp"
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -26,9 +27,6 @@ enum struct ActionId : std::uint8_t {
     EditPaste,
     WindowFullscreen,
     UiToggle,
-    ToolPaint,
-    ToolErase,
-    BrushPreset,
     BrushRadius,
     BrushOpacity,
     BrushHardness,
@@ -66,7 +64,6 @@ enum struct ActionId : std::uint8_t {
     SettingsLanguage,
     SettingsCanvasFilter,
     ToolSelect,
-    ToolLasso,
     SelectionClear,
     SelectionDelete,
     SelectionOp,
@@ -77,13 +74,20 @@ enum struct ActionId : std::uint8_t {
     BrushBuiltIn,
     BrushTexture,
     BrushExample,
+    ToolbarSlot,
+    ToolDuplicate,
+    ToolDelete,
+    PanelToolbar,
+    PanelTools,
+    BrushReload,
     Count_,
 };
 
+// How a binding fires, written after its keys: "Shift(Hold)". Without one, its action's kind.
 enum struct ActionKind : std::uint8_t {
-    Trigger,
+    Press,
     Repeat, // runs again while the last key of its sequence repeats
-    Hold,   // lasts while the last key of its sequence is down; one key alone also matches with more modifiers held
+    Hold,   // one step only, lasts while its keys are down; one key alone also matches with more modifiers held
 };
 
 // Searched by name and description, shown as `name(argName)` description (keys), the name as keybinds.json writes it.
@@ -92,6 +96,7 @@ struct ActionInfo {
     const char* description;
     const char* argName{}; // nullptr when it takes none
     ActionKind kind{};
+    bool holdable{};       // also bound with Hold, read while held rather than run: see KeymapHeld
 };
 
 constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions = {{
@@ -110,9 +115,6 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
                     "place it"},
     {.name = "window.fullscreen", .description = "Toggle fullscreen"},
     {.name = "ui.toggle", .description = "Hide or show the UI"},
-    {.name = "tool.paint", .description = "Switch to the paint brush"},
-    {.name = "tool.erase", .description = "Erase with the Paint tool's brush, or paint again"},
-    {.name = "brush.preset", .description = "Give the current tool a brush preset", .argName = "number"},
     {.name = "brush.radius", .description = "Change the brush size"},
     {.name = "brush.opacity", .description = "Change the brush opacity"},
     {.name = "brush.hardness", .description = "Change the brush hardness"},
@@ -153,13 +155,13 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "settings.canvasFilter",
      .description = "Change how the canvas is drawn between its pixels",
      .argName = "filter"},
-    {.name = "tool.select", .description = "Switch to the rectangle selection"},
-    {.name = "tool.lasso", .description = "Switch to the lasso selection"},
+    {.name = "tool.select", .description = "Pick a tool", .argName = "id"},
     {.name = "selection.clear", .description = "Select nothing"},
     {.name = "selection.delete", .description = "Delete the active layer's pixels in the selection"},
     {.name = "selection.op",
-     .description = "Change how a new selection combines with the last one",
-     .argName = "operation"},
+     .description = "Change how a new selection combines with the last one, or only while held",
+     .argName = "operation",
+     .holdable = true},
     {.name = "selection.transform",
      .description = "Move, scale, turn or distort the selection and the active layer's pixels in it"},
     {.name = "transform.apply", .description = "Apply the transform"},
@@ -170,6 +172,16 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "brush.example",
      .description = "Paint with one of the example brushes next to Midori",
      .argName = "index"},
+    {.name = "toolbar.slot",
+     .description = "Pick a toolbar slot's tool, or the next one of its drawer when it is the active slot",
+     .argName = "id"},
+    {.name = "tool.duplicate",
+     .description = "Copy a tool into the library, next to it in the active drawer",
+     .argName = "id"},
+    {.name = "tool.delete", .description = "Delete a tool from the library and the toolbar", .argName = "id"},
+    {.name = "panel.toolbar", .description = "Show or hide the toolbar"},
+    {.name = "panel.tools", .description = "Show or hide the tools of the active toolbar slot"},
+    {.name = "brush.reload", .description = "Read the current tool's brush file and its textures again"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -188,20 +200,21 @@ constexpr std::array<std::string_view, std::to_underlying(ActionContext::Count_)
 };
 
 struct KeyChord {
-    Key key;
+    Key key;     // Unknown: the modifiers alone, for a Hold binding
     KeyMod mods; // Shift, Ctrl, Alt, Super: either side matches
 };
 
 constexpr std::size_t kKeySequenceMax = 4;
 
-// Written "Ctrl+K, Shift+1" in keybinds.json. No binding is a prefix of another, so a sequence never waits on a
-// timeout.
+// Written "Ctrl+K, Shift+1" or "Shift(Hold)" in keybinds.json. No binding is a prefix of another, so a sequence never
+// waits on a timeout.
 struct KeyBinding {
     std::array<KeyChord, kKeySequenceMax> chords;
     std::uint32_t arg{};
     ActionId action;
     ActionContext context{};
     std::uint8_t length{1};
+    ActionKind trigger{};
 };
 
 // Parsed like keybinds.json, which replaces them.
@@ -227,24 +240,18 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "Ctrl+Y", .action = ActionId::HistoryRedo},
     KeyBindingText{.keys = "F11", .action = ActionId::WindowFullscreen},
     KeyBindingText{.keys = "Tab", .action = ActionId::UiToggle},
-    KeyBindingText{.keys = "B", .action = ActionId::ToolPaint, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "E", .action = ActionId::ToolErase, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "M", .action = ActionId::ToolSelect, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "L", .action = ActionId::ToolLasso, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "B", .action = ActionId::ToolbarSlot, .arg = 1, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "E", .action = ActionId::ToolbarSlot, .arg = 2, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "M", .action = ActionId::ToolbarSlot, .arg = 3, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Shift(Hold)", .action = ActionId::SelectionOp, .arg = 1, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Alt(Hold)", .action = ActionId::SelectionOp, .arg = 2, .context = ActionContext::Canvas},
+    KeyBindingText{
+        .keys = "Shift+Alt(Hold)", .action = ActionId::SelectionOp, .arg = 3, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+D", .action = ActionId::SelectionClear, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Delete", .action = ActionId::SelectionDelete, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+T", .action = ActionId::SelectionTransform, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Enter", .action = ActionId::TransformApply, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Escape", .action = ActionId::TransformCancel, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 1", .action = ActionId::BrushPreset, .arg = 1, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 2", .action = ActionId::BrushPreset, .arg = 2, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 3", .action = ActionId::BrushPreset, .arg = 3, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 4", .action = ActionId::BrushPreset, .arg = 4, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 5", .action = ActionId::BrushPreset, .arg = 5, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 6", .action = ActionId::BrushPreset, .arg = 6, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 7", .action = ActionId::BrushPreset, .arg = 7, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 8", .action = ActionId::BrushPreset, .arg = 8, .context = ActionContext::Canvas},
-    KeyBindingText{.keys = "Shift+B, 9", .action = ActionId::BrushPreset, .arg = 9, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "F", .action = ActionId::BrushRadius, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+F", .action = ActionId::BrushOpacity, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+F", .action = ActionId::BrushHardness, .context = ActionContext::Canvas},
@@ -271,6 +278,7 @@ struct KeymapState {
     std::vector<KeyBinding> bindings;
     std::vector<std::string> keys; // each binding as the keyboard layout names its keys: "Maj+B, &"
     std::array<KeyChord, kKeySequenceMax> pending;
+    std::bitset<std::to_underlying(Key::Count_)> down;
     std::int32_t holding{-1};      // the Hold binding whose last key is down
     std::int32_t repeating{-1};    // the Repeat binding its last key repeats while down
     std::uint8_t pendingLength{};
@@ -286,13 +294,20 @@ struct ActionRequest {
 constexpr std::size_t kRecentActionsMax = 32;
 
 // Chords split by commas, each its modifiers (Ctrl, Shift, Alt, Super) then its key, joined by +; names as kKeyNames
-// writes them, case ignored. Only the chords and length are set.
-[[nodiscard]] Result<KeyBinding> KeyBindingParse(std::string_view keys) noexcept;
+// writes them, case ignored. Then maybe (Press), (Repeat) or (Hold), else `trigger`. A Hold binding is one chord, which
+// may be modifiers alone. Only the chords, length and trigger are set.
+[[nodiscard]] Result<KeyBinding> KeyBindingParse(std::string_view keys, ActionKind trigger) noexcept;
 // kDefaultBindings, then keybinds.json in the settings folder over them, an empty array written there when missing.
 // Each entry replaces the bindings it conflicts with (the same chords, or a prefix of them, in the same context);
 // "action": "none" only unbinds them. Entries not understood are logged and skipped. Each binding's keys are shown as
 // the current keyboard layout names them.
 void KeymapLoad(KeymapState& keymap) noexcept;
+// Binds `action` with `arg` to `keys` in keybinds.json, read as KeyBindingParse reads them, in place of every binding it
+// had; empty `keys` only unbinds it. The keymap is loaded again.
+Result<void> KeymapBind(KeymapState& keymap, std::string_view keys, ActionId action, std::uint32_t arg,
+                        ActionContext context) noexcept;
+// As keybinds.json writes it, whatever the keyboard layout: "Ctrl+K, Shift+1", "Shift(Hold)".
+std::string KeyBindingKeys(const KeyBinding& binding) noexcept;
 // The keys of the first binding of `action`, "" when it has none.
 [[nodiscard]] const char* KeymapKeys(const KeymapState& keymap, ActionId action) noexcept;
 // Adds a pressed chord to the sequence in progress, in `context` and those around it. Returns the binding it completes,
@@ -301,6 +316,9 @@ void KeymapLoad(KeymapState& keymap) noexcept;
 [[nodiscard]] std::int32_t KeymapPress(KeymapState& keymap, KeyChord chord, ActionContext context) noexcept;
 // The binding goes on from the chords pressed so far, matched as KeymapPress matches them.
 [[nodiscard]] bool KeymapContinues(const KeymapState& keymap, const KeyBinding& binding) noexcept;
+// The Hold binding of `action` whose keys are all down with `mods`, in `context` or one around it, else -1. Of those, the
+// one with the most keys wins: Shift+Alt's over Shift's.
+std::int32_t KeymapHeld(const KeymapState& keymap, ActionId action, ActionContext context, KeyMod mods) noexcept;
 
 constexpr float kFuzzyNone = -1e30f;
 constexpr std::size_t kFuzzyLengthMax = 256;

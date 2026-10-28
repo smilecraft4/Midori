@@ -54,19 +54,21 @@ enum struct GraphicsBrushStatus : std::uint8_t {
     Failed,
 };
 
-// The stroke pipeline for a brush, from its MdslBrush::hlsl, compiled away from the main thread. One compiles at a
-// time: asked for while one runs, it follows and the one before is dropped.
-void GraphicsBrushCompile(std::string hlsl) noexcept;
-// Ready or Failed once per compile that is not dropped; Failed sets `log` to the compiler's errors.
-GraphicsBrushStatus GraphicsBrushPoll(std::string& log) noexcept;
-// The last Ready pipeline paints what the next submits record. Never during a stroke: its dabs hold the old brush's
-// params.
-void GraphicsBrushUse() noexcept;
-// A brush's pipeline is in use. Until one is, the stroke pipeline only paints the selection.
-bool GraphicsBrushLoaded() noexcept;
-// The image brush texture `slot` reads, below kMdslTexturesMax, its alpha straight; null for none. Outside any submit,
-// and waits for the GPU.
-[[nodiscard]] Result<void> GraphicsBrushTextureSet(std::uint32_t slot, const PlatformImage* image) noexcept;
+// A brush is a ToolShader index, below kToolShadersMax. Its stroke pipeline, from its MdslBrush::hlsl, compiles away
+// from the main thread, one brush at a time in the order asked. Asked again while it waits or runs, the new HLSL takes
+// the place of the old, whose result is dropped.
+void GraphicsBrushCompile(std::uint32_t brush, std::string hlsl) noexcept;
+// Ready or Failed once per compile that is not dropped, with its brush; Failed sets `log` to the compiler's errors.
+GraphicsBrushStatus GraphicsBrushPoll(std::uint32_t& brush, std::string& log) noexcept;
+// The brush's last Ready pipeline paints what the next submits record. Never during a stroke of it: its dabs hold the
+// old brush's params.
+void GraphicsBrushUse(std::uint32_t brush) noexcept;
+// The brush's pipeline is in use. Until it is, its strokes would only paint the selection.
+bool GraphicsBrushLoaded(std::uint32_t brush) noexcept;
+// The image the brush's texture `slot` reads, below kMdslTexturesMax, its alpha straight; null for none. Outside any
+// submit, and waits for the GPU.
+[[nodiscard]] Result<void> GraphicsBrushTextureSet(std::uint32_t brush, std::uint32_t slot,
+                                                   const PlatformImage* image) noexcept;
 
 // GraphicsInit creates atlas 0; the others are created in order, outside any submit. Its pages start undefined.
 [[nodiscard]] Result<void> GraphicsTileAtlasCreate(TileAtlas atlas) noexcept;

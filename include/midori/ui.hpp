@@ -21,7 +21,7 @@ namespace Midori {
 struct ToolsState;
 
 struct SearchEntry {
-    std::array<char, 128> label; // dynamic entries only: the preset, layer, file, language or filter name
+    std::array<char, 128> label; // dynamic entries only: the tool, layer, file, language or filter name
     std::uint32_t arg;
     float score;
     ActionId action;
@@ -33,6 +33,8 @@ struct UiPreferences {
     std::string imguiSettings; // Dear ImGui's ini text: where its windows sit and how large they are
     bool viewShown{true};
     bool toolShown{true};
+    bool toolbarShown{true};
+    bool toolsShown{true};
     bool layersShown{true};
     bool helpShown{true};
     bool menuBarShown{true};
@@ -57,6 +59,8 @@ struct UiState {
     std::array<bool, kWindowMax> menuBarShown; // hidden, panel.menuBar from the search or a key brings it back
     std::array<bool, kWindowMax> viewShown;
     std::array<bool, kWindowMax> toolShown;
+    std::array<bool, kWindowMax> toolbarShown;
+    std::array<bool, kWindowMax> toolsShown;
     std::array<bool, kWindowMax> layersShown;
     std::array<bool, kWindowMax> settingsShown; // closed at first, opened from Edit > Settings
     UiPreferences preferences;                  // what a window opens with; the last window drawn sets it
@@ -65,6 +69,9 @@ struct UiState {
     std::array<std::vector<std::uint16_t>, kWindowMax> layerFoldersClosed; // folder layer ids
     std::array<int, kWindowMax> layerRenaming; // the layer whose name is being edited, -1 for none
     std::array<std::array<char, 64>, kWindowMax> layerRename;
+    std::array<std::uint32_t, kWindowMax> toolRenaming;       // the tool whose name is being edited, 0 for none
+    std::array<std::array<char, 64>, kWindowMax> slotKeys;    // a toolbar slot's keys being edited
+    std::array<bool, kWindowMax> slotKeysInvalid;             // KeymapBind refused them
     std::array<bool, kWindowMax> searchShown;
     std::array<std::array<char, 128>, kWindowMax> searchQuery;
     std::array<std::vector<SearchEntry>, kWindowMax> searchEntries; // matching ones, best first

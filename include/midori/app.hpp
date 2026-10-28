@@ -158,28 +158,6 @@ struct BrushOutlineState {
     bool shown;
 };
 
-// Where the brush every tool paints with comes from: round.mdsl built in, or a .mdsl file read again whenever it
-// changes. A new brush replaces AppState::brush once its pipeline compiled and no stroke is going on.
-struct BrushSourceState {
-    std::filesystem::path path;                      // empty: round.mdsl as built in
-    std::filesystem::file_time_type writeTime;       // `path`'s when last read
-    std::chrono::steady_clock::time_point checkTime; // when `path` was last looked at
-    MdslBrush pending;                               // translated, its pipeline compiling or ready
-    std::string error; // why the last change does not paint: the translator's, at line:col of `path`, or the compiler's
-    bool compiling;    // `pending`'s pipeline
-    bool builtIn;      // `pending` is round.mdsl as built in, `path` notwithstanding
-    bool ready;        // it compiled, waiting for the stroke to end
-};
-
-// The image one of the brush's textures reads, by its index in MdslBrush::textures. The brush's source names one,
-// next to its file, unless one was chosen in the Brush window; it is read again whenever it changes.
-struct BrushTextureState {
-    std::filesystem::path path;                // empty: none, white
-    std::filesystem::file_time_type writeTime; // `path`'s when last read
-    std::string error;                         // why `path` gives no image
-    bool chosen;                               // kept while the brush has a texture of the same name
-};
-
 // Owned by the main thread. A canvas id indexes `canvases`, a canvas view id indexes `canvasViews`.
 // Pointer and keyboard state is the devices', not any one view's.
 struct AppState {
@@ -197,9 +175,7 @@ struct AppState {
     PasteState paste;
     CopyState copy;
     ToolsState tools;
-    MdslBrush brush; // what every tool paints with, from `brushSource`
-    BrushSourceState brushSource;
-    std::array<BrushTextureState, kMdslTexturesMax> brushTextures;
+    std::chrono::steady_clock::time_point brushCheckTime; // debug builds: when the shaders' files were last looked at
     std::vector<std::filesystem::path> brushExamples; // the .mdsl files in brushes/ next to the exe, by name
     KeymapState keymap;                               // keybinds.json beside preferences.json, else kDefaultBindings
     std::vector<ActionId> recentActions;              // the most recent first, up to kRecentActionsMax
@@ -281,10 +257,6 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept;
 // The lowest zoom whose tiles the tile atlas holds at the window's size. Lower is allowed, but shows only part of them.
 [[nodiscard]] float AppZoomSupported(Window window) noexcept;
 
-[[nodiscard]] Result<void> AppPaintMode() noexcept;
-[[nodiscard]] Result<void> AppEraseMode() noexcept;
-[[nodiscard]] Result<void> AppSelectMode() noexcept;
-[[nodiscard]] Result<void> AppLassoMode() noexcept;
 // The window's selection and the active layer's pixels under it follow handles over the canvas until applied, as one
 // undo step, or canceled.
 [[nodiscard]] Result<void> AppTransformMode(Window window) noexcept;
