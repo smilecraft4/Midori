@@ -24,8 +24,10 @@ struct Preferences {
     float zoomMin{kViewportZoomMin};                // within [kViewportZoomMin, kViewportZoomMax], zoomMin <= zoomMax
     float zoomMax{kViewportZoomMax};
     std::vector<std::filesystem::path> recentFiles; // the most recent first, up to kRecentFilesMax
+    std::vector<std::filesystem::path> openFiles;   // shown in a window at the last exit, up to kWindowMax
     std::string language;                           // a code of kLanguages, empty for the system's
     Color::Srgb color{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f}; // what every tool paints with
+    bool reopenFiles{true};                                        // launched without files, opens `openFiles`
 };
 
 // The defaults while there is no file yet. A file that is not JSON is set aside as preferences.json.bad, so the next

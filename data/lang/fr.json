@@ -59,6 +59,8 @@
     "zoomMin": "Zoom minimum",
     "zoomMinTip": "En dessous de %.1f%%, cette fenêtre affiche plus de tuiles que la mémoire n'en contient : certaines restent vides.",
     "zoomMax": "Zoom maximum",
+    "settingsFiles": "Fichiers",
+    "reopenFiles": "Rouvrir les derniers fichiers au lancement",
     "filterNearest": "Plus proche",
     "filterBilinear": "Bilinéaire",
     "filterBicubic": "Bicubique (Catmull-Rom)",

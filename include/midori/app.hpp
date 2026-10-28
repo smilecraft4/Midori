@@ -176,11 +176,12 @@ struct AppState {
     CopyState copy;
     ToolsState tools;
     std::chrono::steady_clock::time_point brushCheckTime; // debug builds: when the shaders' files were last looked at
-    std::vector<std::filesystem::path> brushExamples; // the .mdsl files in brushes/ next to the exe, by name
-    KeymapState keymap;                               // keybinds.json beside preferences.json, else kDefaultBindings
-    std::vector<ActionId> recentActions;              // the most recent first, up to kRecentActionsMax
-    std::vector<ActionRequest> actionRequests;        // picked by the UI, run by the next AppUpdate
+    std::vector<std::filesystem::path> brushExamples;     // the .mdsl files in brushes/ next to the exe, by name
+    KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
+    std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax
+    std::vector<ActionRequest> actionRequests;      // picked by the UI, run by the next AppUpdate
     std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
+    std::vector<std::filesystem::path> openFiles;   // of the windows closed since the exit began, in closing order
     std::string language;                           // the preference, a code of kLanguages or empty for the system's
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's
@@ -195,10 +196,11 @@ struct AppState {
     float pointerPressure;
     float pointerTiltX;
     float pointerTiltY;
-    KeyMod keyMods; // as of the last key event
+    KeyMod keyMods;         // as of the last key event
     bool spaceDown;
-    bool busy;      // AppBusy as of the last update: every window with a canvas presents each vsync
-    bool modal;     // a dialog is up: its message loop still delivers events, which are dropped
+    bool busy;              // AppBusy as of the last update: every window with a canvas presents each vsync
+    bool modal;             // a dialog is up: its message loop still delivers events, which are dropped
+    bool reopenFiles{true}; // the setting: a launch without files opens `openFiles`
 };
 
 extern AppState gAppState;

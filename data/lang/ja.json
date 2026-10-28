@@ -59,6 +59,8 @@
     "zoomMin": "最小ズーム",
     "zoomMinTip": "%.1f%% 未満では、このウィンドウはメモリに収まらない数のタイルを表示するため、一部が空白のままになります。",
     "zoomMax": "最大ズーム",
+    "settingsFiles": "ファイル",
+    "reopenFiles": "起動時に前回のファイルを開く",
     "filterNearest": "ニアレスト",
     "filterBilinear": "バイリニア",
     "filterBicubic": "バイキュービック (Catmull-Rom)",

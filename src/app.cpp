@@ -207,6 +207,14 @@ void RecentFilesAdd(const std::filesystem::path& path) noexcept {
     }
 }
 
+[[nodiscard]] std::size_t WindowOpenCount() noexcept {
+    std::size_t count = 0;
+    for (Window window = 0; window < kWindowMax; ++window) {
+        count += WindowGetState(window).has_value();
+    }
+    return count;
+}
+
 // Kept for the next run, which opens its first window there.
 void WindowPlacementKeep(Window window) noexcept {
     if (const auto placement = WindowGetPlacement(window)) {
@@ -2375,6 +2383,8 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gAppState.zoomMin = preferences->zoomMin;
         gAppState.zoomMax = preferences->zoomMax;
         gAppState.recentFiles = preferences->recentFiles;
+        gAppState.openFiles = preferences->openFiles;
+        gAppState.reopenFiles = preferences->reopenFiles;
         gAppState.language = preferences->language;
     } else {
         MIDORI_LOG_WARN("preferences not loaded, defaults used: {}", ErrorMessage(preferences.error()));
@@ -2402,6 +2412,19 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gAppState.historyPool.freeSlots.push_back(slot - 1);
     }
     JobsInit(JobsInitInfo{.execute = CanvasJobExecute, .readerCount = 0});
+
+    // Gone files are skipped quietly: only the user's own choice of file is worth an error.
+    std::vector<std::filesystem::path> reopened;
+    if (initInfo.files.empty() && gAppState.reopenFiles) {
+        std::error_code ec;
+        for (const std::filesystem::path& path : gAppState.openFiles) {
+            if (std::filesystem::is_regular_file(path, ec)) {
+                reopened.push_back(path);
+            }
+        }
+        initInfo.files = reopened;
+    }
+    gAppState.openFiles.clear();
 
     // One window per file, or one new canvas. A file that fails to open leaves a new canvas in its window.
     // The platform owns the windows and destroys them in PlatformTerminate.
@@ -2465,6 +2488,10 @@ Result<void> AppEvent(Event event) noexcept {
             MIDORI_LOG_TRACE("window {}: focus {}", event.windowFocus.window, event.windowFocus.focused);
             break;
         case EventType::WindowClose:
+            // Closing the last window is an exit: only the files left open then are reopened.
+            if (WindowOpenCount() == 1) {
+                gAppState.openFiles.clear();
+            }
             return AppWindowClose(event.windowClose.window);
         case EventType::WindowDestroy:
             // The window owns its views.
@@ -2588,8 +2615,10 @@ void AppTerminate() noexcept {
         .zoomMin = gAppState.zoomMin,
         .zoomMax = gAppState.zoomMax,
         .recentFiles = gAppState.recentFiles,
+        .openFiles = gAppState.openFiles,
         .language = gAppState.language,
         .color = gAppState.tools.color,
+        .reopenFiles = gAppState.reopenFiles,
     };
     if (const auto res = PreferencesSave(preferences); !res) {
         MIDORI_LOG_ERROR("PreferencesSave failed: {}", ErrorMessage(res.error()));
@@ -3119,6 +3148,7 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept {
 
 Result<void> AppQuit() noexcept {
     ZoneScopedN("AppQuit");
+    gAppState.openFiles.clear();
     for (Window window = 0; window < kWindowMax; ++window) {
         if (!WindowGetState(window)) {
             continue;
@@ -3141,6 +3171,11 @@ Result<void> AppWindowClose(Window window) noexcept {
     }
     // Closing the last window ends the app, with no window left to ask at exit.
     WindowPlacementKeep(window);
+    if (const CanvasState* canvas = WindowCanvas(window);
+        canvas && !canvas->path.empty() && !std::ranges::contains(gAppState.openFiles, canvas->path)
+        && gAppState.openFiles.size() < kWindowMax) {
+        gAppState.openFiles.push_back(canvas->path);
+    }
     return WindowDestroy(window);
 }
 

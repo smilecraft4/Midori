@@ -164,6 +164,31 @@ void Read(const Json& json, const char* key, Color::Srgb& color) noexcept {
     return name == names.end() ? -1 : static_cast<int>(name - names.begin());
 }
 
+// UTF-8 strings, the first `max` of them.
+void Read(const Json& json, const char* key, std::vector<std::filesystem::path>& paths, std::size_t max) noexcept {
+    const auto found = json.find(key);
+    if (found == json.end() || !found->is_array()) {
+        return;
+    }
+    for (const Json& entry : *found) {
+        if (paths.size() == max) {
+            break;
+        }
+        if (entry.is_string()) {
+            const std::string& utf8 = entry.get_ref<const std::string&>();
+            paths.emplace_back(std::u8string(utf8.begin(), utf8.end()));
+        }
+    }
+}
+
+[[nodiscard]] Json PathsJson(std::span<const std::filesystem::path> paths) noexcept {
+    Json json = Json::array();
+    for (const std::filesystem::path& path : paths) {
+        json.push_back(PathUtf8(path));
+    }
+    return json;
+}
+
 // [[x, y], ...], kept only when it makes a valid curve.
 void Read(const Json& json, const char* key, Curve& curve) noexcept {
     const auto found = json.find(key);
@@ -477,17 +502,9 @@ Result<Preferences> PreferencesLoad() noexcept {
             info.displayMode = kDisplayModes[static_cast<std::size_t>(mode)];
         }
     }
-    if (const auto recent = root.find("recentFiles"); recent != root.end() && recent->is_array()) {
-        for (const Json& entry : *recent) {
-            if (preferences.recentFiles.size() == kRecentFilesMax) {
-                break;
-            }
-            if (entry.is_string()) {
-                const std::string& utf8 = entry.get_ref<const std::string&>();
-                preferences.recentFiles.emplace_back(std::u8string(utf8.begin(), utf8.end()));
-            }
-        }
-    }
+    Read(root, "recentFiles", preferences.recentFiles, kRecentFilesMax);
+    Read(root, "openFiles", preferences.openFiles, kWindowMax);
+    Read(root, "reopenFiles", preferences.reopenFiles);
     return preferences;
 }
 
@@ -509,10 +526,6 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         windowJson["x"] = window.x;
         windowJson["y"] = window.y;
     }
-    Json recentFiles = Json::array();
-    for (const std::filesystem::path& file : preferences.recentFiles) {
-        recentFiles.push_back(PathUtf8(file));
-    }
     const Json root{
         {"version", kPreferencesVersion},
         {"language", preferences.language},
@@ -532,7 +545,9 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
              {"imguiSettings", preferences.ui.imguiSettings},
          }},
         {"window", windowJson},
-        {"recentFiles", recentFiles},
+        {"recentFiles", PathsJson(preferences.recentFiles)},
+        {"openFiles", PathsJson(preferences.openFiles)},
+        {"reopenFiles", preferences.reopenFiles},
     };
     return JsonFileWrite(*path, root);
 }

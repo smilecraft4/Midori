@@ -1476,6 +1476,8 @@ void SettingsWindow(Window window) noexcept {
                            "%.1f%%", kZoomFlags)) {
         gAppState.zoomMax = std::max(zoomMax / 100.0f, gAppState.zoomMin);
     }
+    ImGui::SeparatorText(TextGet(Text::SettingsFiles));
+    ImGui::Checkbox(TextLabel(Text::ReopenFiles), &gAppState.reopenFiles);
     ImGui::End();
 }
 
