@@ -1619,6 +1619,17 @@ void TransformHoldEnd() noexcept {
     };
 }
 
+// The color moves to the front of the recent ones.
+void ColorRecentPush(ToolsState& tools, Color::Srgb color) noexcept {
+    std::erase_if(tools.recentColors, [color](const Color::Srgb& recent) {
+        return recent.r == color.r && recent.g == color.g && recent.b == color.b && recent.a == color.a;
+    });
+    tools.recentColors.insert(tools.recentColors.begin(), color);
+    if (tools.recentColors.size() > kRecentColorsMax) {
+        tools.recentColors.resize(kRecentColorsMax);
+    }
+}
+
 [[nodiscard]] StrokeBeginInfo StrokeBeginInfoFromTool(CanvasView view, StrokePoint point) noexcept {
     const ToolsState& tools = gAppState.tools;
     const Layer layer = gAppState.canvases[gAppState.canvasViews[view].canvas].activeLayer;
@@ -1627,7 +1638,7 @@ void TransformHoldEnd() noexcept {
     constexpr std::array kShapes = {StrokeShape::Brush, StrokeShape::FillRect, StrokeShape::FillLasso};
     return StrokeBeginInfo{
         .brush = ToolCurrent(tools).brush,
-        .color = erase ? Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f} : tools.color,
+        .color = erase ? Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f} : tools.colors[tools.colorSlot],
         .point = point,
         .layer = layer,
         .view = view,
@@ -2168,6 +2179,9 @@ void TagDragEnd() noexcept {
                 return false;
             }
             StrokeBegin(*beginInfo);
+            if (!selecting && tool.blendMode != BlendMode::Erase) {
+                ColorRecentPush(gAppState.tools, beginInfo->color);
+            }
             SelectionBoundsFollow();
             CanvasEdited(canvas, wasModified);
             return true;
@@ -2310,6 +2324,7 @@ void TagDragEnd() noexcept {
         case ActionId::PanelTools:
         case ActionId::PanelLayers:
         case ActionId::PanelTags:
+        case ActionId::PanelColor:
         case ActionId::PanelHelp:
         case ActionId::PanelMenuBar:
         case ActionId::DebugTileAtlas:
@@ -2324,6 +2339,7 @@ void TagDragEnd() noexcept {
                             : action == ActionId::PanelTools        ? gUiState.toolsShown[window]
                             : action == ActionId::PanelLayers       ? gUiState.layersShown[window]
                             : action == ActionId::PanelTags         ? gUiState.tagsShown[window]
+                            : action == ActionId::PanelColor        ? gUiState.colorShown[window]
                             : action == ActionId::PanelHelp         ? gUiState.helpShown[window]
                             : action == ActionId::PanelMenuBar      ? gUiState.menuBarShown[window]
                             : action == ActionId::DebugTileAtlas    ? gUiState.tileAtlasShown[window]
@@ -2409,6 +2425,12 @@ void TagDragEnd() noexcept {
         case ActionId::BrushReload:
             BrushShaderReload(ToolCurrent(app.tools).shader);
             return {};
+        case ActionId::ColorNext:
+        case ActionId::ColorPrevious: {
+            const auto count = static_cast<std::uint32_t>(app.tools.colors.size());
+            app.tools.colorSlot = (app.tools.colorSlot + (action == ActionId::ColorNext ? 1U : count - 1U)) % count;
+            return {};
+        }
         case ActionId::BrushTexture:
             return arg < kMdslTexturesMax ? AppBrushTextureOpen(window, arg) : Result<void>{};
         case ActionId::BrushExample:
@@ -2538,7 +2560,9 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
 
     // Before any window opens: new windows show the panels the preferences keep.
     if (const auto preferences = PreferencesLoad()) {
-        gAppState.tools.color = preferences->color;
+        gAppState.tools.colors = preferences->colors;
+        gAppState.tools.colorSlot = preferences->colorSlot;
+        gAppState.tools.recentColors = preferences->recentColors;
         gUiState.preferences = preferences->ui;
         gAppState.windowPlacement = preferences->window;
         gAppState.canvasFilter = preferences->canvasFilter;
@@ -2790,7 +2814,9 @@ void AppTerminate() noexcept {
         .recentFiles = gAppState.recentFiles,
         .openFiles = gAppState.openFiles,
         .language = gAppState.language,
-        .color = gAppState.tools.color,
+        .colors = gAppState.tools.colors,
+        .recentColors = gAppState.tools.recentColors,
+        .colorSlot = gAppState.tools.colorSlot,
         .reopenFiles = gAppState.reopenFiles,
     };
     if (const auto res = PreferencesSave(preferences); !res) {

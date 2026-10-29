@@ -85,6 +85,9 @@ enum struct ActionId : std::uint8_t {
     TagSelect,
     TagToggle,
     PanelTags,
+    ColorNext,
+    ColorPrevious,
+    PanelColor,
     Count_,
 };
 
@@ -200,6 +203,9 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
      .description = "Add a tag to the selected tags or remove it, and show the nearest place carrying them all",
      .argName = "tag"},
     {.name = "panel.tags", .description = "Show or hide the tags panel"},
+    {.name = "color.next", .description = "Paint with the next color slot"},
+    {.name = "color.previous", .description = "Paint with the previous color slot"},
+    {.name = "panel.color", .description = "Show or hide the color panel"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -270,6 +276,8 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "Ctrl+T", .action = ActionId::SelectionTransform, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Left", .action = ActionId::TagNext, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Right", .action = ActionId::TagPrevious, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "X", .action = ActionId::ColorNext, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Shift+X", .action = ActionId::ColorPrevious, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Enter", .action = ActionId::TransformApply, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Escape", .action = ActionId::TransformCancel, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "F", .action = ActionId::BrushRadius, .context = ActionContext::Canvas},

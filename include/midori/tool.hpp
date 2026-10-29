@@ -141,13 +141,20 @@ struct ToolbarSlot {
     std::uint32_t last;               // its tool picked last, which its button shows and picks
 };
 
+constexpr std::size_t kColorSlotsMin = 2;
+constexpr std::size_t kColorSlotsMax = 8;
+constexpr std::size_t kRecentColorsMax = 16;
+
 // `library` is tools.json, never empty. `slots` is workspace.json, which only arranges the library's tools; the Tools
 // panel lists the active slot's.
 struct ToolsState {
     std::vector<ToolState> library;
     std::vector<ToolbarSlot> slots;
     std::vector<ToolShader> shaders; // the built-in one first, up to kToolShadersMax
-    Color::Srgb color{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f};
+    // kColorSlotsMin to kColorSlotsMax; every tool paints with colors[colorSlot].
+    std::vector<Color::Srgb> colors{Color::Srgb{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f}, Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}};
+    std::vector<Color::Srgb> recentColors; // painted with, the most recent first, up to kRecentColorsMax
+    std::uint32_t colorSlot{};
     std::uint32_t current{}; // the tool painting or selecting
     std::uint32_t slot{};    // the active slot, 0 for none
 };

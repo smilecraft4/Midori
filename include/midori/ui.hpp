@@ -37,6 +37,7 @@ struct UiPreferences {
     bool toolsShown{true};
     bool layersShown{true};
     bool tagsShown{false};
+    bool colorShown{true};
     bool helpShown{true};
     bool menuBarShown{true};
     bool tagZoneShown{
@@ -66,6 +67,7 @@ struct UiState {
     std::array<bool, kWindowMax> toolsShown;
     std::array<bool, kWindowMax> layersShown;
     std::array<bool, kWindowMax> tagsShown;
+    std::array<bool, kWindowMax> colorShown;
     std::array<bool, kWindowMax> settingsShown; // closed at first, opened from Edit > Settings
     UiPreferences preferences;                  // what a window opens with; the last window drawn sets it
     // While the opacity slider is held, where each selected layer started, top first.

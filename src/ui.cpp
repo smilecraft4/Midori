@@ -675,6 +675,80 @@ void TagsWindow(Window window) noexcept {
     ImGui::End();
 }
 
+// The current color slot's picker, every slot, and the colors painted with lately.
+void ColorWindow(Window window, ToolsState& tools) noexcept {
+    ZoneScopedN("ColorWindow");
+    if (!ImGui::Begin(TextLabel(Text::Color), &gUiState.colorShown[window])) {
+        ImGui::End();
+        return;
+    }
+    const auto imColor = [](const Color::Srgb& color) {
+        return ImVec4(color.r, color.g, color.b, color.a);
+    };
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::ColorPicker4("##picker", &tools.colors[tools.colorSlot].r, ImGuiColorEditFlags_AlphaBar);
+    ImGui::SeparatorText(TextGet(Text::ColorSlots));
+    const float size = ImGui::GetFrameHeight();
+    const ImU32 accent = ImGui::GetColorU32(ImGuiCol_CheckMark);
+    std::size_t removed = tools.colors.size();
+    for (std::size_t i = 0; i < tools.colors.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (i != 0) {
+            ImGui::SameLine();
+        }
+        if (ImGui::ColorButton("##slot", imColor(tools.colors[i]),
+                               ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_AlphaPreviewHalf,
+                               ImVec2(size, size))) {
+            tools.colorSlot = static_cast<std::uint32_t>(i);
+        }
+        ImGui::SetItemTooltip("%s", TextGet(Text::ColorSlotTip));
+        if (i == tools.colorSlot) {
+            const ImVec2 min = ImGui::GetItemRectMin();
+            const ImVec2 max = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRect(ImVec2(min.x - 2.0f, min.y - 2.0f), ImVec2(max.x + 2.0f, max.y + 2.0f),
+                                                accent, 0.0f, 2.0f);
+        }
+        if (ImGui::BeginPopupContextItem("##slotMenu")) {
+            ImGui::BeginDisabled(tools.colors.size() <= kColorSlotsMin);
+            if (ImGui::MenuItem(TextLabel(Text::ColorSlotRemove))) {
+                removed = i;
+            }
+            ImGui::EndDisabled();
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    if (removed < tools.colors.size()) {
+        tools.colors.erase(tools.colors.begin() + static_cast<std::ptrdiff_t>(removed));
+        if (tools.colorSlot > removed || tools.colorSlot == tools.colors.size()) {
+            --tools.colorSlot;
+        }
+    }
+    if (tools.colors.size() < kColorSlotsMax) {
+        ImGui::SameLine();
+        if (ImGui::Button("+", ImVec2(size, size))) {
+            tools.colors.push_back(tools.colors[tools.colorSlot]);
+        }
+        ImGui::SetItemTooltip("%s", TextGet(Text::ColorSlotAddTip));
+    }
+    ImGui::SeparatorText(TextGet(Text::RecentColors));
+    if (tools.recentColors.empty()) {
+        ImGui::TextDisabled("%s", TextGet(Text::NoRecentColors));
+    }
+    for (std::size_t i = 0; i < tools.recentColors.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (i % 8 != 0) {
+            ImGui::SameLine();
+        }
+        if (ImGui::ColorButton("##recent", imColor(tools.recentColors[i]), ImGuiColorEditFlags_AlphaPreviewHalf,
+                               ImVec2(size, size))) {
+            tools.colors[tools.colorSlot] = tools.recentColors[i];
+        }
+        ImGui::PopID();
+    }
+    ImGui::End();
+}
+
 void ToolWindow(Window window, ToolsState& tools) noexcept {
     ZoneScopedN("ToolWindow");
     if (ImGui::Begin(TextLabel(Text::Tool), &gUiState.toolShown[window])) {
@@ -701,7 +775,7 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
             if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(), static_cast<int>(shapeNames.size()))) {
                 tool.shape = static_cast<ToolShape>(shape);
             }
-            ImGui::ColorEdit4(TextLabel(Text::Color), &tools.color.r);
+            ImGui::ColorEdit4(TextLabel(Text::Color), &tools.colors[tools.colorSlot].r);
             int blendMode = std::to_underlying(tool.blendMode);
             const auto blendModeNames = TextsGet(kBlendModeTexts);
             if (ImGui::Combo(TextLabel(Text::Blend), &blendMode, blendModeNames.data(),
@@ -2290,6 +2364,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.toolRenaming[window] = 0;
     gUiState.layersShown[window] = gUiState.preferences.layersShown;
     gUiState.tagsShown[window] = gUiState.preferences.tagsShown;
+    gUiState.colorShown[window] = gUiState.preferences.colorShown;
     gUiState.settingsShown[window] = false;
     gUiState.layerFoldersClosed[window].clear();
     gUiState.layerRenaming[window] = -1;
@@ -2494,6 +2569,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             MenuAction(window, Text::Tool, ActionId::PanelTool, gUiState.toolShown[window]);
             MenuAction(window, Text::Layers, ActionId::PanelLayers, gUiState.layersShown[window]);
             MenuAction(window, Text::Tags, ActionId::PanelTags, gUiState.tagsShown[window]);
+            MenuAction(window, Text::Color, ActionId::PanelColor, gUiState.colorShown[window]);
             MenuAction(window, Text::Help, ActionId::PanelHelp, gUiState.helpShown[window]);
             MenuAction(window, Text::MenuBar, ActionId::PanelMenuBar, gUiState.menuBarShown[window]);
             ImGui::EndMenu();
@@ -2559,6 +2635,9 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     if (gUiState.tagsShown[window]) {
         TagsWindow(window);
     }
+    if (gUiState.colorShown[window]) {
+        ColorWindow(window, tools);
+    }
     if (gUiState.settingsShown[window]) {
         SettingsWindow(window);
     }
@@ -2577,6 +2656,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     preferences.toolsShown = gUiState.toolsShown[window];
     preferences.layersShown = gUiState.layersShown[window];
     preferences.tagsShown = gUiState.tagsShown[window];
+    preferences.colorShown = gUiState.colorShown[window];
     preferences.helpShown = gUiState.helpShown[window];
     preferences.menuBarShown = gUiState.menuBarShown[window];
     // With no ini file, ImGui only flags that its windows moved or resized.

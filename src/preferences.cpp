@@ -141,18 +141,42 @@ void Read(const Json& json, const char* key, bool& value) noexcept {
 }
 
 // [r, g, b, a], each from 0 to 1.
-void Read(const Json& json, const char* key, Color::Srgb& color) noexcept {
-    const auto found = json.find(key);
-    if (found == json.end() || !found->is_array() || found->size() != 4
-        || !std::ranges::all_of(*found, [](const Json& channel) { return channel.is_number(); })) {
-        return;
+[[nodiscard]] bool ColorRead(const Json& json, Color::Srgb& color) noexcept {
+    if (!json.is_array() || json.size() != 4
+        || !std::ranges::all_of(json, [](const Json& channel) { return channel.is_number(); })) {
+        return false;
     }
     color = Color::Srgb{
-        .r = std::clamp((*found)[0].get<float>(), 0.0f, 1.0f),
-        .g = std::clamp((*found)[1].get<float>(), 0.0f, 1.0f),
-        .b = std::clamp((*found)[2].get<float>(), 0.0f, 1.0f),
-        .a = std::clamp((*found)[3].get<float>(), 0.0f, 1.0f),
+        .r = std::clamp(json[0].get<float>(), 0.0f, 1.0f),
+        .g = std::clamp(json[1].get<float>(), 0.0f, 1.0f),
+        .b = std::clamp(json[2].get<float>(), 0.0f, 1.0f),
+        .a = std::clamp(json[3].get<float>(), 0.0f, 1.0f),
     };
+    return true;
+}
+
+void Read(const Json& json, const char* key, Color::Srgb& color) noexcept {
+    if (const auto found = json.find(key); found != json.end()) {
+        static_cast<void>(ColorRead(*found, color));
+    }
+}
+
+// Kept only with at least `min` valid colors; the invalid ones are skipped, the ones past `max` dropped.
+void Read(const Json& json, const char* key, std::vector<Color::Srgb>& colors, std::size_t min,
+          std::size_t max) noexcept {
+    const auto found = json.find(key);
+    if (found == json.end() || !found->is_array()) {
+        return;
+    }
+    std::vector<Color::Srgb> read;
+    for (const Json& entry : *found) {
+        if (Color::Srgb color; read.size() < max && ColorRead(entry, color)) {
+            read.push_back(color);
+        }
+    }
+    if (read.size() >= min) {
+        colors = std::move(read);
+    }
 }
 
 // The index of the name `json[key]` holds among `names`, -1 for none.
@@ -307,6 +331,14 @@ void ReadBrush(const Json& json, BrushState& brush, const MdslBrush& source) noe
 
 [[nodiscard]] Json ColorJson(const Color::Srgb& color) noexcept {
     return Json::array({color.r, color.g, color.b, color.a});
+}
+
+[[nodiscard]] Json ColorsJson(std::span<const Color::Srgb> colors) noexcept {
+    Json json = Json::array();
+    for (const Color::Srgb& color : colors) {
+        json.push_back(ColorJson(color));
+    }
+    return json;
 }
 
 // The brushes folder next to Midori, which tools.json names shaders from.
@@ -474,11 +506,15 @@ Result<Preferences> PreferencesLoad() noexcept {
     Read(root, "zoomMin", preferences.zoomMin, kViewportZoomMin, kViewportZoomMax);
     Read(root, "zoomMax", preferences.zoomMax, kViewportZoomMin, kViewportZoomMax);
     preferences.zoomMax = std::max(preferences.zoomMax, preferences.zoomMin);
-    // Version 1 kept the color with the paint tool.
+    // Version 1 kept the color with the paint tool, then a single color stood for the first slot.
     if (const auto paint = root.find("paint"); paint != root.end() && paint->is_object()) {
-        Read(*paint, "color", preferences.color);
+        Read(*paint, "color", preferences.colors[0]);
     }
-    Read(root, "color", preferences.color);
+    Read(root, "color", preferences.colors[0]);
+    Read(root, "colors", preferences.colors, kColorSlotsMin, kColorSlotsMax);
+    Read(root, "colorSlot", preferences.colorSlot);
+    preferences.colorSlot = std::min(preferences.colorSlot, static_cast<std::uint32_t>(preferences.colors.size() - 1));
+    Read(root, "recentColors", preferences.recentColors, 0, kRecentColorsMax);
     if (const auto ui = root.find("ui"); ui != root.end() && ui->is_object()) {
         Read(*ui, "viewShown", preferences.ui.viewShown);
         Read(*ui, "toolShown", preferences.ui.toolShown);
@@ -486,6 +522,7 @@ Result<Preferences> PreferencesLoad() noexcept {
         Read(*ui, "toolsShown", preferences.ui.toolsShown);
         Read(*ui, "layersShown", preferences.ui.layersShown);
         Read(*ui, "tagsShown", preferences.ui.tagsShown);
+        Read(*ui, "colorShown", preferences.ui.colorShown);
         Read(*ui, "helpShown", preferences.ui.helpShown);
         Read(*ui, "menuBarShown", preferences.ui.menuBarShown);
         Read(*ui, "tagZoneShown", preferences.ui.tagZoneShown);
@@ -563,7 +600,9 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         {"canvasFilter", kCanvasFilterNames[std::to_underlying(preferences.canvasFilter)]},
         {"zoomMin", preferences.zoomMin},
         {"zoomMax", preferences.zoomMax},
-        {"color", ColorJson(preferences.color)},
+        {"colors", ColorsJson(preferences.colors)},
+        {"colorSlot", preferences.colorSlot},
+        {"recentColors", ColorsJson(preferences.recentColors)},
         {"ui",
          {
              {"viewShown", preferences.ui.viewShown},
@@ -572,6 +611,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
              {"toolsShown", preferences.ui.toolsShown},
              {"layersShown", preferences.ui.layersShown},
              {"tagsShown", preferences.ui.tagsShown},
+             {"colorShown", preferences.ui.colorShown},
              {"helpShown", preferences.ui.helpShown},
              {"menuBarShown", preferences.ui.menuBarShown},
              {"tagZoneShown", preferences.ui.tagZoneShown},
