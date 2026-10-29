@@ -36,8 +36,11 @@ struct UiPreferences {
     bool toolbarShown{true};
     bool toolsShown{true};
     bool layersShown{true};
+    bool tagsShown{false};
     bool helpShown{true};
     bool menuBarShown{true};
+    bool tagZoneShown{
+        false}; // the tags panel's selected tag's tiles over the canvas, while the Tag tool is not current
 };
 
 // One Dear ImGui context per window: its own input state, style, font atlas and draw data. Owned by
@@ -62,16 +65,19 @@ struct UiState {
     std::array<bool, kWindowMax> toolbarShown;
     std::array<bool, kWindowMax> toolsShown;
     std::array<bool, kWindowMax> layersShown;
+    std::array<bool, kWindowMax> tagsShown;
     std::array<bool, kWindowMax> settingsShown; // closed at first, opened from Edit > Settings
     UiPreferences preferences;                  // what a window opens with; the last window drawn sets it
     // While the opacity slider is held, where each selected layer started, top first.
     std::array<std::vector<float>, kWindowMax> layerOpacitiesBefore;
     std::array<std::vector<std::uint16_t>, kWindowMax> layerFoldersClosed; // folder layer ids
-    std::array<int, kWindowMax> layerRenaming; // the layer whose name is being edited, -1 for none
+    std::array<int, kWindowMax> layerRenaming;             // the layer whose name is being edited, -1 for none
     std::array<std::array<char, 64>, kWindowMax> layerRename;
-    std::array<std::uint32_t, kWindowMax> toolRenaming;       // the tool whose name is being edited, 0 for none
-    std::array<std::array<char, 64>, kWindowMax> slotKeys;    // a toolbar slot's keys being edited
-    std::array<bool, kWindowMax> slotKeysInvalid;             // KeymapBind refused them
+    std::array<std::uint32_t, kWindowMax> toolRenaming;    // the tool whose name is being edited, 0 for none
+    std::array<int, kWindowMax> tagRenaming;               // the tag whose name is being edited, -1 for none
+    std::array<std::array<char, 32>, kWindowMax> tagRename;
+    std::array<std::array<char, 64>, kWindowMax> slotKeys; // a toolbar slot's keys being edited
+    std::array<bool, kWindowMax> slotKeysInvalid;          // KeymapBind refused them
     std::array<bool, kWindowMax> searchShown;
     std::array<std::array<char, 128>, kWindowMax> searchQuery;
     std::array<std::vector<SearchEntry>, kWindowMax> searchEntries; // matching ones, best first

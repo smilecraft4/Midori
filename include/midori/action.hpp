@@ -80,6 +80,11 @@ enum struct ActionId : std::uint8_t {
     PanelToolbar,
     PanelTools,
     BrushReload,
+    TagNext,
+    TagPrevious,
+    TagSelect,
+    TagToggle,
+    PanelTags,
     Count_,
 };
 
@@ -182,6 +187,19 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "panel.toolbar", .description = "Show or hide the toolbar"},
     {.name = "panel.tools", .description = "Show or hide the tools of the active toolbar slot"},
     {.name = "brush.reload", .description = "Read the current tool's brush file and its textures again"},
+    {.name = "tag.next",
+     .description = "Show the next place carrying every selected tag",
+     .kind = ActionKind::Repeat},
+    {.name = "tag.previous",
+     .description = "Show the previous place carrying every selected tag",
+     .kind = ActionKind::Repeat},
+    {.name = "tag.select",
+     .description = "Select only this tag and show the place it covers nearest the view",
+     .argName = "tag"},
+    {.name = "tag.toggle",
+     .description = "Add a tag to the selected tags or remove it, and show the nearest place carrying them all",
+     .argName = "tag"},
+    {.name = "panel.tags", .description = "Show or hide the tags panel"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -250,6 +268,8 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "Ctrl+D", .action = ActionId::SelectionClear, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Delete", .action = ActionId::SelectionDelete, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+T", .action = ActionId::SelectionTransform, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Left", .action = ActionId::TagNext, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Right", .action = ActionId::TagPrevious, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Enter", .action = ActionId::TransformApply, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Escape", .action = ActionId::TransformCancel, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "F", .action = ActionId::BrushRadius, .context = ActionContext::Canvas},
@@ -279,8 +299,8 @@ struct KeymapState {
     std::vector<std::string> keys; // each binding as the keyboard layout names its keys: "Maj+B, &"
     std::array<KeyChord, kKeySequenceMax> pending;
     std::bitset<std::to_underlying(Key::Count_)> down;
-    std::int32_t holding{-1};      // the Hold binding whose last key is down
-    std::int32_t repeating{-1};    // the Repeat binding its last key repeats while down
+    std::int32_t holding{-1};   // the Hold binding whose last key is down
+    std::int32_t repeating{-1}; // the Repeat binding its last key repeats while down
     std::uint8_t pendingLength{};
 };
 
@@ -302,8 +322,8 @@ constexpr std::size_t kRecentActionsMax = 32;
 // "action": "none" only unbinds them. Entries not understood are logged and skipped. Each binding's keys are shown as
 // the current keyboard layout names them.
 void KeymapLoad(KeymapState& keymap) noexcept;
-// Binds `action` with `arg` to `keys` in keybinds.json, read as KeyBindingParse reads them, in place of every binding it
-// had; empty `keys` only unbinds it. The keymap is loaded again.
+// Binds `action` with `arg` to `keys` in keybinds.json, read as KeyBindingParse reads them, in place of every binding
+// it had; empty `keys` only unbinds it. The keymap is loaded again.
 Result<void> KeymapBind(KeymapState& keymap, std::string_view keys, ActionId action, std::uint32_t arg,
                         ActionContext context) noexcept;
 // As keybinds.json writes it, whatever the keyboard layout: "Ctrl+K, Shift+1", "Shift(Hold)".
@@ -316,8 +336,8 @@ std::string KeyBindingKeys(const KeyBinding& binding) noexcept;
 [[nodiscard]] std::int32_t KeymapPress(KeymapState& keymap, KeyChord chord, ActionContext context) noexcept;
 // The binding goes on from the chords pressed so far, matched as KeymapPress matches them.
 [[nodiscard]] bool KeymapContinues(const KeymapState& keymap, const KeyBinding& binding) noexcept;
-// The Hold binding of `action` whose keys are all down with `mods`, in `context` or one around it, else -1. Of those, the
-// one with the most keys wins: Shift+Alt's over Shift's.
+// The Hold binding of `action` whose keys are all down with `mods`, in `context` or one around it, else -1. Of those,
+// the one with the most keys wins: Shift+Alt's over Shift's.
 std::int32_t KeymapHeld(const KeymapState& keymap, ActionId action, ActionContext context, KeyMod mods) noexcept;
 
 constexpr float kFuzzyNone = -1e30f;

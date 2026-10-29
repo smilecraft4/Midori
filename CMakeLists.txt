@@ -96,6 +96,7 @@ set(MIDORI_SOURCES
     src/mdsl.cpp
     src/preferences.cpp
     src/stroke.cpp
+    src/tag.cpp
     src/text.cpp
     src/tile.cpp
     src/tool.cpp

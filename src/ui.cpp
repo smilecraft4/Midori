@@ -21,6 +21,7 @@
 #include <fstream>
 #include <ios>
 #include <numbers>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -522,6 +523,158 @@ void BrushSourceEdit(Window window, const ToolShader& source) noexcept {
     ImGui::Separator();
 }
 
+// Golden-ratio steps from blue, so neighbouring ids stay apart.
+[[nodiscard]] ImVec4 TagColor(float hue, float alpha) noexcept {
+    ImVec4 color(0.0f, 0.0f, 0.0f, alpha);
+    ImGui::ColorConvertHSVtoRGB(hue, 0.65f, 1.0f, color.x, color.y, color.z);
+    return color;
+}
+
+// The tag's color; a click opens a hue slider.
+void TagSwatch(Window window, const CanvasState& canvas, std::uint32_t tag, float size) noexcept {
+    if (ImGui::ColorButton("##color", TagColor(canvas.tagHues[tag], 1.0f),
+                           ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, ImVec2(size, size))) {
+        ImGui::OpenPopup("##hue");
+    }
+    ImGui::SetItemTooltip("%s", TextGet(Text::TagHueTip));
+    if (ImGui::BeginPopup("##hue")) {
+        float degrees = canvas.tagHues[tag] * 360.0f;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+        if (ImGui::SliderFloat(TextLabel(Text::TagHue), &degrees, 0.0f, 360.0f, "%.0f")) {
+            AppTagHue(window, tag, degrees / 360.0f);
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// Null when the window shows no canvas.
+[[nodiscard]] CanvasState* WindowCanvasGet(Window window) noexcept {
+    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
+    return view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid ? nullptr
+                                                                                 : &gAppState.canvases[view->canvas];
+}
+
+// The tag's name, or the field renaming it after a double click. True when clicked once.
+bool TagNameRow(Window window, const CanvasState& canvas, std::uint32_t tag, bool selected) noexcept {
+    if (gUiState.tagRenaming[window] == static_cast<int>(tag)) {
+        static_assert(sizeof(gUiState.tagRename[0]) == kTagNameLenMax);
+        auto& text = gUiState.tagRename[window];
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (!ImGui::IsAnyItemActive()) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        const bool entered = ImGui::InputText("##rename", text.data(), text.size(),
+                                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        if (entered) {
+            AppTagRename(window, tag, text.data());
+        }
+        if (entered || ImGui::IsItemDeactivated()) {
+            gUiState.tagRenaming[window] = -1;
+        }
+        return false;
+    }
+    if (!ImGui::Selectable(canvas.tagNames[tag].data(), selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+        return false;
+    }
+    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        gUiState.tagRenaming[window] = static_cast<int>(tag);
+        gUiState.tagRename[window] = canvas.tagNames[tag];
+        return false;
+    }
+    return true;
+}
+
+// The window's canvas's tags: a check makes the Tag tool edit and show one, a double click renames it.
+void TagsEdit(Window window) noexcept {
+    CanvasState* found = WindowCanvasGet(window);
+    if (!found) {
+        ImGui::TextDisabled("%s", TextGet(Text::NoCanvas));
+        return;
+    }
+    CanvasState& canvas = *found;
+    ImGui::SeparatorText(TextGet(Text::Tags));
+    ImGui::SetItemTooltip("%s", TextGet(Text::TagsTip));
+    if (canvas.tags == 0) {
+        ImGui::TextDisabled("%s", TextGet(Text::NoTags));
+    }
+    const float swatch = ImGui::GetFrameHeight();
+    for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+        const std::uint64_t bit = std::uint64_t{1} << tag;
+        if ((canvas.tags & bit) == 0) {
+            continue;
+        }
+        ImGui::PushID(static_cast<int>(tag));
+        bool checked = (canvas.tagsChecked & bit) != 0;
+        if (ImGui::Checkbox("##checked", &checked)) {
+            canvas.tagsChecked ^= bit;
+        }
+        ImGui::SameLine();
+        TagSwatch(window, canvas, tag, swatch);
+        ImGui::SameLine();
+        if (TagNameRow(window, canvas, tag, false)) {
+            canvas.tagsChecked ^= bit;
+        }
+        ImGui::PopID();
+    }
+    ImGui::BeginDisabled(canvas.tags == ~std::uint64_t{0});
+    if (ImGui::Button(TextLabel(Text::TagNew))) {
+        AppTagNew(window);
+    }
+    ImGui::EndDisabled();
+}
+
+// The window's canvas's tags, each with how many separate places it covers. Picking one shows its nearest place,
+// Ctrl+click adds it to the selection or removes it; tag.next and tag.previous go through the places carrying every
+// selected tag. A double click renames.
+void TagsWindow(Window window) noexcept {
+    ZoneScopedN("TagsWindow");
+    if (!ImGui::Begin(TextLabel(Text::Tags), &gUiState.tagsShown[window])) {
+        ImGui::End();
+        return;
+    }
+    CanvasState* canvas = WindowCanvasGet(window);
+    if (!canvas) {
+        ImGui::TextDisabled("%s", TextGet(Text::NoCanvas));
+        ImGui::End();
+        return;
+    }
+    ImGui::BeginDisabled(canvas->tags == ~std::uint64_t{0});
+    if (ImGui::Button(TextLabel(Text::TagNew))) {
+        AppTagNew(window);
+    }
+    ImGui::EndDisabled();
+    for (const auto [text, action] : {std::pair{Text::TagNextButton, ActionId::TagNext},
+                                      std::pair{Text::TagPreviousButton, ActionId::TagPrevious}}) {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(ActionBlocked(window, action, 0) != Text::Count_);
+        if (ImGui::Button(TextLabel(text))) {
+            ActionRequestPush(window, action);
+        }
+        ImGui::EndDisabled();
+    }
+    ImGui::Separator();
+    if (canvas->tags == 0) {
+        ImGui::TextDisabled("%s", TextGet(Text::NoTags));
+    }
+    const float swatch = ImGui::GetTextLineHeight();
+    for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+        if ((canvas->tags & (std::uint64_t{1} << tag)) == 0) {
+            continue;
+        }
+        ImGui::PushID(static_cast<int>(tag));
+        TagSwatch(window, *canvas, tag, swatch);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%3d", static_cast<int>(std::ranges::count(canvas->tagIslands, tag, &TagIsland::tag)));
+        ImGui::SetItemTooltip("%s", TextGet(Text::TagZonesTip));
+        ImGui::SameLine();
+        if (TagNameRow(window, *canvas, tag, (canvas->tagsSelected & (std::uint64_t{1} << tag)) != 0)) {
+            ActionRequestPush(window, ImGui::GetIO().KeyCtrl ? ActionId::TagToggle : ActionId::TagSelect, tag);
+        }
+        ImGui::PopID();
+    }
+    ImGui::End();
+}
+
 void ToolWindow(Window window, ToolsState& tools) noexcept {
     ZoneScopedN("ToolWindow");
     if (ImGui::Begin(TextLabel(Text::Tool), &gUiState.toolShown[window])) {
@@ -536,6 +689,10 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
             if (tool.shape == ToolShape::Path) {
                 tool.shape = ToolShape::Box;
             }
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton(TextLabel(Text::Tags), tool.target == ToolTarget::Tags)) {
+            tool.target = ToolTarget::Tags;
         }
         ImGui::Separator();
         if (tool.target == ToolTarget::Layer) {
@@ -554,16 +711,39 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
             BrushSourceEdit(window, tools.shaders[tool.shader]);
             BrushEdit(window, tool.brush, tools.shaders[tool.shader]);
         } else {
-            const auto shapeNames = TextsGet(kSelectionShapeTexts);
-            int shape = std::to_underlying(tool.shape) - std::to_underlying(ToolShape::Box);
-            if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(), static_cast<int>(shapeNames.size()))) {
-                tool.shape = static_cast<ToolShape>(shape + std::to_underlying(ToolShape::Box));
+            if (tool.target == ToolTarget::Tags) {
+                const auto shapeNames = TextsGet(kShapeTexts);
+                int shape = std::to_underlying(tool.shape);
+                if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(),
+                                 static_cast<int>(shapeNames.size()))) {
+                    tool.shape = static_cast<ToolShape>(shape);
+                }
+            } else {
+                const auto shapeNames = TextsGet(kSelectionShapeTexts);
+                int shape = std::to_underlying(tool.shape) - std::to_underlying(ToolShape::Box);
+                if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(),
+                                 static_cast<int>(shapeNames.size()))) {
+                    tool.shape = static_cast<ToolShape>(shape + std::to_underlying(ToolShape::Box));
+                }
             }
-            const auto opNames = TextsGet(kSelectionOpTexts);
-            int op = std::to_underlying(tool.selectionOp);
-            if (ImGui::Combo(TextLabel(Text::SelectionOpLabel), &op, opNames.data(),
-                             static_cast<int>(opNames.size()))) {
-                ActionRequestPush(window, ActionId::SelectionOp, static_cast<std::uint32_t>(op));
+            if (tool.target == ToolTarget::Tags) {
+                // Tags only gain or lose tiles; any other operation adds.
+                constexpr std::array kTagOps = {SelectionOp::Add, SelectionOp::Subtract};
+                const auto opNames = TextsGet(std::array{Text::SelectionAdd, Text::SelectionSubtract});
+                int op = tool.selectionOp == SelectionOp::Subtract ? 1 : 0;
+                if (ImGui::Combo(TextLabel(Text::SelectionOpLabel), &op, opNames.data(),
+                                 static_cast<int>(opNames.size()))) {
+                    ActionRequestPush(window, ActionId::SelectionOp,
+                                      std::to_underlying(kTagOps[static_cast<std::size_t>(op)]));
+                }
+                TagsEdit(window);
+            } else {
+                const auto opNames = TextsGet(kSelectionOpTexts);
+                int op = std::to_underlying(tool.selectionOp);
+                if (ImGui::Combo(TextLabel(Text::SelectionOpLabel), &op, opNames.data(),
+                                 static_cast<int>(opNames.size()))) {
+                    ActionRequestPush(window, ActionId::SelectionOp, static_cast<std::uint32_t>(op));
+                }
             }
         }
     }
@@ -761,6 +941,16 @@ void ToolsWindow(Window window, ToolsState& tools) noexcept {
                   centerY + (((dx * s) + (dy * c)) * viewport.zoomY * scale));
 }
 
+[[nodiscard]] TagPoint ScreenToCanvas(const Viewport& viewport, const WindowState& windowState, ImVec2 pos) noexcept {
+    const double c = std::cos(viewport.rot);
+    const double s = std::sin(viewport.rot);
+    const double centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
+    const double centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
+    const double u = (pos.x - centerX) / (viewport.zoomX * windowState.dpiScale);
+    const double v = (pos.y - centerY) / (viewport.zoomY * windowState.dpiScale);
+    return TagPoint{.x = viewport.posX + (u * c) + (v * s), .y = viewport.posY - (u * s) + (v * c)};
+}
+
 // Outlines every tile of the window's canvas view on screen, labeled with its atlas cell and grid position. Drawn
 // behind the UI windows, over the canvas.
 void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
@@ -799,6 +989,165 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
         drawList->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32_BLACK, text.data());
         drawList->AddText(pos, IM_COL32_WHITE, text.data());
     }
+}
+
+// While a Tags tool is current: the checked tags' tiles in their colors, and the tiles a drag is going over with its
+// shape. Otherwise the tiles carrying every selected tag, only with the tagZoneShown preference. Each row's run of
+// tiles is one quad. Behind the UI windows.
+void TagsOverlay(Window window, const WindowState& windowState, const ToolsState& tools) noexcept {
+    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
+    if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
+        return;
+    }
+    const CanvasState& canvas = gAppState.canvases[view->canvas];
+    std::uint64_t shown = 0;
+    if (ToolCurrent(tools).target == ToolTarget::Tags) {
+        shown = canvas.tagsChecked;
+    }
+    shown &= canvas.tags;
+    const bool selectedShown = gUiState.preferences.tagZoneShown && canvas.tagsSelected != 0
+                            && ToolCurrent(tools).target != ToolTarget::Tags;
+    const TagDragState& drag = gAppState.tagDrag;
+    if (shown == 0 && !selectedShown && drag.view != view->id) {
+        return;
+    }
+    ZoneScopedN("TagsOverlay");
+    const Viewport& viewport = view->viewport;
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    constexpr auto kSize = static_cast<double>(kTileSize);
+    const auto runDraw = [&](TileGridPos first, std::int32_t lastX, ImU32 color) {
+        const double x0 = static_cast<double>(first.x) * kSize;
+        const double x1 = static_cast<double>(lastX + 1) * kSize;
+        const double y0 = static_cast<double>(first.y) * kSize;
+        const double y1 = y0 + kSize;
+        drawList->AddQuadFilled(
+            CanvasToScreen(viewport, windowState, x0, y0), CanvasToScreen(viewport, windowState, x1, y0),
+            CanvasToScreen(viewport, windowState, x1, y1), CanvasToScreen(viewport, windowState, x0, y1), color);
+    };
+    // Sorted grid positions run along rows.
+    const auto runsDraw = [&](auto&& positions, ImU32 color) {
+        bool open = false;
+        TileGridPos first{};
+        std::int32_t lastX = 0;
+        for (const TileGridPos pos : positions) {
+            if (open && pos.y == first.y && pos.x == lastX + 1) {
+                lastX = pos.x;
+                continue;
+            }
+            if (open) {
+                runDraw(first, lastX, color);
+            }
+            open = true;
+            first = pos;
+            lastX = pos.x;
+        }
+        if (open) {
+            runDraw(first, lastX, color);
+        }
+    };
+    // The tiles carrying every tag of `mask`: a faint fill, and a line along every tile side the zone does not continue
+    // past. One tag's zone is in its color, several tags' in the accent.
+    const float thickness = std::max(1.0f, std::round(windowState.dpiScale));
+    std::vector<TileKey> keys;
+    const auto zoneDraw = [&](std::uint64_t mask) {
+        keys.clear();
+        for (const TagTile& tile : canvas.tagTiles) {
+            if ((tile.tags & mask) == mask) {
+                keys.push_back(tile.gridPos);
+            }
+        }
+        ImVec4 color = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+        if (std::has_single_bit(mask)) {
+            color = TagColor(canvas.tagHues[static_cast<std::size_t>(std::countr_zero(mask))], 1.0f);
+        }
+        runsDraw(keys | std::views::transform(TileKeyGridPos),
+                 ImGui::GetColorU32(ImVec4(color.x, color.y, color.z, 0.12f)));
+        const ImU32 edge = ImGui::GetColorU32(ImVec4(color.x, color.y, color.z, 0.9f));
+        const auto tagged = [&](TileAxis x, TileAxis y) {
+            return std::ranges::binary_search(keys, TileKeyMake(0, 0, TileGridPos{.x = x, .y = y}));
+        };
+        const auto side = [&](double x0, double y0, double x1, double y1) {
+            drawList->AddLine(CanvasToScreen(viewport, windowState, x0, y0),
+                              CanvasToScreen(viewport, windowState, x1, y1), edge, thickness);
+        };
+        for (const TileKey key : keys) {
+            const TileGridPos pos = TileKeyGridPos(key);
+            const double x0 = static_cast<double>(pos.x) * kSize;
+            const double y0 = static_cast<double>(pos.y) * kSize;
+            const double x1 = x0 + kSize;
+            const double y1 = y0 + kSize;
+            if (!tagged(pos.x, pos.y - 1)) {
+                side(x0, y0, x1, y0);
+            }
+            if (!tagged(pos.x, pos.y + 1)) {
+                side(x0, y1, x1, y1);
+            }
+            if (!tagged(pos.x - 1, pos.y)) {
+                side(x0, y0, x0, y1);
+            }
+            if (!tagged(pos.x + 1, pos.y)) {
+                side(x1, y0, x1, y1);
+            }
+        }
+    };
+    for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+        if ((shown & (std::uint64_t{1} << tag)) != 0) {
+            zoneDraw(std::uint64_t{1} << tag);
+        }
+    }
+    if (selectedShown) {
+        zoneDraw(canvas.tagsSelected);
+    }
+
+    // Over a shown zone, every tag of the tile under the pointer.
+    if (drag.view != view->id && ImGui::IsMousePosValid() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)
+        && !ImGui::IsAnyItemActive()) {
+        const TagPoint point = ScreenToCanvas(viewport, windowState, ImGui::GetMousePos());
+        const TileKey key = TileKeyMake(0, 0,
+                                        TileGridPos{.x = static_cast<TileAxis>(std::floor(point.x / kSize)),
+                                                    .y = static_cast<TileAxis>(std::floor(point.y / kSize))});
+        const auto tile = std::ranges::lower_bound(canvas.tagTiles, key, {}, &TagTile::gridPos);
+        const std::uint64_t tags = tile != canvas.tagTiles.end() && tile->gridPos == key ? tile->tags & canvas.tags : 0;
+        if ((tags & shown) != 0 || (selectedShown && (tags & canvas.tagsSelected) == canvas.tagsSelected)) {
+            ImGui::BeginTooltip();
+            const float swatch = ImGui::GetTextLineHeight();
+            for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+                if ((tags & (std::uint64_t{1} << tag)) == 0) {
+                    continue;
+                }
+                ImGui::PushID(static_cast<int>(tag));
+                ImGui::ColorButton("##color", TagColor(canvas.tagHues[tag], 1.0f),
+                                   ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
+                                   ImVec2(swatch, swatch));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(canvas.tagNames[tag].data());
+                ImGui::PopID();
+            }
+            ImGui::EndTooltip();
+        }
+    }
+
+    if (drag.view != view->id) {
+        return;
+    }
+    const std::vector<TileKey> covered = TagShapeTiles(drag.shape, drag.points);
+    runsDraw(covered | std::views::transform(TileKeyGridPos), IM_COL32(255, 255, 255, 50));
+    const ImU32 accent = ImGui::GetColorU32(ImGuiCol_CheckMark);
+    if (drag.shape == ToolShape::Box) {
+        const TagPoint a = drag.points.front();
+        const TagPoint b = drag.points.back();
+        drawList->AddQuad(
+            CanvasToScreen(viewport, windowState, a.x, a.y), CanvasToScreen(viewport, windowState, b.x, a.y),
+            CanvasToScreen(viewport, windowState, b.x, b.y), CanvasToScreen(viewport, windowState, a.x, b.y), accent);
+        return;
+    }
+    std::vector<ImVec2> points;
+    points.reserve(drag.points.size());
+    for (const TagPoint point : drag.points) {
+        points.push_back(CanvasToScreen(viewport, windowState, point.x, point.y));
+    }
+    drawList->AddPolyline(points.data(), static_cast<int>(points.size()), accent, 1.0f,
+                          drag.shape == ToolShape::Lasso ? ImDrawFlags_Closed : ImDrawFlags_None);
 }
 
 // The box of the selection's transform and its handles over its view, behind the UI windows.
@@ -865,8 +1214,8 @@ void StateOverlay(const WindowState& windowState, const Viewport* viewport, cons
         const char* blendMode = TextGet(kBlendModeTexts[std::to_underlying(layer.blendMode)]);
         const float opacity = layer.opacity * 100.0f;
         if (selected > 1) {
-            std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1,
-                             blendMode, opacity);
+            std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1, blendMode,
+                             opacity);
         } else {
             std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} {} {:.0f}%", name, blendMode, opacity);
         }
@@ -1476,6 +1825,8 @@ void SettingsWindow(Window window) noexcept {
                            "%.1f%%", kZoomFlags)) {
         gAppState.zoomMax = std::max(zoomMax / 100.0f, gAppState.zoomMin);
     }
+    ImGui::Checkbox(TextLabel(Text::TagZoneShown), &gUiState.preferences.tagZoneShown);
+    ImGui::SetItemTooltip("%s", TextGet(Text::TagZoneShownTip));
     ImGui::SeparatorText(TextGet(Text::SettingsFiles));
     ImGui::Checkbox(TextLabel(Text::ReopenFiles), &gAppState.reopenFiles);
     ImGui::End();
@@ -1665,6 +2016,11 @@ void SearchEntriesBuild(Window window) noexcept {
         for (const Layer layer : canvas.layersOrder) {
             if (!HasAnyFlag(canvas.layers[layer].flags, LayerFlags::Internal)) {
                 add(ActionId::LayerActivate, layer, canvas.layerNames[layer].data());
+            }
+        }
+        for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+            if ((canvas.tags & (std::uint64_t{1} << tag)) != 0) {
+                add(ActionId::TagSelect, tag, canvas.tagNames[tag].data());
             }
         }
     }
@@ -1933,9 +2289,11 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.toolsShown[window] = gUiState.preferences.toolsShown;
     gUiState.toolRenaming[window] = 0;
     gUiState.layersShown[window] = gUiState.preferences.layersShown;
+    gUiState.tagsShown[window] = gUiState.preferences.tagsShown;
     gUiState.settingsShown[window] = false;
     gUiState.layerFoldersClosed[window].clear();
     gUiState.layerRenaming[window] = -1;
+    gUiState.tagRenaming[window] = -1;
     return context;
 }
 
@@ -2077,6 +2435,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     const bool hasCanvas = viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid;
     StateOverlay(*state, hasCanvas ? viewport : nullptr, hasCanvas ? &gAppState.canvases[view->canvas] : nullptr,
                  tools);
+    TagsOverlay(window, *state, tools);
     TransformOverlay(window, *state);
     WhichKeyOverlay(*state);
     if (gUiState.searchShown[window]) {
@@ -2134,6 +2493,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             MenuAction(window, Text::Tools, ActionId::PanelTools, gUiState.toolsShown[window]);
             MenuAction(window, Text::Tool, ActionId::PanelTool, gUiState.toolShown[window]);
             MenuAction(window, Text::Layers, ActionId::PanelLayers, gUiState.layersShown[window]);
+            MenuAction(window, Text::Tags, ActionId::PanelTags, gUiState.tagsShown[window]);
             MenuAction(window, Text::Help, ActionId::PanelHelp, gUiState.helpShown[window]);
             MenuAction(window, Text::MenuBar, ActionId::PanelMenuBar, gUiState.menuBarShown[window]);
             ImGui::EndMenu();
@@ -2196,6 +2556,9 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     if (gUiState.layersShown[window]) {
         LayersWindow(window);
     }
+    if (gUiState.tagsShown[window]) {
+        TagsWindow(window);
+    }
     if (gUiState.settingsShown[window]) {
         SettingsWindow(window);
     }
@@ -2213,6 +2576,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     preferences.toolbarShown = gUiState.toolbarShown[window];
     preferences.toolsShown = gUiState.toolsShown[window];
     preferences.layersShown = gUiState.layersShown[window];
+    preferences.tagsShown = gUiState.tagsShown[window];
     preferences.helpShown = gUiState.helpShown[window];
     preferences.menuBarShown = gUiState.menuBarShown[window];
     // With no ini file, ImGui only flags that its windows moved or resized.

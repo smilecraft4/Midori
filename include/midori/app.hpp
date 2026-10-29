@@ -7,6 +7,7 @@
 #include "midori/input.hpp"
 #include "midori/platform.hpp"
 #include "midori/stroke.hpp"
+#include "midori/tag.hpp"
 #include "midori/text.hpp"
 #include "midori/tile.hpp"
 #include "midori/tool.hpp"
@@ -174,6 +175,7 @@ struct AppState {
     TransformState transform;
     PasteState paste;
     CopyState copy;
+    TagDragState tagDrag;
     ToolsState tools;
     std::chrono::steady_clock::time_point brushCheckTime; // debug builds: when the shaders' files were last looked at
     std::vector<std::filesystem::path> brushExamples;     // the .mdsl files in brushes/ next to the exe, by name
@@ -181,7 +183,7 @@ struct AppState {
     std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax
     std::vector<ActionRequest> actionRequests;      // picked by the UI, run by the next AppUpdate
     std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
-    std::vector<std::filesystem::path> openFiles;   // of the windows closed since the exit began, in closing order
+    std::vector<OpenFile> openFiles;                // of the windows closed since the exit began, in closing order
     std::string language;                           // the preference, a code of kLanguages or empty for the system's
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's
@@ -248,6 +250,11 @@ void AppLayerToggleHidden(Window window) noexcept;
 void AppLayerBlendMode(Window window, BlendMode blendMode) noexcept;
 // The blend mode after the active layer's, or before it, wrapping around.
 void AppLayerBlendModeCycle(Window window, bool next) noexcept;
+
+// On the window's canvas, outside history. A new tag is checked; nothing when all kTagMax exist.
+void AppTagNew(Window window) noexcept;
+void AppTagRename(Window window, std::uint32_t tag, const char* name) noexcept;
+void AppTagHue(Window window, std::uint32_t tag, float hue) noexcept;
 
 // Why `action` with `arg` would do nothing in `window` right now, Text::Count_ when it would run. The search and the
 // menus show it greyed out with the reason.

@@ -77,13 +77,14 @@ enum struct ToolShape : std::uint8_t {
     Lasso, // the freehand shape, closed back to the first point
 };
 
-// For now a Selection takes a Box or a Lasso only.
+// For now a Selection takes a Box or a Lasso only. Tags takes every shape, and the tiles it touches.
 enum struct ToolTarget : std::uint8_t {
     Layer,
     Selection,
+    Tags, // the canvas's checked tags
 };
 
-// How a new selection combines with the one before it.
+// How a new selection, or tagged area, combines with the one before it.
 enum struct SelectionOp : std::uint8_t {
     Replace,
     Add,
@@ -120,8 +121,8 @@ struct ToolShader {
 };
 
 // One tool of the library. The toolbar places it by id, so editing it changes it everywhere. blendMode is for a Layer,
-// where Erase erases everything the brush covers. selectionOp is for a Selection, unless a selection.op binding is
-// held.
+// where Erase erases everything the brush covers. selectionOp is for a Selection and Tags, unless a selection.op
+// binding is held.
 struct ToolState {
     BrushState brush;
     std::array<char, kToolNameLenMax> name{};

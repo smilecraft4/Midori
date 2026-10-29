@@ -7,11 +7,13 @@
 #include "midori/log.hpp"
 #include "midori/preferences.hpp"
 #include "midori/stroke.hpp"
+#include "midori/tag.hpp"
 #include "midori/text.hpp"
 #include "midori/tile.hpp"
 #include "midori/ui.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -582,6 +584,64 @@ void ViewFlip(Window window, bool vertical) noexcept {
     }
     app.canvasViews[view].viewport = ViewportZoom(app.canvasViews[view].viewport, vertical ? 1.0f : -1.0f,
                                                   vertical ? -1.0f : 1.0f, kViewportZoomMin, kViewportZoomMax);
+    if (app.navigate.mode != NavigateMode::None) {
+        NavigateBegin(app.navigate.view, app.navigate.mode);
+    }
+}
+
+// The view fits one of the places carrying every selected tag: `step` past the one holding the view's center, wrapping
+// around, or the nearest one when none holds it. Flips and rotation are kept.
+void TagIslandShow(Window window, int step) noexcept {
+    AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    const auto windowState = WindowGetState(window);
+    if (view == kCanvasViewInvalid || !windowState) {
+        return;
+    }
+    const Viewport& viewport = app.canvasViews[view].viewport;
+    const std::vector<TagIsland>& islands = app.canvases[app.canvasViews[view].canvas].tagSelectedIslands;
+    const auto first = islands.begin();
+    const auto last = islands.end();
+    if (first == last) {
+        return;
+    }
+    constexpr auto kSize = static_cast<double>(kTileSize);
+    const double x = viewport.posX / kSize;
+    const double y = viewport.posY / kSize;
+    const auto holding = std::find_if(first, last, [x, y](const TagIsland& island) {
+        return x >= island.minX && x < island.maxX + 1 && y >= island.minY && y < island.maxY + 1;
+    });
+    auto next = first;
+    if (holding != last) {
+        const auto count = last - first;
+        next = first + ((((holding - first) + step) % count) + count) % count;
+    } else {
+        const auto distance = [x, y](const TagIsland& island) {
+            const double dx = ((island.minX + island.maxX + 1) * 0.5) - x;
+            const double dy = ((island.minY + island.maxY + 1) * 0.5) - y;
+            return (dx * dx) + (dy * dy);
+        };
+        next = std::min_element(first, last,
+                                [&](const TagIsland& a, const TagIsland& b) { return distance(a) < distance(b); });
+    }
+    const double width = static_cast<double>(next->maxX - next->minX + 1) * kSize;
+    const double height = static_cast<double>(next->maxY - next->minY + 1) * kSize;
+    // The island's box as the rotated view shows it, with a margin around.
+    const double c = std::abs(std::cos(viewport.rot));
+    const double s = std::abs(std::sin(viewport.rot));
+    const double fit = 0.9
+                     * std::min(static_cast<double>(windowState->width) / ((width * c) + (height * s)),
+                                static_cast<double>(windowState->height) / ((width * s) + (height * c)));
+    const float zoom = std::clamp(static_cast<float>(fit / windowState->dpiScale), app.zoomMin, app.zoomMax);
+    Viewport fitted = viewport;
+    fitted.posX = (static_cast<double>(next->minX) * kSize) + (width * 0.5);
+    fitted.posY = (static_cast<double>(next->minY) * kSize) + (height * 0.5);
+    fitted.zoomX = std::copysign(zoom, viewport.zoomX);
+    fitted.zoomY = std::copysign(zoom, viewport.zoomY);
+    if (app.navigate.mode == NavigateMode::None) {
+        NavigationPush(view, viewport);
+    }
+    app.canvasViews[view].viewport = ViewportSnap(fitted, windowState->dpiScale);
     if (app.navigate.mode != NavigateMode::None) {
         NavigateBegin(app.navigate.view, app.navigate.mode);
     }
@@ -1507,7 +1567,7 @@ void TransformHoldEnd() noexcept {
     if (const auto box = AppTransformBox(window)) {
         return TransformCursor(*box);
     }
-    return ToolCurrent(app.tools).target == ToolTarget::Selection ? WindowCursor::Arrow : WindowCursor::None;
+    return ToolCurrent(app.tools).target == ToolTarget::Layer ? WindowCursor::None : WindowCursor::Arrow;
 }
 
 // The current tool's brush under the pointer, over the canvas only: not over the UI, while navigating, or while
@@ -1520,7 +1580,7 @@ void TransformHoldEnd() noexcept {
     // A selection has no brush.
     if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
         || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None
-        || (ToolCurrent(app.tools).target == ToolTarget::Selection && app.stroke.canvas == kCanvasInvalid)
+        || (ToolCurrent(app.tools).target != ToolTarget::Layer && app.stroke.canvas == kCanvasInvalid)
         || (app.stroke.canvas != kCanvasInvalid && app.stroke.shape != StrokeShape::Brush) || AppTransformBox(window)) {
         return {};
     }
@@ -1529,8 +1589,8 @@ void TransformHoldEnd() noexcept {
     const bool painting = stroke.canvas != kCanvasInvalid && !stroke.ended && stroke.view == view;
     float radius = 0.0f;
     if (painting) {
-        radius = StrokeStampAt(app.tools.shaders[stroke.shader].brush, stroke.brush, stroke.curves, stroke.inputs)
-                     .radius;
+        radius =
+            StrokeStampAt(app.tools.shaders[stroke.shader].brush, stroke.brush, stroke.curves, stroke.inputs).radius;
     } else {
         const BrushState& brush = ToolCurrent(app.tools).brush;
         std::array<float, kMdslCurveFloats> curves{};
@@ -1578,8 +1638,20 @@ void TransformHoldEnd() noexcept {
     };
 }
 
-// A rectangle into the canvas's selection by the tool's operation, or the held selection.op binding's (Shift adds,
-// Alt subtracts, Shift+Alt intersects by default). Nothing when no layer id is left for the selection's mask.
+// The tool's operation, or the held selection.op binding's (Shift adds, Alt subtracts, Shift+Alt intersects by
+// default).
+[[nodiscard]] SelectionOp SelectionOpHeld() noexcept {
+    SelectionOp op = ToolCurrent(gAppState.tools).selectionOp;
+    const KeymapState& keymap = gAppState.keymap;
+    if (const std::int32_t held = KeymapHeld(keymap, ActionId::SelectionOp, ActionContext::Canvas, gAppState.keyMods);
+        held >= 0 && keymap.bindings[static_cast<std::size_t>(held)].arg < std::to_underlying(SelectionOp::Count_)) {
+        op = static_cast<SelectionOp>(keymap.bindings[static_cast<std::size_t>(held)].arg);
+    }
+    return op;
+}
+
+// A rectangle into the canvas's selection by SelectionOpHeld. Nothing when no layer id is left for the selection's
+// mask.
 [[nodiscard]] std::optional<StrokeBeginInfo> SelectionBeginInfo(CanvasView view, StrokePoint point,
                                                                 StrokeShape shape) noexcept {
     CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
@@ -1590,13 +1662,7 @@ void TransformHoldEnd() noexcept {
     constexpr std::array<StrokeMode, std::to_underlying(SelectionOp::Count_)> kModes = {
         StrokeMode::Replace, StrokeMode::Paint, StrokeMode::Erase, StrokeMode::Intersect, StrokeMode::Exclude,
     };
-    SelectionOp op = ToolCurrent(gAppState.tools).selectionOp;
-    const KeymapState& keymap = gAppState.keymap;
-    if (const std::int32_t held = KeymapHeld(keymap, ActionId::SelectionOp, ActionContext::Canvas, gAppState.keyMods);
-        held >= 0 && keymap.bindings[static_cast<std::size_t>(held)].arg < std::to_underlying(SelectionOp::Count_)) {
-        op = static_cast<SelectionOp>(keymap.bindings[static_cast<std::size_t>(held)].arg);
-    }
-    const StrokeMode mode = kModes[std::to_underlying(op)];
+    const StrokeMode mode = kModes[std::to_underlying(SelectionOpHeld())];
     return StrokeBeginInfo{
         .brush = {},
         .color = Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f},
@@ -1974,6 +2040,84 @@ void AppCopy(Window window, bool cut) noexcept {
     }
 }
 
+// The drag's tiles to its canvas's checked tags, then no drag.
+void TagDragEnd() noexcept {
+    TagDragState& drag = gAppState.tagDrag;
+    CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[drag.view].canvas];
+    if (const std::uint64_t checked = canvas.tagsChecked & canvas.tags; checked != 0) {
+        const bool wasModified = canvas.modified;
+        TagsApply(canvas, TagShapeTiles(drag.shape, drag.points), drag.subtract, checked);
+        canvas.modified = true;
+        CanvasEdited(canvas.id, wasModified);
+    }
+    drag = {};
+}
+
+// Left drag with a Tags tool. Like a stroke, releases and focus loss end it even when the UI wants them. Returns true
+// when the event belongs to the drag.
+[[nodiscard]] bool TagDrag(const Event& event, bool uiWants) noexcept {
+    ZoneScopedN("TagDrag");
+    // Finer than a tile is no use; the cap bounds a lasso's cost.
+    constexpr double kSpacing = kTileSize / 16.0;
+    constexpr std::size_t kPointsMax = 4096;
+    TagDragState& drag = gAppState.tagDrag;
+    const bool dragging = drag.view != kCanvasViewInvalid;
+    switch (event.type) {
+        case EventType::Button: {
+            if (event.button.button != Button::Left) {
+                return false;
+            }
+            if (event.button.inputState == InputState::Release) {
+                if (dragging) {
+                    TagDragEnd();
+                }
+                return dragging;
+            }
+            const ToolState& tool = ToolCurrent(gAppState.tools);
+            const CanvasView view = WindowCanvasView(event.button.window);
+            if (event.button.inputState != InputState::Press || uiWants || view == kCanvasViewInvalid || dragging
+                || tool.target != ToolTarget::Tags || gAppState.stroke.canvas != kCanvasInvalid) {
+                return false;
+            }
+            const auto point = CanvasPointUnderPointer(view, 1.0f);
+            if (!point) {
+                return false;
+            }
+            // Only adding and subtracting mean something for tags: every other operation adds.
+            drag = TagDragState{
+                .points = {TagPoint{.x = point->x, .y = point->y}},
+                .view = view,
+                .shape = tool.shape,
+                .subtract = SelectionOpHeld() == SelectionOp::Subtract,
+            };
+            return true;
+        }
+        case EventType::Pointer: {
+            if (!dragging || gAppState.canvasViews[drag.view].window != event.pointer.window) {
+                return false;
+            }
+            if (const auto point = CanvasPointUnderPointer(drag.view, 1.0f)) {
+                const TagPoint to{.x = point->x, .y = point->y};
+                if (drag.shape == ToolShape::Box) {
+                    drag.points.resize(1);
+                    drag.points.push_back(to);
+                } else if (drag.points.size() < kPointsMax
+                           && std::hypot(to.x - drag.points.back().x, to.y - drag.points.back().y) >= kSpacing) {
+                    drag.points.push_back(to);
+                }
+            }
+            return true;
+        }
+        case EventType::WindowFocus:
+            if (dragging && !event.windowFocus.focused) {
+                TagDragEnd();
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
 // Left drag paints or erases the active layer, by the current tool. Releases and focus loss end the stroke even when
 // the UI wants them. Returns true when the event belongs to the stroke.
 [[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
@@ -1999,6 +2143,9 @@ void AppCopy(Window window, bool cut) noexcept {
                 return false;
             }
             const ToolState& tool = ToolCurrent(gAppState.tools);
+            if (tool.target == ToolTarget::Tags) {
+                return false;
+            }
             const bool selecting = tool.target == ToolTarget::Selection;
             if (const CanvasState& target = gAppState.canvases[gAppState.canvasViews[view].canvas];
                 target.history.pending != 0 || target.merge.result != kLayerInvalid
@@ -2162,6 +2309,7 @@ void AppCopy(Window window, bool cut) noexcept {
         case ActionId::PanelToolbar:
         case ActionId::PanelTools:
         case ActionId::PanelLayers:
+        case ActionId::PanelTags:
         case ActionId::PanelHelp:
         case ActionId::PanelMenuBar:
         case ActionId::DebugTileAtlas:
@@ -2175,6 +2323,7 @@ void AppCopy(Window window, bool cut) noexcept {
                             : action == ActionId::PanelToolbar      ? gUiState.toolbarShown[window]
                             : action == ActionId::PanelTools        ? gUiState.toolsShown[window]
                             : action == ActionId::PanelLayers       ? gUiState.layersShown[window]
+                            : action == ActionId::PanelTags         ? gUiState.tagsShown[window]
                             : action == ActionId::PanelHelp         ? gUiState.helpShown[window]
                             : action == ActionId::PanelMenuBar      ? gUiState.menuBarShown[window]
                             : action == ActionId::DebugTileAtlas    ? gUiState.tileAtlasShown[window]
@@ -2225,6 +2374,19 @@ void AppCopy(Window window, bool cut) noexcept {
         case ActionId::TransformApply:
         case ActionId::TransformCancel:
             AppTransformEnd(action == ActionId::TransformApply);
+            return {};
+        case ActionId::TagSelect:
+        case ActionId::TagToggle:
+            if (CanvasState* canvas = WindowCanvas(window); canvas && arg < kTagMax) {
+                const std::uint64_t bit = std::uint64_t{1} << arg;
+                canvas->tagsSelected = action == ActionId::TagSelect ? bit : canvas->tagsSelected ^ bit;
+                TagSelectedIslandsBuild(*canvas);
+                TagIslandShow(window, 0);
+            }
+            return {};
+        case ActionId::TagNext:
+        case ActionId::TagPrevious:
+            TagIslandShow(window, action == ActionId::TagNext ? 1 : -1);
             return {};
         case ActionId::SelectionClear:
             SelectionClear(window);
@@ -2415,11 +2577,13 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
 
     // Gone files are skipped quietly: only the user's own choice of file is worth an error.
     std::vector<std::filesystem::path> reopened;
+    std::vector<std::uint64_t> reopenedTagsChecked;
     if (initInfo.files.empty() && gAppState.reopenFiles) {
         std::error_code ec;
-        for (const std::filesystem::path& path : gAppState.openFiles) {
-            if (std::filesystem::is_regular_file(path, ec)) {
-                reopened.push_back(path);
+        for (const OpenFile& file : gAppState.openFiles) {
+            if (std::filesystem::is_regular_file(file.path, ec)) {
+                reopened.push_back(file.path);
+                reopenedTagsChecked.push_back(file.tagsChecked);
             }
         }
         initInfo.files = reopened;
@@ -2440,6 +2604,9 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
             return i == 0 ? std::unexpected(window.error()) : Result<void>{};
         }
         if (i < initInfo.files.size() && WindowOpenFile(*window, initInfo.files[i])) {
+            if (CanvasState* canvas = WindowCanvas(*window); canvas && i < reopenedTagsChecked.size()) {
+                canvas->tagsChecked = reopenedTagsChecked[i] & canvas->tags;
+            }
             continue;
         }
         if (const auto res = AppCanvasNew(*window); !res) {
@@ -2468,7 +2635,8 @@ Result<void> AppEvent(Event event) noexcept {
         gAppState.pointerTiltY = event.pointer.tiltY;
     }
     const bool uiWants = UiEvent(event);
-    if (BrushAdjust(event) || Navigate(event, uiWants) || TransformEvent(event, uiWants) || Paint(event, uiWants)) {
+    if (BrushAdjust(event) || Navigate(event, uiWants) || TransformEvent(event, uiWants) || TagDrag(event, uiWants)
+        || Paint(event, uiWants)) {
         return {};
     }
     if (event.type == EventType::Key) {
@@ -2494,6 +2662,11 @@ Result<void> AppEvent(Event event) noexcept {
             }
             return AppWindowClose(event.windowClose.window);
         case EventType::WindowDestroy:
+            if (const TagDragState& drag = gAppState.tagDrag;
+                drag.view != kCanvasViewInvalid
+                && gAppState.canvasViews[drag.view].window == event.windowDestroy.window) {
+                gAppState.tagDrag = {};
+            }
             // The window owns its views.
             for (CanvasViewState& view : gAppState.canvasViews) {
                 if (view.id != kCanvasViewInvalid && view.window == event.windowDestroy.window) {
@@ -2727,6 +2900,49 @@ Result<void> AppRedo(Window window) noexcept {
     return {};
 }
 
+void AppTagNew(Window window) noexcept {
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas || canvas->tags == ~std::uint64_t{0}) {
+        return;
+    }
+    const auto tag = static_cast<std::uint32_t>(std::countr_one(canvas->tags));
+    const bool wasModified = canvas->modified;
+    canvas->tags |= std::uint64_t{1} << tag;
+    canvas->tagsChecked |= std::uint64_t{1} << tag;
+    canvas->tagHues[tag] = TagHueDefault(tag);
+    const std::string name = TextFormat(Text::TagName, static_cast<int>(tag + 1));
+    canvas->tagNames[tag] = {};
+    std::copy_n(name.begin(), std::min(name.size(), kTagNameLenMax - 1), canvas->tagNames[tag].begin());
+    canvas->modified = true;
+    CanvasEdited(canvas->id, wasModified);
+}
+
+void AppTagRename(Window window, std::uint32_t tag, const char* name) noexcept {
+    CanvasState* canvas = WindowCanvas(window);
+    const std::string_view text(name);
+    // The file knows a tag by its name, so it is never empty.
+    if (!canvas || tag >= kTagMax || (canvas->tags & (std::uint64_t{1} << tag)) == 0 || text.empty()
+        || text == canvas->tagNames[tag].data()) {
+        return;
+    }
+    const bool wasModified = canvas->modified;
+    canvas->tagNames[tag] = {};
+    std::copy_n(text.begin(), std::min(text.size(), kTagNameLenMax - 1), canvas->tagNames[tag].begin());
+    canvas->modified = true;
+    CanvasEdited(canvas->id, wasModified);
+}
+
+void AppTagHue(Window window, std::uint32_t tag, float hue) noexcept {
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas || tag >= kTagMax || (canvas->tags & (std::uint64_t{1} << tag)) == 0 || hue == canvas->tagHues[tag]) {
+        return;
+    }
+    const bool wasModified = canvas->modified;
+    canvas->tagHues[tag] = std::clamp(hue, 0.0f, 1.0f);
+    canvas->modified = true;
+    CanvasEdited(canvas->id, wasModified);
+}
+
 Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
     const AppState& app = gAppState;
     const CanvasView view = WindowCanvasView(window);
@@ -2910,6 +3126,21 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
             return app.stroke.canvas != kCanvasInvalid ? Text::ReasonPainting : Text::Count_;
         case ActionId::BrushExample:
             return arg < app.brushExamples.size() ? Text::Count_ : Text::ReasonNoExample;
+        case ActionId::TagSelect:
+        case ActionId::TagToggle:
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            return arg < kTagMax && (canvas->tags & (std::uint64_t{1} << arg)) != 0 ? Text::Count_ : Text::ReasonNoTag;
+        case ActionId::TagNext:
+        case ActionId::TagPrevious:
+            if (!canvas) {
+                return Text::ReasonNoCanvas;
+            }
+            if (canvas->tagsSelected == 0) {
+                return Text::ReasonNoTagSelected;
+            }
+            return canvas->tagSelectedIslands.empty() ? Text::ReasonTagEmpty : Text::Count_;
         default:
             return Text::Count_;
     }
@@ -3172,9 +3403,9 @@ Result<void> AppWindowClose(Window window) noexcept {
     // Closing the last window ends the app, with no window left to ask at exit.
     WindowPlacementKeep(window);
     if (const CanvasState* canvas = WindowCanvas(window);
-        canvas && !canvas->path.empty() && !std::ranges::contains(gAppState.openFiles, canvas->path)
+        canvas && !canvas->path.empty() && !std::ranges::contains(gAppState.openFiles, canvas->path, &OpenFile::path)
         && gAppState.openFiles.size() < kWindowMax) {
-        gAppState.openFiles.push_back(canvas->path);
+        gAppState.openFiles.push_back(OpenFile{.path = canvas->path, .tagsChecked = canvas->tagsChecked});
     }
     return WindowDestroy(window);
 }

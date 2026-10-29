@@ -35,7 +35,7 @@ constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kB
     "normal", "multiply", "add", "screen", "normalOkLab", "erase",
 };
 constexpr std::array<std::string_view, 3> kToolShapeNames = {"path", "box", "lasso"};
-constexpr std::array<std::string_view, 2> kToolTargetNames = {"layer", "selection"};
+constexpr std::array<std::string_view, 3> kToolTargetNames = {"layer", "selection", "tags"};
 constexpr std::array<std::string_view, std::to_underlying(SelectionOp::Count_)> kSelectionOpNames = {
     "replace", "add", "subtract", "intersect", "exclude",
 };
@@ -127,8 +127,9 @@ void Read(const Json& json, const char* key, int& value, int min, int max) noexc
 }
 
 void Read(const Json& json, const char* key, std::uint32_t& value) noexcept {
-    if (const auto found = json.find(key); found != json.end() && found->is_number_unsigned()
-                                           && found->get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max()) {
+    if (const auto found = json.find(key);
+        found != json.end() && found->is_number_unsigned()
+        && found->get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max()) {
         value = static_cast<std::uint32_t>(found->get<std::uint64_t>());
     }
 }
@@ -164,6 +165,10 @@ void Read(const Json& json, const char* key, Color::Srgb& color) noexcept {
     return name == names.end() ? -1 : static_cast<int>(name - names.begin());
 }
 
+[[nodiscard]] std::filesystem::path PathFromUtf8(const std::string& utf8) noexcept {
+    return std::u8string(utf8.begin(), utf8.end());
+}
+
 // UTF-8 strings, the first `max` of them.
 void Read(const Json& json, const char* key, std::vector<std::filesystem::path>& paths, std::size_t max) noexcept {
     const auto found = json.find(key);
@@ -175,8 +180,7 @@ void Read(const Json& json, const char* key, std::vector<std::filesystem::path>&
             break;
         }
         if (entry.is_string()) {
-            const std::string& utf8 = entry.get_ref<const std::string&>();
-            paths.emplace_back(std::u8string(utf8.begin(), utf8.end()));
+            paths.push_back(PathFromUtf8(entry.get_ref<const std::string&>()));
         }
     }
 }
@@ -397,17 +401,19 @@ ToolState ToolMake(std::uint32_t id, std::string_view name, ToolTarget target, T
     return tool;
 }
 
-// A Pen, an Eraser, and a drawer of Rectangle and Lasso, which kDefaultBindings key B, E and M. An older
+// A Pen, an Eraser, a drawer of Rectangle and Lasso, which kDefaultBindings key B, E and M, and a Tag. An older
 // preferences.json's paint brush goes to the Pen, its brush presets into the Pen's drawer.
 void ToolsDefault(ToolsState& tools, const Json& preferences) noexcept {
     tools.library.push_back(ToolMake(1, "Pen", ToolTarget::Layer, ToolShape::Path, BlendMode::Normal, tools));
     tools.library.push_back(ToolMake(2, "Eraser", ToolTarget::Layer, ToolShape::Path, BlendMode::Erase, tools));
     tools.library.push_back(ToolMake(3, "Rectangle", ToolTarget::Selection, ToolShape::Box, BlendMode::Normal, tools));
     tools.library.push_back(ToolMake(4, "Lasso", ToolTarget::Selection, ToolShape::Lasso, BlendMode::Normal, tools));
+    tools.library.push_back(ToolMake(5, "Tag", ToolTarget::Tags, ToolShape::Box, BlendMode::Normal, tools));
     tools.slots = {
         ToolbarSlot{.tools = {1}, .id = 1, .last = 1},
         ToolbarSlot{.tools = {2}, .id = 2, .last = 2},
         ToolbarSlot{.tools = {3, 4}, .id = 3, .last = 3},
+        ToolbarSlot{.tools = {5}, .id = 4, .last = 5},
     };
     tools.current = 1;
     tools.slot = 1;
@@ -479,8 +485,10 @@ Result<Preferences> PreferencesLoad() noexcept {
         Read(*ui, "toolbarShown", preferences.ui.toolbarShown);
         Read(*ui, "toolsShown", preferences.ui.toolsShown);
         Read(*ui, "layersShown", preferences.ui.layersShown);
+        Read(*ui, "tagsShown", preferences.ui.tagsShown);
         Read(*ui, "helpShown", preferences.ui.helpShown);
         Read(*ui, "menuBarShown", preferences.ui.menuBarShown);
+        Read(*ui, "tagZoneShown", preferences.ui.tagZoneShown);
         if (const auto settings = ui->find("imguiSettings"); settings != ui->end() && settings->is_string()) {
             preferences.ui.imguiSettings = settings->get_ref<const std::string&>();
         }
@@ -503,7 +511,26 @@ Result<Preferences> PreferencesLoad() noexcept {
         }
     }
     Read(root, "recentFiles", preferences.recentFiles, kRecentFilesMax);
-    Read(root, "openFiles", preferences.openFiles, kWindowMax);
+    if (const auto open = root.find("openFiles"); open != root.end() && open->is_array()) {
+        for (const Json& entry : *open) {
+            if (preferences.openFiles.size() == kWindowMax) {
+                break;
+            }
+            if (!entry.is_object()) {
+                continue;
+            }
+            const auto filePath = entry.find("path");
+            if (filePath == entry.end() || !filePath->is_string()) {
+                continue;
+            }
+            OpenFile openFile{.path = PathFromUtf8(filePath->get_ref<const std::string&>()), .tagsChecked = 0};
+            if (const auto checked = entry.find("tagsChecked");
+                checked != entry.end() && checked->is_number_unsigned()) {
+                openFile.tagsChecked = checked->get<std::uint64_t>();
+            }
+            preferences.openFiles.push_back(std::move(openFile));
+        }
+    }
     Read(root, "reopenFiles", preferences.reopenFiles);
     return preferences;
 }
@@ -526,6 +553,10 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         windowJson["x"] = window.x;
         windowJson["y"] = window.y;
     }
+    Json openFiles = Json::array();
+    for (const OpenFile& file : preferences.openFiles) {
+        openFiles.push_back(Json{{"path", PathUtf8(file.path)}, {"tagsChecked", file.tagsChecked}});
+    }
     const Json root{
         {"version", kPreferencesVersion},
         {"language", preferences.language},
@@ -540,13 +571,15 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
              {"toolbarShown", preferences.ui.toolbarShown},
              {"toolsShown", preferences.ui.toolsShown},
              {"layersShown", preferences.ui.layersShown},
+             {"tagsShown", preferences.ui.tagsShown},
              {"helpShown", preferences.ui.helpShown},
              {"menuBarShown", preferences.ui.menuBarShown},
+             {"tagZoneShown", preferences.ui.tagZoneShown},
              {"imguiSettings", preferences.ui.imguiSettings},
          }},
         {"window", windowJson},
         {"recentFiles", PathsJson(preferences.recentFiles)},
-        {"openFiles", PathsJson(preferences.openFiles)},
+        {"openFiles", openFiles},
         {"reopenFiles", preferences.reopenFiles},
     };
     return JsonFileWrite(*path, root);
@@ -586,7 +619,8 @@ ToolsState ToolsLoad(const MdslBrush& builtIn) noexcept {
                 Read(entry, "last", slot.last);
                 if (const auto ids = entry.find("tools"); ids != entry.end() && ids->is_array()) {
                     for (const Json& id : *ids) {
-                        if (id.is_number_unsigned() && id.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max()
+                        if (id.is_number_unsigned()
+                            && id.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max()
                             && !std::ranges::contains(slot.tools, id.get<std::uint32_t>())) {
                             slot.tools.push_back(id.get<std::uint32_t>());
                         }
@@ -624,8 +658,8 @@ Result<void> ToolsSave(const ToolsState& tools) noexcept {
     for (const ToolbarSlot& slot : tools.slots) {
         slots.push_back(Json{{"id", slot.id}, {"tools", slot.tools}, {"last", slot.last}});
     }
-    const auto saved = JsonFileWrite(
-        *libraryPath, Json{{"version", kToolsVersion}, {"current", tools.current}, {"tools", library}});
+    const auto saved =
+        JsonFileWrite(*libraryPath, Json{{"version", kToolsVersion}, {"current", tools.current}, {"tools", library}});
     const auto arranged =
         JsonFileWrite(*workspacePath, Json{{"version", kToolsVersion}, {"slot", tools.slot}, {"toolbar", slots}});
     return saved ? arranged : saved;

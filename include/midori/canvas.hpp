@@ -85,10 +85,13 @@ constexpr std::uint32_t kCanvasFileMagic = 0x4F44494D; // "MIDO"
 // 3: a root folder tops the order. 2: tiles are QOI. Versions 1 (raw tiles) and 2 still read.
 constexpr std::uint32_t kCanvasFileVersion = 3;
 
-// Keys of the meta table.
+// Keys of the meta table. A file without the tag entries has no tags.
 enum struct CanvasFileMeta : std::uint32_t {
     Header,      // CanvasFileHeader
     LayersOrder, // CanvasState::layersOrder, raw
+    TagNames,    // CanvasState::tagNames, raw, an empty name for a tag that does not exist
+    TagTiles,    // CanvasState::tagTiles, raw
+    TagHues,     // CanvasState::tagHues, raw; a file without it has the default hues
 };
 
 // Written with a memcpy.
@@ -334,6 +337,26 @@ struct HistoryState {
     std::int32_t pending{};       // steps asked for and not applied yet: negative undoes, positive redoes
 };
 
+constexpr std::uint32_t kTagMax = 64;
+constexpr std::size_t kTagNameLenMax = 32;
+
+// The tags covering one tile's grid position, bit i for tag i. Tags only name places to organize and find them by,
+// so a whole tile is the finest a tag covers.
+struct TagTile {
+    TileKey gridPos;    // TileGridPosKey: layer and mip bits zero
+    std::uint64_t tags; // never 0: a grid position no tag covers has no entry
+};
+static_assert(std::is_trivially_copyable_v<TagTile>);
+
+// The tiles of one tag that touch, diagonals included, by their grid positions' box.
+struct TagIsland {
+    std::int32_t minX;
+    std::int32_t minY;
+    std::int32_t maxX; // inclusive
+    std::int32_t maxY;
+    std::uint32_t tag;
+};
+
 // A merge in progress: no edit of its canvas until it is done. Each grid position's result tile is composited once the
 // sources' tiles there are loaded; then the result takes the place of the sources, which are Deleted.
 struct LayerMergeState {
@@ -369,20 +392,35 @@ struct CanvasState {
     // the root's parent.
     std::array<Layer, kLayerMax> layerHeights;
     std::array<Layer, kLayerMax> layerParents;
+    std::vector<TagTile> tagTiles;     // sorted by grid position
+    std::vector<TagIsland> tagIslands; // by tag, each tag's in the order of their first tile; rebuilt with tagTiles
+    // The places of the tiles carrying every selected tag, tag kTagMax; rebuilt with tagTiles and tagsSelected
+    std::vector<TagIsland> tagSelectedIslands;
+    std::array<std::array<char, kTagNameLenMax>, kTagMax> tagNames;
+    std::array<float, kTagMax> tagHues{}; // 0 to 1, shown at a fixed saturation and value
     LayerMergeState merge;
     SelectionBounds selectionBounds;
     Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}; // under every layer, not saved yet
     CanvasFile file;
-    CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
+    CanvasFile cache;     // a temporary file holding evicted tiles, only its tiles table used; null when not created
     HistoryState history;
+    std::uint64_t tags{}; // bit i: tag i exists. Tags stay out of history
+    std::uint64_t tagsChecked{};        // the tags the Tag tool edits and shows
+    std::uint64_t tagsSelected{};       // tag.next and tag.previous go through the places carrying all of them
     Layer largestLayer{};
-    Layer activeLayer{kLayerInvalid}; // strokes paint into it; kLayerInvalid when none
+    Layer activeLayer{kLayerInvalid};   // strokes paint into it; kLayerInvalid when none
     // A Mask layer out of the order: coverage in its alpha clips every other stroke while `selectionBounds` is not
     // empty. Made with the first selection, never saved; kLayerInvalid before.
     Layer selection{kLayerInvalid};
     Canvas id{kCanvasInvalid}; // kCanvasInvalid marks the slot free
     PixelFormat pixelFormat{};
     bool modified{};           // changed since the last save, or since created
+};
+
+// A file shown in a window at exit, and how it was being worked on.
+struct OpenFile {
+    std::filesystem::path path;
+    std::uint64_t tagsChecked;
 };
 
 // These never ask the user anything; the App* calls wrap them with dialogs.

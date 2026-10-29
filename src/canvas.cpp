@@ -5,12 +5,14 @@
 #include "midori/job.hpp"
 #include "midori/layer.hpp"
 #include "midori/log.hpp"
+#include "midori/tag.hpp"
 #include "midori/tile.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <functional>
@@ -419,6 +421,19 @@ void CacheClose(CanvasFile& cache) noexcept {
     const MDBX_val order{.iov_base = canvas.layersOrder.data(), .iov_len = canvas.layersOrder.size() * sizeof(Layer)};
     if (const int rc = put(file.metaDbi, Val(orderKey), order); rc != MDBX_SUCCESS) {
         return fail("mdbx_put layers order", rc);
+    }
+    const auto tagNamesKey = std::to_underlying(CanvasFileMeta::TagNames);
+    if (const int rc = put(file.metaDbi, Val(tagNamesKey), Val(canvas.tagNames)); rc != MDBX_SUCCESS) {
+        return fail("mdbx_put tag names", rc);
+    }
+    const auto tagTilesKey = std::to_underlying(CanvasFileMeta::TagTiles);
+    const MDBX_val tagTiles{.iov_base = canvas.tagTiles.data(), .iov_len = canvas.tagTiles.size() * sizeof(TagTile)};
+    if (const int rc = put(file.metaDbi, Val(tagTilesKey), tagTiles); rc != MDBX_SUCCESS) {
+        return fail("mdbx_put tag tiles", rc);
+    }
+    const auto tagHuesKey = std::to_underlying(CanvasFileMeta::TagHues);
+    if (const int rc = put(file.metaDbi, Val(tagHuesKey), Val(canvas.tagHues)); rc != MDBX_SUCCESS) {
+        return fail("mdbx_put tag hues", rc);
     }
 
     // The layers in the order, and the Deleted ones history can still bring back, with their tiles.
@@ -1093,6 +1108,62 @@ Result<Canvas> CanvasOpen(const std::filesystem::path& path) noexcept {
         }
         inOrder[id] = true;
     }
+
+    // A tag exists by its name, which is never empty. Tiles keep only the tags that exist.
+    const auto tagNamesKey = std::to_underlying(CanvasFileMeta::TagNames);
+    key = Val(tagNamesKey);
+    if (const int rc = mdbx_get(txn, canvas.file.metaDbi, &key, &value); rc == MDBX_SUCCESS) {
+        if (value.iov_len != sizeof(canvas.tagNames)) {
+            return fail("tag names", MDBX_SUCCESS);
+        }
+        std::memcpy(canvas.tagNames.data(), value.iov_base, value.iov_len);
+        for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+            canvas.tagNames[tag].back() = '\0';
+            if (canvas.tagNames[tag][0] != '\0') {
+                canvas.tags |= std::uint64_t{1} << tag;
+            }
+        }
+    } else if (rc != MDBX_NOTFOUND) {
+        return fail("tag names", rc);
+    }
+    const auto tagTilesKey = std::to_underlying(CanvasFileMeta::TagTiles);
+    key = Val(tagTilesKey);
+    if (const int rc = mdbx_get(txn, canvas.file.metaDbi, &key, &value); rc == MDBX_SUCCESS) {
+        if (value.iov_len % sizeof(TagTile) != 0) {
+            return fail("tag tiles", MDBX_SUCCESS);
+        }
+        canvas.tagTiles.resize(value.iov_len / sizeof(TagTile));
+        if (value.iov_len != 0) {
+            std::memcpy(canvas.tagTiles.data(), value.iov_base, value.iov_len);
+        }
+        for (TagTile& tile : canvas.tagTiles) {
+            tile.tags &= canvas.tags;
+        }
+        std::erase_if(canvas.tagTiles, [](const TagTile& tile) { return tile.tags == 0; });
+        if (std::ranges::adjacent_find(canvas.tagTiles, std::ranges::greater_equal{}, &TagTile::gridPos)
+            != canvas.tagTiles.end()) {
+            return fail("tag tiles", MDBX_SUCCESS);
+        }
+    } else if (rc != MDBX_NOTFOUND) {
+        return fail("tag tiles", rc);
+    }
+    for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
+        canvas.tagHues[tag] = TagHueDefault(tag);
+    }
+    const auto tagHuesKey = std::to_underlying(CanvasFileMeta::TagHues);
+    key = Val(tagHuesKey);
+    if (const int rc = mdbx_get(txn, canvas.file.metaDbi, &key, &value); rc == MDBX_SUCCESS) {
+        if (value.iov_len != sizeof(canvas.tagHues)) {
+            return fail("tag hues", MDBX_SUCCESS);
+        }
+        std::memcpy(canvas.tagHues.data(), value.iov_base, value.iov_len);
+        for (float& hue : canvas.tagHues) {
+            hue = std::isfinite(hue) ? std::clamp(hue, 0.0f, 1.0f) : 0.0f;
+        }
+    } else if (rc != MDBX_NOTFOUND) {
+        return fail("tag hues", rc);
+    }
+    TagIslandsBuild(canvas);
 
     // Out of the order, only Deleted layers have an entry; with no history left to bring them back, they are purged.
     std::vector<bool> stored(canvas.largestLayer);
