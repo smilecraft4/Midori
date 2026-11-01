@@ -1345,7 +1345,7 @@ struct TransformHit {
     return WindowCursor::Arrow;
 }
 
-// The drag from its start to `point`. Scaling keeps the opposite handle in place, and with Shift on a corner the box's
+// The drag from its start to `point`. A move snaps to whole texels. Scaling keeps the opposite handle in place, and with Shift on a corner the box's
 // proportions; Shift snaps a turn to 15 degrees. A handle moved alone takes its corner, or the two of its edge, with
 // the pointer while the others stay.
 void TransformDragTo(CanvasPoint point) noexcept {
@@ -1377,8 +1377,9 @@ void TransformDragTo(CanvasPoint point) noexcept {
     TransformParams params = start;
     switch (transform.drag) {
         case TransformDrag::Move:
-            params.offsetX = start.offsetX + point.x - transform.pointerStartX;
-            params.offsetY = start.offsetY + point.y - transform.pointerStartY;
+            // Whole texels: a move alone then lands every texel on one, with nothing resampled.
+            params.offsetX = std::round(start.offsetX + point.x - transform.pointerStartX);
+            params.offsetY = std::round(start.offsetY + point.y - transform.pointerStartY);
             break;
         case TransformDrag::Rotate:
             params.rotation = start.rotation + std::atan2(flatPoint.y - center.y, flatPoint.x - center.x)
