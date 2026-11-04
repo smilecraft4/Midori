@@ -45,9 +45,9 @@ constexpr float kFontSize = 15.0f; // DIPs
 constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
     Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab, Text::Erase,
 };
-constexpr std::array<Text, std::to_underlying(BrushInput::Count_)> kBrushInputTexts = {
-    Text::BrushInputNone,  Text::BrushInputPressure, Text::BrushInputTiltX,
-    Text::BrushInputTiltY, Text::BrushInputSpeed,    Text::BrushInputRandom,
+constexpr std::array<Text, kBrushInputCount> kBrushInputTexts = {
+    Text::BrushInputPressure, Text::BrushInputTiltX,  Text::BrushInputTiltY,
+    Text::BrushInputSpeed,    Text::BrushInputRandom,
 };
 constexpr std::array<Text, std::to_underlying(SelectionOp::Count_)> kSelectionOpTexts = {
     Text::SelectionReplace,   Text::SelectionAdd,     Text::SelectionSubtract,
@@ -56,6 +56,10 @@ constexpr std::array<Text, std::to_underlying(SelectionOp::Count_)> kSelectionOp
 // ToolShape's, from Box: the shapes of a Selection.
 constexpr std::array<Text, 2> kSelectionShapeTexts = {Text::Box, Text::Lasso};
 constexpr std::array<Text, 3> kShapeTexts = {Text::ShapePath, Text::Box, Text::Lasso};
+constexpr std::array<Text, std::to_underlying(EyedropperSource::Count_)> kEyedropperSourceTexts = {
+    Text::EyedropperCanvas,
+    Text::EyedropperLayer,
+};
 constexpr std::array<Text, std::to_underlying(CanvasFilter::Count_)> kFilterTexts = {
     Text::FilterNearest,  Text::FilterBilinear, Text::FilterBicubic,
     Text::FilterMitchell, Text::FilterLanczos2, Text::FilterLanczos3,
@@ -385,22 +389,16 @@ void CurveButton(Curve& curve, float width) noexcept {
 
 void BrushEdit(Window window, BrushState& brush, const ToolShader& shader) noexcept {
     ZoneScopedN("BrushEdit");
-    // The brush's params, named by its source and not translated: each with the input that drives it, and with one,
-    // the curve from the input to the share of the value. Then its curves and its textures.
+    // The brush's params, named by its source and not translated: each with the inputs that drive it, every one through
+    // its own curve to a share of the value. Then its curves and its textures.
     const MdslBrush& source = shader.brush;
     const auto inputNames = TextsGet(kBrushInputTexts);
-    float inputWidth = 0.0f;
-    for (const char* name : inputNames) {
-        inputWidth = std::max(inputWidth, ImGui::CalcTextSize(name).x);
-    }
-    inputWidth += (ImGui::GetStyle().FramePadding.x * 2.0f) + ImGui::GetFrameHeight();
-    if (!ImGui::BeginTable("##params", 4, ImGuiTableFlags_SizingStretchProp)) {
+    if (!ImGui::BeginTable("##params", 3, ImGuiTableFlags_SizingStretchProp)) {
         return;
     }
     ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-    ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthFixed, inputWidth);
-    ImGui::TableSetupColumn("##inputCurve", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("##inputs", ImGuiTableColumnFlags_WidthStretch, 1.0f);
     const auto name = [](const std::string& text) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -420,15 +418,39 @@ void BrushEdit(Window window, BrushState& brush, const ToolShader& shader) noexc
                              static_cast<int>(MdslComponents(param.type)), &param.min, &param.max, "%.3g",
                              logarithmic ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None);
         ImGui::TableNextColumn();
-        int input = std::to_underlying(value.input);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##input", &input, inputNames.data(), static_cast<int>(inputNames.size()))) {
-            value.input = static_cast<BrushInput>(input);
+        std::string used;
+        for (std::size_t input = 0; input < kBrushInputCount; ++input) {
+            if (BrushParamUses(value, static_cast<BrushInput>(input))) {
+                used += used.empty() ? inputNames[input] : std::format(" × {}", inputNames[input]);
+            }
+        }
+        if (used.empty()) {
+            used = TextGet(Text::BrushInputNone);
+        }
+        if (ImGui::Button(std::format("{}###inputs", used).c_str(), ImVec2(-FLT_MIN, 0.0f))) {
+            ImGui::OpenPopup("##inputsEdit");
         }
         ImGui::SetItemTooltip("%s", TextGet(Text::BrushInput));
-        ImGui::TableNextColumn();
-        if (value.input != BrushInput::None) {
-            CurveButton(value.curve, ImGui::GetContentRegionAvail().x);
+        if (ImGui::BeginPopup("##inputsEdit")) {
+            float curveAt = 0.0f;
+            for (const char* inputName : inputNames) {
+                curveAt = std::max(curveAt, ImGui::CalcTextSize(inputName).x);
+            }
+            curveAt += ImGui::GetFrameHeight() + (ImGui::GetStyle().ItemInnerSpacing.x * 2.0f);
+            for (std::size_t input = 0; input < kBrushInputCount; ++input) {
+                ImGui::PushID(static_cast<int>(input));
+                const auto bit = static_cast<std::uint8_t>(1u << input);
+                bool on = (value.inputs & bit) != 0;
+                if (ImGui::Checkbox(inputNames[input], &on)) {
+                    value.inputs = static_cast<std::uint8_t>(on ? value.inputs | bit : value.inputs & ~bit);
+                }
+                if (on) {
+                    ImGui::SameLine(curveAt + ImGui::GetStyle().WindowPadding.x);
+                    CurveButton(value.curves[input], ImGui::GetFontSize() * 8.0f);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndPopup();
         }
         ImGui::PopID();
     }
@@ -554,7 +576,8 @@ void TagSwatch(Window window, const CanvasState& canvas, std::uint32_t tag, floa
                                                                                  : &gAppState.canvases[view->canvas];
 }
 
-// The tag's name, or the field renaming it after a double click. True when clicked once.
+// The tag's name, or the field renaming it after a double click; a right click offers to delete it. True when clicked
+// once.
 bool TagNameRow(Window window, const CanvasState& canvas, std::uint32_t tag, bool selected) noexcept {
     if (gUiState.tagRenaming[window] == static_cast<int>(tag)) {
         static_assert(sizeof(gUiState.tagRename[0]) == kTagNameLenMax);
@@ -573,7 +596,15 @@ bool TagNameRow(Window window, const CanvasState& canvas, std::uint32_t tag, boo
         }
         return false;
     }
-    if (!ImGui::Selectable(canvas.tagNames[tag].data(), selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+    const bool clicked =
+        ImGui::Selectable(canvas.tagNames[tag].data(), selected, ImGuiSelectableFlags_AllowDoubleClick);
+    if (ImGui::BeginPopupContextItem("##tagMenu")) {
+        if (ImGui::MenuItem(TextLabel(Text::TagDelete))) {
+            ActionRequestPush(window, ActionId::TagDelete, tag);
+        }
+        ImGui::EndPopup();
+    }
+    if (!clicked) {
         return false;
     }
     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -768,8 +799,23 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
         if (ImGui::RadioButton(TextLabel(Text::Tags), tool.target == ToolTarget::Tags)) {
             tool.target = ToolTarget::Tags;
         }
+        ImGui::SameLine();
+        if (ImGui::RadioButton(TextLabel(Text::TargetColor), tool.target == ToolTarget::Color)) {
+            tool.target = ToolTarget::Color;
+        }
         ImGui::Separator();
-        if (tool.target == ToolTarget::Layer) {
+        if (tool.target == ToolTarget::Color) {
+            ImGui::ColorEdit4(TextLabel(Text::Color), &tools.colors[tools.colorSlot].r);
+            const auto sourceNames = TextsGet(kEyedropperSourceTexts);
+            int source = std::to_underlying(tools.eyedropperSource);
+            if (ImGui::Combo(TextLabel(Text::EyedropperSource), &source, sourceNames.data(),
+                             static_cast<int>(sourceNames.size()))) {
+                tools.eyedropperSource = static_cast<EyedropperSource>(source);
+            }
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("%s", TextGet(Text::EyedropperTip));
+            ImGui::PopTextWrapPos();
+        } else if (tool.target == ToolTarget::Layer) {
             const auto shapeNames = TextsGet(kShapeTexts);
             int shape = std::to_underlying(tool.shape);
             if (ImGui::Combo(TextLabel(Text::Shape), &shape, shapeNames.data(), static_cast<int>(shapeNames.size()))) {
@@ -1079,8 +1125,8 @@ void TagsOverlay(Window window, const WindowState& windowState, const ToolsState
         shown = canvas.tagsChecked;
     }
     shown &= canvas.tags;
-    const bool selectedShown = gUiState.preferences.tagZoneShown && canvas.tagsSelected != 0
-                            && ToolCurrent(tools).target != ToolTarget::Tags;
+    const bool selectedShown =
+        gUiState.preferences.tagZoneShown && canvas.tagsSelected != 0 && ToolCurrent(tools).target != ToolTarget::Tags;
     const TagDragState& drag = gAppState.tagDrag;
     if (shown == 0 && !selectedShown && drag.view != view->id) {
         return;
@@ -1295,10 +1341,14 @@ void StateOverlay(const WindowState& windowState, const Viewport* viewport, cons
         }
     }
     const ToolState& tool = ToolCurrent(tools);
-    const char* mode = tool.target == ToolTarget::Layer
-                         ? TextGet(kBlendModeTexts[std::to_underlying(tool.blendMode)])
-                         : TextGet(kSelectionOpTexts[std::to_underlying(tool.selectionOp)]);
-    std::format_to_n(lines[2].data(), lines[2].size() - 1, "{} {}", tool.name.data(), mode);
+    if (tool.target == ToolTarget::Color) {
+        std::format_to_n(lines[2].data(), lines[2].size() - 1, "{}", tool.name.data());
+    } else {
+        const char* mode = tool.target == ToolTarget::Layer
+                             ? TextGet(kBlendModeTexts[std::to_underlying(tool.blendMode)])
+                             : TextGet(kSelectionOpTexts[std::to_underlying(tool.selectionOp)]);
+        std::format_to_n(lines[2].data(), lines[2].size() - 1, "{} {}", tool.name.data(), mode);
+    }
 
     ImFont* font = ImGui::GetFont();
     const float size = ImGui::GetFontSize() * 1.15f;
@@ -1927,6 +1977,10 @@ constexpr std::array kHelpLasso = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureLasso},
     HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
 };
+constexpr std::array kHelpEyedropper = {
+    HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureEyedropper},
+    HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
+};
 constexpr std::array kHelpTransform = {
     HelpEntry{.keys = Text::GestureDragInside, .action = Text::GestureTransformMove},
     HelpEntry{.keys = Text::GestureDragHandle, .action = Text::GestureTransformScale},
@@ -2027,7 +2081,10 @@ void HelpWindow(Window window, const ToolsState& tools) noexcept {
     } else {
         Text title = Text::HelpPaintBrush;
         std::span<const HelpEntry> gestures = kHelpPaint;
-        if (ToolCurrent(tools).target == ToolTarget::Layer && ToolCurrent(tools).blendMode == BlendMode::Erase) {
+        if (AppEyedropperActive()) {
+            title = Text::HelpEyedropper;
+            gestures = kHelpEyedropper;
+        } else if (ToolCurrent(tools).target == ToolTarget::Layer && ToolCurrent(tools).blendMode == BlendMode::Erase) {
             title = Text::HelpEraser;
             gestures = kHelpErase;
         } else if (ToolCurrent(tools).target == ToolTarget::Selection && ToolCurrent(tools).shape == ToolShape::Box) {
@@ -2095,6 +2152,7 @@ void SearchEntriesBuild(Window window) noexcept {
         for (std::uint32_t tag = 0; tag < kTagMax; ++tag) {
             if ((canvas.tags & (std::uint64_t{1} << tag)) != 0) {
                 add(ActionId::TagSelect, tag, canvas.tagNames[tag].data());
+                add(ActionId::TagDelete, tag, canvas.tagNames[tag].data());
             }
         }
     }

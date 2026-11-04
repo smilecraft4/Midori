@@ -290,5 +290,17 @@
     "tagPrevious": "前へ",
     "tagNext": "次へ",
     "tagZoneShown": "選択中のタグを表示",
-    "tagZoneShownTip": "ツールに関係なく、タグパネルで選択したタグがすべて付いたタイルに色を付けます。タグツールは常にチェックしたタグを表示します。"
+    "tagZoneShownTip": "ツールに関係なく、タグパネルで選択したタグがすべて付いたタイルに色を付けます。タグツールは常にチェックしたタグを表示します。",
+    "targetColor": "色",
+    "eyedropperTip": "現在のカラースロットに色を取り込みます。キャンバス：ビューに表示されている色（背景の上のレイヤー）、縮小表示では平均。アクティブレイヤー：不透明度や合成モードを含まないそのレイヤー自体の色。ペイントモードのブラシも tool.eyedropper（Alt）を押している間は同じように色を取り込みます。",
+    "helpEyedropper": "スポイト",
+    "gestureEyedropper": "ポインターの下の色を取り込む",
+    "eyedropperSource": "取り込み元",
+    "eyedropperCanvas": "キャンバス",
+    "eyedropperLayer": "アクティブレイヤー",
+    "tool.eyedropper": "押している間、ペイントモードのブラシは描く代わりにポインターの下の色を取り込みます",
+    "tagDelete": "削除",
+    "askTagDelete": "タグ %s を削除しますか？",
+    "askTagDeleteContent": "このタグが付いた場所は失われます。タグの操作は元に戻せません。",
+    "tag.delete": "確認のうえ、タグを削除してその場所を忘れる"
 }

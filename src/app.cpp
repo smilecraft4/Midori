@@ -79,6 +79,9 @@ void CanvasViewDetach(CanvasView view) noexcept {
     if (gAppState.brushAdjust.view == view) {
         gAppState.brushAdjust = {};
     }
+    if (gAppState.eyedropper.view == view) {
+        gAppState.eyedropper = {};
+    }
     if (gAppState.stroke.view == view) {
         StrokeRelease();
     }
@@ -1345,9 +1348,9 @@ struct TransformHit {
     return WindowCursor::Arrow;
 }
 
-// The drag from its start to `point`. A move snaps to whole texels. Scaling keeps the opposite handle in place, and with Shift on a corner the box's
-// proportions; Shift snaps a turn to 15 degrees. A handle moved alone takes its corner, or the two of its edge, with
-// the pointer while the others stay.
+// The drag from its start to `point`. A move snaps to whole texels. Scaling keeps the opposite handle in place, and
+// with Shift on a corner the box's proportions; Shift snaps a turn to 15 degrees. A handle moved alone takes its
+// corner, or the two of its edge, with the pointer while the others stay.
 void TransformDragTo(CanvasPoint point) noexcept {
     ZoneScopedN("TransformDragTo");
     AppState& app = gAppState;
@@ -1536,9 +1539,9 @@ void TransformHoldEnd() noexcept {
     }
 }
 
-// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, the transform's over its box, the
-// arrow with the Select tool, else none, the brush outline showing where the paint or erase lands. Zoom drags right or
-// up, like the NE-SW arrow; rotation has no system cursor.
+// The UI's cursor over the UI. Over the canvas: navigation's while Space is held, the transform's over its box, a
+// crosshair with a Color tool, none with a Layer tool, the brush outline showing where the paint or erase lands, else
+// the arrow. Zoom drags right or up, like the NE-SW arrow; rotation has no system cursor.
 [[nodiscard]] WindowCursor AppCursor(Window window) noexcept {
     ZoneScopedN("AppCursor");
     const AppState& app = gAppState;
@@ -1568,6 +1571,9 @@ void TransformHoldEnd() noexcept {
     if (const auto box = AppTransformBox(window)) {
         return TransformCursor(*box);
     }
+    if (app.eyedropper.view != kCanvasViewInvalid || (app.stroke.canvas == kCanvasInvalid && AppEyedropperActive())) {
+        return WindowCursor::Crosshair;
+    }
     return ToolCurrent(app.tools).target == ToolTarget::Layer ? WindowCursor::None : WindowCursor::Arrow;
 }
 
@@ -1581,7 +1587,9 @@ void TransformHoldEnd() noexcept {
     // A selection has no brush.
     if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
         || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None
-        || (ToolCurrent(app.tools).target != ToolTarget::Layer && app.stroke.canvas == kCanvasInvalid)
+        || ((ToolCurrent(app.tools).target != ToolTarget::Layer || AppEyedropperActive())
+            && app.stroke.canvas == kCanvasInvalid)
+        || app.eyedropper.view != kCanvasViewInvalid
         || (app.stroke.canvas != kCanvasInvalid && app.stroke.shape != StrokeShape::Brush) || AppTransformBox(window)) {
         return {};
     }
@@ -2130,6 +2138,150 @@ void TagDragEnd() noexcept {
     }
 }
 
+// The texel at the canvas point (x, y) of the level-`level` tile at `gridPos`, laid out in `pixels` as TileLevelBytes,
+// premultiplied, from 0 to 1.
+[[nodiscard]] std::array<float, 4> TileTexelAt(std::span<const std::byte> pixels, PixelFormat format, TileMip level,
+                                               TileGridPos gridPos, double x, double y) noexcept {
+    MIDORI_ASSERT(format == PixelFormat::RGBA8, "eyedropper reads RGBA8 only");
+    const auto texel = [level](double pos, TileAxis origin) {
+        const double local = std::clamp(std::floor(pos - (static_cast<double>(origin) * kTileSize)), 0.0,
+                                        static_cast<double>(kTileSize - 1));
+        return std::size_t{static_cast<std::uint32_t>(local) >> level};
+    };
+    const std::size_t offset =
+        (texel(y, gridPos.y) * TileLevelPitch(level, format)) + (texel(x, gridPos.x) * PixelFormatTexelBytes(format));
+    std::array<float, 4> value{};
+    for (std::size_t c = 0; c < value.size(); ++c) {
+        value[c] = static_cast<float>(std::to_integer<std::uint8_t>(pixels[offset + c])) / 255.0f;
+    }
+    return value;
+}
+
+// The color `view`'s canvas has at the canvas point, by `source`. Canvas: the root folder's tile there, at the level
+// the view draws it, over the canvas's background; nothing while that tile is not loaded. Layer: the active layer's
+// level-0 texel, wherever it is stored. Alpha 0 where there is none. Waits for the GPU, or the read.
+[[nodiscard]] std::optional<Color::Srgb> EyedropperColorAt(CanvasView view, double x, double y,
+                                                           EyedropperSource source) noexcept {
+    ZoneScopedN("EyedropperColorAt");
+    const CanvasViewState& viewState = gAppState.canvasViews[view];
+    const CanvasState& canvas = gAppState.canvases[viewState.canvas];
+    const TileGridPos gridPos{.x = static_cast<TileAxis>(std::floor(x / kTileSize)),
+                              .y = static_cast<TileAxis>(std::floor(y / kTileSize))};
+    std::array<float, 4> shown{};
+    std::vector<std::byte> pixels(TileBytes(canvas.pixelFormat));
+    if (source == EyedropperSource::Layer) {
+        if (canvas.activeLayer == kLayerInvalid) {
+            return Color::Srgb{};
+        }
+        const TileKey key = TileKeyMake(canvas.activeLayer, 0, gridPos);
+        if (const auto res = CanvasTilesGet(canvas, std::span(&key, 1), pixels); !res) {
+            MIDORI_LOG_ERROR("eyedropper: CanvasTilesGet failed: {}", ErrorMessage(res.error()));
+            return std::nullopt;
+        }
+        shown = TileTexelAt(pixels, canvas.pixelFormat, 0, gridPos, x, y);
+    } else if (const TileKey key = TileKeyMake(canvas.layersOrder.back(), 0, gridPos);
+               canvas.tileIndices.contains(key)) {
+        const TileMip level = TileDrawnLevel(canvas, key, TileLevelForZoom(viewState.viewport.zoomX));
+        if (level == kTileMipMax) {
+            return std::nullopt;
+        }
+        const auto found = canvas.tileIndices.find(TileKeyWithMip(key, level));
+        MIDORI_ASSERT(found != canvas.tileIndices.end(), "drawn level {} of {:#018x} missing", level, key);
+        if (const auto res = GraphicsTilesDownload(std::span(&canvas.tiles[found->second].cell, 1), pixels); !res) {
+            MIDORI_LOG_ERROR("eyedropper: GraphicsTilesDownload failed: {}", ErrorMessage(res.error()));
+            return std::nullopt;
+        }
+        shown = TileTexelAt(pixels, canvas.pixelFormat, level, gridPos, x, y);
+    }
+    // Premultiplied, like the renderer lays the canvas over its background.
+    const Color::Srgb& background = canvas.backgroundColor;
+    const float under = source == EyedropperSource::Canvas ? background.a * (1.0f - shown[3]) : 0.0f;
+    const float alpha = shown[3] + under;
+    if (alpha <= 0.0f) {
+        return Color::Srgb{};
+    }
+    const auto channel = [alpha, under](float premultiplied, float backgroundChannel) {
+        return std::clamp((premultiplied + (backgroundChannel * under)) / alpha, 0.0f, 1.0f);
+    };
+    return Color::Srgb{
+        .r = channel(shown[0], background.r),
+        .g = channel(shown[1], background.g),
+        .b = channel(shown[2], background.b),
+        .a = alpha,
+    };
+}
+
+// The current color slot takes the color shown under the drag's last point, keeping its own alpha. Where nothing is
+// shown it stays; while the tile there streams in, the next update tries again.
+void EyedropperSample() noexcept {
+    ZoneScopedN("EyedropperSample");
+    EyedropperState& eyedropper = gAppState.eyedropper;
+    const auto color = EyedropperColorAt(eyedropper.view, eyedropper.x, eyedropper.y, gAppState.tools.eyedropperSource);
+    if (!color) {
+        return;
+    }
+    eyedropper.moved = false;
+    if (color->a <= 0.0f) {
+        return;
+    }
+    ToolsState& tools = gAppState.tools;
+    Color::Srgb& slot = tools.colors[tools.colorSlot];
+    slot = Color::Srgb{.r = color->r, .g = color->g, .b = color->b, .a = slot.a};
+}
+
+// Left drag picks the color under the pointer while AppEyedropperActive. Like a stroke, releases and focus loss end it
+// even when the UI wants them; letting go of tool.eyedropper does not. Returns true when the event belongs to the drag.
+[[nodiscard]] bool Eyedropper(const Event& event, bool uiWants) noexcept {
+    ZoneScopedN("Eyedropper");
+    EyedropperState& eyedropper = gAppState.eyedropper;
+    const bool picking = eyedropper.view != kCanvasViewInvalid;
+    const auto follow = [] {
+        EyedropperState& drag = gAppState.eyedropper;
+        if (const auto point = CanvasPointUnderPointer(drag.view, 1.0f)) {
+            drag.x = point->x;
+            drag.y = point->y;
+            drag.moved = true;
+        }
+    };
+    switch (event.type) {
+        case EventType::Button: {
+            if (event.button.button != Button::Left) {
+                return false;
+            }
+            if (event.button.inputState == InputState::Release) {
+                if (picking) {
+                    if (eyedropper.moved) {
+                        EyedropperSample();
+                    }
+                    eyedropper = {};
+                }
+                return picking;
+            }
+            const CanvasView view = WindowCanvasView(event.button.window);
+            if (event.button.inputState != InputState::Press || uiWants || view == kCanvasViewInvalid || picking
+                || gAppState.stroke.canvas != kCanvasInvalid || !AppEyedropperActive()) {
+                return false;
+            }
+            eyedropper.view = view;
+            follow();
+            return true;
+        }
+        case EventType::Pointer:
+            if (!picking || gAppState.canvasViews[eyedropper.view].window != event.pointer.window) {
+                return false;
+            }
+            follow();
+            return true;
+        case EventType::WindowFocus:
+            if (picking && !event.windowFocus.focused) {
+                eyedropper = {};
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
 // Left drag paints or erases the active layer, by the current tool. Releases and focus loss end the stroke even when
 // the UI wants them. Returns true when the event belongs to the stroke.
 [[nodiscard]] bool Paint(const Event& event, bool uiWants) noexcept {
@@ -2155,7 +2307,7 @@ void TagDragEnd() noexcept {
                 return false;
             }
             const ToolState& tool = ToolCurrent(gAppState.tools);
-            if (tool.target == ToolTarget::Tags) {
+            if (tool.target == ToolTarget::Tags || AppEyedropperActive()) {
                 return false;
             }
             const bool selecting = tool.target == ToolTarget::Selection;
@@ -2432,6 +2584,12 @@ void TagDragEnd() noexcept {
             app.tools.colorSlot = (app.tools.colorSlot + (action == ActionId::ColorNext ? 1U : count - 1U)) % count;
             return {};
         }
+        case ActionId::ToolEyedropper:
+            // Read through KeymapHeld while its keys are down, see AppEyedropperActive.
+            return {};
+        case ActionId::TagDelete:
+            AppTagDelete(window, arg);
+            return {};
         case ActionId::BrushTexture:
             return arg < kMdslTexturesMax ? AppBrushTextureOpen(window, arg) : Result<void>{};
         case ActionId::BrushExample:
@@ -2661,7 +2819,7 @@ Result<void> AppEvent(Event event) noexcept {
     }
     const bool uiWants = UiEvent(event);
     if (BrushAdjust(event) || Navigate(event, uiWants) || TransformEvent(event, uiWants) || TagDrag(event, uiWants)
-        || Paint(event, uiWants)) {
+        || Eyedropper(event, uiWants) || Paint(event, uiWants)) {
         return {};
     }
     if (event.type == EventType::Key) {
@@ -2775,6 +2933,9 @@ Result<void> AppUpdate() noexcept {
         }
     }
     const bool streaming = CanvasTilesStream();
+    if (gAppState.eyedropper.view != kCanvasViewInvalid && gAppState.eyedropper.moved) {
+        EyedropperSample();
+    }
     // A dialog an action opens may close windows, so each request checks its own.
     for (const ActionRequest& request : std::exchange(gAppState.actionRequests, {})) {
         if (!WindowGetState(request.window)) {
@@ -2970,6 +3131,48 @@ void AppTagHue(Window window, std::uint32_t tag, float hue) noexcept {
     CanvasEdited(canvas->id, wasModified);
 }
 
+void AppTagDelete(Window window, std::uint32_t tag) noexcept {
+    const auto exists = [tag](const CanvasState* canvas) {
+        return canvas && tag < kTagMax && (canvas->tags & (std::uint64_t{1} << tag)) != 0;
+    };
+    const CanvasState* asked = WindowCanvas(window);
+    if (!exists(asked)) {
+        return;
+    }
+    const std::string instruction = TextFormat(Text::AskTagDelete, asked->tagNames[tag].data());
+    gAppState.modal = true;
+    const DialogChoice choice = DialogAsk(DialogAskInfo{
+        .title = MIDORI_NAME,
+        .instruction = instruction,
+        .content = TextGet(Text::AskTagDeleteContent),
+        .yes = TextGet(Text::TagDelete),
+        .no = {},
+        .window = window,
+    });
+    gAppState.modal = false;
+    // The dialog's message loop may have closed the window meanwhile.
+    CanvasState* canvas = WindowCanvas(window);
+    if (choice != DialogChoice::Yes || canvas != asked || !exists(canvas)) {
+        return;
+    }
+    const std::uint64_t bit = std::uint64_t{1} << tag;
+    const bool wasModified = canvas->modified;
+    for (TagTile& tile : canvas->tagTiles) {
+        tile.tags &= ~bit;
+    }
+    std::erase_if(canvas->tagTiles, [](const TagTile& tile) { return tile.tags == 0; });
+    canvas->tags &= ~bit;
+    canvas->tagsChecked &= ~bit;
+    canvas->tagsSelected &= ~bit;
+    canvas->tagNames[tag] = {};
+    TagIslandsBuild(*canvas);
+    for (int& renaming : gUiState.tagRenaming) {
+        renaming = renaming == static_cast<int>(tag) ? -1 : renaming;
+    }
+    canvas->modified = true;
+    CanvasEdited(canvas->id, wasModified);
+}
+
 Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
     const AppState& app = gAppState;
     const CanvasView view = WindowCanvasView(window);
@@ -3155,6 +3358,7 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
             return arg < app.brushExamples.size() ? Text::Count_ : Text::ReasonNoExample;
         case ActionId::TagSelect:
         case ActionId::TagToggle:
+        case ActionId::TagDelete:
             if (!canvas) {
                 return Text::ReasonNoCanvas;
             }
@@ -3234,6 +3438,15 @@ void AppTransformEnd(bool apply) noexcept {
         }
     }
     StrokeEnd();
+}
+
+bool AppEyedropperActive() noexcept {
+    const ToolState& tool = ToolCurrent(gAppState.tools);
+    if (tool.target == ToolTarget::Color) {
+        return true;
+    }
+    return tool.target == ToolTarget::Layer && tool.shape == ToolShape::Path && tool.blendMode != BlendMode::Erase
+        && KeymapHeld(gAppState.keymap, ActionId::ToolEyedropper, ActionContext::Canvas, gAppState.keyMods) >= 0;
 }
 
 bool AppTransforming() noexcept {

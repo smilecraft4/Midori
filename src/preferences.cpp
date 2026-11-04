@@ -35,14 +35,18 @@ constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kB
     "normal", "multiply", "add", "screen", "normalOkLab", "erase",
 };
 constexpr std::array<std::string_view, 3> kToolShapeNames = {"path", "box", "lasso"};
-constexpr std::array<std::string_view, 3> kToolTargetNames = {"layer", "selection", "tags"};
+constexpr std::array<std::string_view, 4> kToolTargetNames = {"layer", "selection", "tags", "color"};
+constexpr std::array<std::string_view, std::to_underlying(EyedropperSource::Count_)> kEyedropperSourceNames = {
+    "canvas",
+    "layer",
+};
 constexpr std::array<std::string_view, std::to_underlying(SelectionOp::Count_)> kSelectionOpNames = {
     "replace", "add", "subtract", "intersect", "exclude",
 };
 // Bumped like kPreferencesVersion, for tools.json and workspace.json.
 constexpr int kToolsVersion = 1;
-constexpr std::array<std::string_view, std::to_underlying(BrushInput::Count_)> kBrushInputNames = {
-    "none", "pressure", "tiltX", "tiltY", "speed", "random",
+constexpr std::array<std::string_view, kBrushInputCount> kBrushInputNames = {
+    "pressure", "tiltX", "tiltY", "speed", "random",
 };
 constexpr std::array<std::string_view, std::to_underlying(CanvasFilter::Count_)> kCanvasFilterNames = {
     "nearest", "bilinear", "bicubic", "mitchell", "lanczos2", "lanczos3",
@@ -266,17 +270,30 @@ void ReadBrushParams(const Json& json, BrushState& brush, std::span<const MdslPa
                 param.value[c] = std::clamp((*value)[c].get<float>(), params[i].min, params[i].max);
             }
         }
-        if (const int input = ReadName(*entry, "input", kBrushInputNames); input >= 0) {
-            param.input = static_cast<BrushInput>(input);
+        if (const auto inputs = entry->find("inputs"); inputs != entry->end() && inputs->is_object()) {
+            for (std::size_t input = 0; input < kBrushInputCount; ++input) {
+                const char* inputName = kBrushInputNames[input].data();
+                if (inputs->contains(inputName)) {
+                    param.inputs |= static_cast<std::uint8_t>(1u << input);
+                    Read(*inputs, inputName, param.curves[input]);
+                }
+            }
+            continue;
         }
-        Read(*entry, "curve", param.curve);
-        // Before curves took their place, the curve's 0 to 1 scaled the value from min to max.
+        // Before a param took several inputs: one "input" with its "curve", and before curves, a min and max.
+        const int input = ReadName(*entry, "input", kBrushInputNames);
+        if (input < 0) {
+            continue;
+        }
+        Curve& curve = param.curves[static_cast<std::size_t>(input)];
+        param.inputs = static_cast<std::uint8_t>(1u << input);
+        Read(*entry, "curve", curve);
         float min = 0.0f;
         float max = 1.0f;
         Read(*entry, "min", min, 0.0f, 1.0f);
         Read(*entry, "max", max, min, 1.0f);
-        for (std::uint32_t p = 0; p < param.curve.count; ++p) {
-            param.curve.points[p].y = std::lerp(min, max, param.curve.points[p].y);
+        for (std::uint32_t p = 0; p < curve.count; ++p) {
+            curve.points[p].y = std::lerp(min, max, curve.points[p].y);
         }
     }
 }
@@ -316,10 +333,15 @@ void ReadBrush(const Json& json, BrushState& brush, const MdslBrush& source) noe
     Json paramsJson = Json::object();
     for (std::size_t i = 0; i < params.size(); ++i) {
         const BrushParam& param = brush.params[i];
+        Json inputsJson = Json::object();
+        for (std::size_t input = 0; input < kBrushInputCount; ++input) {
+            if (BrushParamUses(param, static_cast<BrushInput>(input))) {
+                inputsJson[std::string(kBrushInputNames[input])] = CurveJson(param.curves[input]);
+            }
+        }
         paramsJson[params[i].name] = Json{
             {"value", std::vector<float>(param.value.begin(), param.value.begin() + MdslComponents(params[i].type))},
-            {"input", kBrushInputNames[std::to_underlying(param.input)]},
-            {"curve", CurveJson(param.curve)},
+            {"inputs", inputsJson},
         };
     }
     Json curvesJson = Json::object();
@@ -433,19 +455,19 @@ ToolState ToolMake(std::uint32_t id, std::string_view name, ToolTarget target, T
     return tool;
 }
 
-// A Pen, an Eraser, a drawer of Rectangle and Lasso, which kDefaultBindings key B, E and M, and a Tag. An older
-// preferences.json's paint brush goes to the Pen, its brush presets into the Pen's drawer.
+// A Pen, an Eraser, a drawer of Rectangle and Lasso, a Tag and an Eyedropper, which kDefaultBindings key B, E, M and
+// I. An older preferences.json's paint brush goes to the Pen, its brush presets into the Pen's drawer.
 void ToolsDefault(ToolsState& tools, const Json& preferences) noexcept {
     tools.library.push_back(ToolMake(1, "Pen", ToolTarget::Layer, ToolShape::Path, BlendMode::Normal, tools));
     tools.library.push_back(ToolMake(2, "Eraser", ToolTarget::Layer, ToolShape::Path, BlendMode::Erase, tools));
     tools.library.push_back(ToolMake(3, "Rectangle", ToolTarget::Selection, ToolShape::Box, BlendMode::Normal, tools));
     tools.library.push_back(ToolMake(4, "Lasso", ToolTarget::Selection, ToolShape::Lasso, BlendMode::Normal, tools));
     tools.library.push_back(ToolMake(5, "Tag", ToolTarget::Tags, ToolShape::Box, BlendMode::Normal, tools));
+    tools.library.push_back(ToolMake(6, "Eyedropper", ToolTarget::Color, ToolShape::Path, BlendMode::Normal, tools));
     tools.slots = {
-        ToolbarSlot{.tools = {1}, .id = 1, .last = 1},
-        ToolbarSlot{.tools = {2}, .id = 2, .last = 2},
-        ToolbarSlot{.tools = {3, 4}, .id = 3, .last = 3},
-        ToolbarSlot{.tools = {5}, .id = 4, .last = 5},
+        ToolbarSlot{.tools = {1}, .id = 1, .last = 1},    ToolbarSlot{.tools = {2}, .id = 2, .last = 2},
+        ToolbarSlot{.tools = {3, 4}, .id = 3, .last = 3}, ToolbarSlot{.tools = {5}, .id = 4, .last = 5},
+        ToolbarSlot{.tools = {6}, .id = 5, .last = 6},
     };
     tools.current = 1;
     tools.slot = 1;
@@ -643,6 +665,9 @@ ToolsState ToolsLoad(const MdslBrush& builtIn) noexcept {
             }
         }
         Read(library, "current", tools.current);
+        if (const int source = ReadName(library, "eyedropperSource", kEyedropperSourceNames); source >= 0) {
+            tools.eyedropperSource = static_cast<EyedropperSource>(source);
+        }
     }
     if (tools.library.empty()) {
         const auto preferencesPath = SettingsPath("preferences.json");
@@ -698,8 +723,13 @@ Result<void> ToolsSave(const ToolsState& tools) noexcept {
     for (const ToolbarSlot& slot : tools.slots) {
         slots.push_back(Json{{"id", slot.id}, {"tools", slot.tools}, {"last", slot.last}});
     }
-    const auto saved =
-        JsonFileWrite(*libraryPath, Json{{"version", kToolsVersion}, {"current", tools.current}, {"tools", library}});
+    const auto saved = JsonFileWrite(
+        *libraryPath, Json{
+                          {"version", kToolsVersion},
+                          {"current", tools.current},
+                          {"eyedropperSource", kEyedropperSourceNames[std::to_underlying(tools.eyedropperSource)]},
+                          {"tools", library},
+                      });
     const auto arranged =
         JsonFileWrite(*workspacePath, Json{{"version", kToolsVersion}, {"slot", tools.slot}, {"toolbar", slots}});
     return saved ? arranged : saved;

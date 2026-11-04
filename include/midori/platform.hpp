@@ -39,6 +39,7 @@ enum struct WindowCursor : std::uint8_t {
     ResizeNESW,
     ResizeNWSE,
     NotAllowed,
+    Crosshair,
     Count_,
 };
 
@@ -159,7 +160,7 @@ struct DialogAskInfo {
     std::string_view instruction;
     std::string_view content;
     std::string_view yes; // button labels; a Cancel button always follows them
-    std::string_view no;
+    std::string_view no;  // empty: no such button
     Window window{kWindowInvalid};
 };
 

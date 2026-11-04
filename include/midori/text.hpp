@@ -230,6 +230,16 @@ enum struct Text : std::uint8_t {
     TagNextButton,
     TagZoneShown,
     TagZoneShownTip,
+    TargetColor,
+    EyedropperTip,
+    HelpEyedropper,
+    GestureEyedropper,
+    EyedropperSource,
+    EyedropperCanvas,
+    EyedropperLayer,
+    TagDelete,
+    AskTagDelete,
+    AskTagDeleteContent,
     Count_,
 };
 
@@ -464,6 +474,19 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "tagZoneShownTip",
      .english = "Colors the tiles carrying every tag selected in the tags panel, whatever the tool. The Tag tool "
                 "always shows its checked tags."},
+    {.key = "targetColor", .english = "Color"},
+    {.key = "eyedropperTip",
+     .english = "Picks into the current color slot. Canvas: what the view shows, the layers over the background, "
+                "averaged when zoomed out. Active layer: its own color, without its opacity or blend mode. A brush in "
+                "paint mode picks the same way while tool.eyedropper (Alt) is held."},
+    {.key = "helpEyedropper", .english = "Eyedropper"},
+    {.key = "gestureEyedropper", .english = "Pick the color under the pointer"},
+    {.key = "eyedropperSource", .english = "Pick from"},
+    {.key = "eyedropperCanvas", .english = "Canvas"},
+    {.key = "eyedropperLayer", .english = "Active layer"},
+    {.key = "tagDelete", .english = "Delete"},
+    {.key = "askTagDelete", .english = "Delete the tag %s?"},
+    {.key = "askTagDeleteContent", .english = "The places it covers are forgotten. Tags have no undo."},
 }};
 
 struct LanguageInfo {

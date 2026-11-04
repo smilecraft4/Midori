@@ -88,6 +88,8 @@ enum struct ActionId : std::uint8_t {
     ColorNext,
     ColorPrevious,
     PanelColor,
+    ToolEyedropper,
+    TagDelete,
     Count_,
 };
 
@@ -190,9 +192,7 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "panel.toolbar", .description = "Show or hide the toolbar"},
     {.name = "panel.tools", .description = "Show or hide the tools of the active toolbar slot"},
     {.name = "brush.reload", .description = "Read the current tool's brush file and its textures again"},
-    {.name = "tag.next",
-     .description = "Show the next place carrying every selected tag",
-     .kind = ActionKind::Repeat},
+    {.name = "tag.next", .description = "Show the next place carrying every selected tag", .kind = ActionKind::Repeat},
     {.name = "tag.previous",
      .description = "Show the previous place carrying every selected tag",
      .kind = ActionKind::Repeat},
@@ -206,6 +206,12 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "color.next", .description = "Paint with the next color slot"},
     {.name = "color.previous", .description = "Paint with the previous color slot"},
     {.name = "panel.color", .description = "Show or hide the color panel"},
+    {.name = "tool.eyedropper",
+     .description = "While held, a brush in paint mode picks the color under the pointer instead of painting",
+     .kind = ActionKind::Hold},
+    {.name = "tag.delete",
+     .description = "Delete a tag and forget the places it covers, asking first",
+     .argName = "tag"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -267,6 +273,8 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "B", .action = ActionId::ToolbarSlot, .arg = 1, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "E", .action = ActionId::ToolbarSlot, .arg = 2, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "M", .action = ActionId::ToolbarSlot, .arg = 3, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "I", .action = ActionId::ToolbarSlot, .arg = 5, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Alt", .action = ActionId::ToolEyedropper, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift(Hold)", .action = ActionId::SelectionOp, .arg = 1, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Alt(Hold)", .action = ActionId::SelectionOp, .arg = 2, .context = ActionContext::Canvas},
     KeyBindingText{

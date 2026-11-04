@@ -290,5 +290,17 @@
     "tagPrevious": "Précédent",
     "tagNext": "Suivant",
     "tagZoneShown": "Afficher les étiquettes sélectionnées",
-    "tagZoneShownTip": "Colore les tuiles portant toutes les étiquettes sélectionnées dans le panneau des étiquettes, quel que soit l'outil. L'outil Étiquette affiche toujours ses étiquettes cochées."
+    "tagZoneShownTip": "Colore les tuiles portant toutes les étiquettes sélectionnées dans le panneau des étiquettes, quel que soit l'outil. L'outil Étiquette affiche toujours ses étiquettes cochées.",
+    "targetColor": "Couleur",
+    "eyedropperTip": "Prélève dans l'emplacement de couleur actuel. Canevas : ce qu'affiche la vue, les calques sur le fond, moyenné en vue éloignée. Calque actif : sa propre couleur, sans son opacité ni son mode de fusion. Un pinceau en mode peinture prélève de même tant que tool.eyedropper (Alt) est maintenu.",
+    "helpEyedropper": "Pipette",
+    "gestureEyedropper": "Prélever la couleur sous le pointeur",
+    "eyedropperSource": "Prélever depuis",
+    "eyedropperCanvas": "Canevas",
+    "eyedropperLayer": "Calque actif",
+    "tool.eyedropper": "Tant qu'il est maintenu, un pinceau en mode peinture prélève la couleur sous le pointeur au lieu de peindre",
+    "tagDelete": "Supprimer",
+    "askTagDelete": "Supprimer l'étiquette %s ?",
+    "askTagDeleteContent": "Les endroits qu'elle couvre sont oubliés. Les étiquettes ne peuvent pas être annulées.",
+    "tag.delete": "Supprimer une étiquette et oublier les endroits qu'elle couvre, après confirmation"
 }

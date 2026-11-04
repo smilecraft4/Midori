@@ -959,6 +959,7 @@ Result<void> PlatformInit(PlatformInitInfo initInfo) noexcept {
     cursor(WindowCursor::ResizeNESW, IDC_SIZENESW);
     cursor(WindowCursor::ResizeNWSE, IDC_SIZENWSE);
     cursor(WindowCursor::NotAllowed, IDC_NO);
+    cursor(WindowCursor::Crosshair, IDC_CROSS);
 
     // No CS_HREDRAW/CS_VREDRAW and no background brush: the renderer repaints the whole client area.
     const WNDCLASSEXW windowClass{
@@ -1102,8 +1103,8 @@ DialogChoice DialogAsk(const DialogAskInfo& info) noexcept {
         TASKDIALOG_BUTTON{.nButtonID = IDYES, .pszButtonText = yes.c_str()},
         TASKDIALOG_BUTTON{.nButtonID = IDNO, .pszButtonText = no.c_str()},
     };
-    switch (
-        DialogTask(info.window, info.title, info.instruction, info.content, nullptr, buttons, TDCBF_CANCEL_BUTTON)) {
+    const std::span<const TASKDIALOG_BUTTON> shown = std::span(buttons).first(no.empty() ? 1 : 2);
+    switch (DialogTask(info.window, info.title, info.instruction, info.content, nullptr, shown, TDCBF_CANCEL_BUTTON)) {
         case IDYES:
             return DialogChoice::Yes;
         case IDNO:

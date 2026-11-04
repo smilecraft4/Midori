@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Midori {
@@ -18,7 +19,6 @@ namespace Midori {
 // What drives a brush param through a stroke, each from 0 to 1. Tilt maps its -1..1 lean to 0..1, speed reaches 1 at
 // kStrokeSpeedFull, and random is MdslDab::random, a new one each stamp.
 enum struct BrushInput : std::uint8_t {
-    None,
     Pressure,
     TiltX,
     TiltY,
@@ -27,13 +27,20 @@ enum struct BrushInput : std::uint8_t {
     Count_,
 };
 
-// The value of one of the brush's MdslParams. With an input, `curve` maps the input's 0 to 1 to the share of the value
-// the stamp gets.
+constexpr std::size_t kBrushInputCount = std::to_underlying(BrushInput::Count_);
+static_assert(kBrushInputCount <= 8);
+
+// The value of one of the brush's MdslParams. Each input on in `inputs` (bit 1 << BrushInput) goes through its curve to
+// a share of the value, and the stamp gets the value times all of them.
 struct BrushParam {
-    Curve curve;
+    std::array<Curve, kBrushInputCount> curves{};
     std::array<float, 4> value{};
-    BrushInput input{};
+    std::uint8_t inputs{};
 };
+
+inline bool BrushParamUses(const BrushParam& param, BrushInput input) noexcept {
+    return (param.inputs & (1u << std::to_underlying(input))) != 0;
+}
 
 // What a tool's stamps are made with, whatever the tool does with them: the values of the brush's params and curves, in
 // the order of its MdslParams and MdslCurves. Its stamp() and paint() say what they mean.
@@ -45,7 +52,7 @@ struct BrushState {
 // The defaults the brush's source declares.
 inline void BrushParamsDefault(BrushState& brush, const MdslBrush& source) noexcept {
     for (std::size_t i = 0; i < source.params.size(); ++i) {
-        brush.params[i] = BrushParam{.curve = {}, .value = source.params[i].value, .input = BrushInput::None};
+        brush.params[i] = BrushParam{.curves = {}, .value = source.params[i].value, .inputs = 0};
     }
     for (std::size_t i = 0; i < source.curves.size(); ++i) {
         brush.curves[i] = source.curves[i].value;
@@ -81,7 +88,8 @@ enum struct ToolShape : std::uint8_t {
 enum struct ToolTarget : std::uint8_t {
     Layer,
     Selection,
-    Tags, // the canvas's checked tags
+    Tags,  // the canvas's checked tags
+    Color, // the current color slot, from the color shown under the pointer: no brush, no shape
 };
 
 // How a new selection, or tagged area, combines with the one before it.
@@ -91,6 +99,13 @@ enum struct SelectionOp : std::uint8_t {
     Subtract,
     Intersect,
     Exclude, // selected where exactly one of them is
+    Count_,
+};
+
+// What the eyedropper picks from, whether a Color tool or a brush holding tool.eyedropper.
+enum struct EyedropperSource : std::uint8_t {
+    Canvas, // what the view shows: every visible layer over the background, averaged when zoomed out
+    Layer,  // the active layer's own texel, without its opacity or blend mode
     Count_,
 };
 
@@ -152,11 +167,13 @@ struct ToolsState {
     std::vector<ToolbarSlot> slots;
     std::vector<ToolShader> shaders; // the built-in one first, up to kToolShadersMax
     // kColorSlotsMin to kColorSlotsMax; every tool paints with colors[colorSlot].
-    std::vector<Color::Srgb> colors{Color::Srgb{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f}, Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}};
+    std::vector<Color::Srgb> colors{Color::Srgb{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f},
+                                    Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}};
     std::vector<Color::Srgb> recentColors; // painted with, the most recent first, up to kRecentColorsMax
     std::uint32_t colorSlot{};
-    std::uint32_t current{}; // the tool painting or selecting
-    std::uint32_t slot{};    // the active slot, 0 for none
+    std::uint32_t current{};               // the tool painting or selecting
+    std::uint32_t slot{};                  // the active slot, 0 for none
+    EyedropperSource eyedropperSource{};
 };
 
 ToolState* ToolFind(ToolsState& tools, std::uint32_t id) noexcept;

@@ -149,6 +149,15 @@ struct CopyState {
     bool copied;
 };
 
+// A left drag of a Color tool: the current color slot takes the color shown under the pointer, sampled once per update
+// while it moves.
+struct EyedropperState {
+    double x;                            // canvas units, the pointer's last
+    double y;
+    CanvasView view{kCanvasViewInvalid}; // kCanvasViewInvalid: no drag
+    bool moved;                          // since the last sample
+};
+
 // Where a window shows the brush outline this frame, in physical pixels of its client area. AppWindowFrame sets it,
 // the renderer draws it over the canvas, inverting what is below.
 struct BrushOutlineState {
@@ -176,6 +185,7 @@ struct AppState {
     PasteState paste;
     CopyState copy;
     TagDragState tagDrag;
+    EyedropperState eyedropper;
     ToolsState tools;
     std::chrono::steady_clock::time_point brushCheckTime; // debug builds: when the shaders' files were last looked at
     std::vector<std::filesystem::path> brushExamples;     // the .mdsl files in brushes/ next to the exe, by name
@@ -255,6 +265,12 @@ void AppLayerBlendModeCycle(Window window, bool next) noexcept;
 void AppTagNew(Window window) noexcept;
 void AppTagRename(Window window, std::uint32_t tag, const char* name) noexcept;
 void AppTagHue(Window window, std::uint32_t tag, float hue) noexcept;
+// Once the user confirms: the tag leaves every tile and its id is free for the next new tag. No undo.
+void AppTagDelete(Window window, std::uint32_t tag) noexcept;
+
+// A left drag picks a color rather than paints or selects: the current tool is a Color tool, or a brush in paint mode
+// (a Layer tool's path, not erasing) while a tool.eyedropper binding is held.
+[[nodiscard]] bool AppEyedropperActive() noexcept;
 
 // Why `action` with `arg` would do nothing in `window` right now, Text::Count_ when it would run. The search and the
 // menus show it greyed out with the reason.

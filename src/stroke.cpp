@@ -31,7 +31,6 @@ float BrushInputValue(BrushInput input, const MdslDab& inputs) noexcept {
             return std::hypot(inputs.velocityX, inputs.velocityY) / kStrokeSpeedFull;
         case BrushInput::Random:
             return inputs.random;
-        case BrushInput::None:
         case BrushInput::Count_:
             break;
     }
@@ -531,10 +530,14 @@ StrokeStamp StrokeStampAt(const MdslBrush& source, const BrushState& brush,
     const std::vector<MdslParam>& params = source.params;
     for (std::size_t i = 0; i < params.size(); ++i) {
         const BrushParam& param = brush.params[i];
-        const float scale = CurveEval(param.curve, BrushInputValue(param.input, inputs));
+        float scale = 1.0f;
+        for (std::size_t input = 0; input < kBrushInputCount; ++input) {
+            if (BrushParamUses(param, static_cast<BrushInput>(input))) {
+                scale *= CurveEval(param.curves[input], BrushInputValue(static_cast<BrushInput>(input), inputs));
+            }
+        }
         for (std::uint32_t c = 0; c < MdslComponents(params[i].type); ++c) {
-            stamp.params[params[i].offset + c] =
-                param.input == BrushInput::None ? param.value[c] : param.value[c] * scale;
+            stamp.params[params[i].offset + c] = param.value[c] * scale;
         }
     }
     const MdslStamp result = MdslStampRun(source.stamp, MdslStampInput{
