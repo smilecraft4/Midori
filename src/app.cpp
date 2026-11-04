@@ -50,14 +50,8 @@ constexpr std::string_view kCanvasExtension = "mori";
 
 static_assert(kCanvasViewMax >= kWindowMax, "a window without a view always finds a free one");
 
-// Every window has one view over its whole client area for now; with several, this becomes a hit test.
 [[nodiscard]] CanvasView WindowCanvasView(Window window) noexcept {
-    for (const CanvasViewState& view : gAppState.canvasViews) {
-        if (view.id != kCanvasViewInvalid && view.window == window) {
-            return view.id;
-        }
-    }
-    return kCanvasViewInvalid;
+    return AppWindowView(window);
 }
 
 [[nodiscard]] bool CanvasShownElsewhere(Canvas canvas, CanvasView view) noexcept {
@@ -66,13 +60,208 @@ static_assert(kCanvasViewMax >= kWindowMax, "a window without a view always find
     });
 }
 
+[[nodiscard]] bool CanvasShownOutside(Canvas canvas, Window window) noexcept {
+    return std::ranges::any_of(gAppState.canvasViews, [canvas, window](const CanvasViewState& other) {
+        return other.id != kCanvasViewInvalid && other.window != window && other.canvas == canvas;
+    });
+}
+
+// The focused view's canvas, or the app's name alone.
+void WindowTitleUpdate(Window window) noexcept {
+    if (!WindowGetState(window)) {
+        return;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    const std::string title =
+        view == kCanvasViewInvalid
+            ? std::string(MIDORI_NAME)
+            : std::format("{} - {}", AppCanvasTitle(gAppState.canvasViews[view].canvas), MIDORI_NAME);
+    if (const auto res = WindowSetTitle(window, title); !res) {
+        MIDORI_LOG_ERROR("WindowSetTitle failed: {}", ErrorMessage(res.error()));
+    }
+}
+
+// The last node takes the place of `node`, which nothing names any more.
+void LayoutNodeRemove(Window window, std::uint8_t node) noexcept {
+    WindowLayout& layout = gAppState.layouts[window];
+    const auto last = static_cast<std::uint8_t>(layout.count - 1);
+    if (node != last) {
+        layout.nodes[node] = layout.nodes[last];
+        for (std::uint8_t i = 0; i < last; ++i) {
+            LayoutNode& other = layout.nodes[i];
+            if (other.split != LayoutSplit::None) {
+                other.first = other.first == last ? node : other.first;
+                other.second = other.second == last ? node : other.second;
+            }
+        }
+        for (CanvasViewState& view : gAppState.canvasViews) {
+            if (view.id != kCanvasViewInvalid && view.window == window && view.pane == last) {
+                view.pane = node;
+            }
+        }
+        layout.focused = layout.focused == last ? node : layout.focused;
+    }
+    --layout.count;
+}
+
+// A pane with no tab gives its split's place to its sibling. The root pane stays.
+void LayoutPaneCollapse(Window window, std::uint8_t pane) noexcept {
+    WindowLayout& layout = gAppState.layouts[window];
+    if (pane == 0) {
+        return;
+    }
+    std::uint8_t parent = 0;
+    while (layout.nodes[parent].split == LayoutSplit::None
+           || (layout.nodes[parent].first != pane && layout.nodes[parent].second != pane)) {
+        ++parent;
+        MIDORI_ASSERT(parent < layout.count, "pane {} of window {} has no parent", pane, window);
+    }
+    const std::uint8_t sibling =
+        layout.nodes[parent].first == pane ? layout.nodes[parent].second : layout.nodes[parent].first;
+    layout.nodes[parent] = layout.nodes[sibling];
+    for (CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id != kCanvasViewInvalid && view.window == window && view.pane == sibling) {
+            view.pane = parent;
+        }
+    }
+    if (layout.focused == pane || layout.focused == sibling) {
+        layout.focused = parent;
+    }
+    // While a split's two nodes remain, `focused` names a leaf: the parent took the sibling's place.
+    while (layout.nodes[layout.focused].split != LayoutSplit::None) {
+        layout.focused = layout.nodes[layout.focused].first;
+    }
+    LayoutNodeRemove(window, std::max(pane, sibling));
+    LayoutNodeRemove(window, std::min(pane, sibling));
+}
+
+// The view's pane shows it and takes the focus.
+void ViewActivate(CanvasView view) noexcept {
+    const CanvasViewState& state = gAppState.canvasViews[view];
+    WindowLayout& layout = gAppState.layouts[state.window];
+    layout.nodes[state.pane].active = view;
+    layout.focused = state.pane;
+    WindowTitleUpdate(state.window);
+}
+
+// A new tab at the end of the pane, shown and focused. kCanvasViewInvalid when every view is taken.
+[[nodiscard]] CanvasView ViewTabAdd(Window window, std::uint8_t pane, Canvas canvas,
+                                    const Viewport& viewport) noexcept {
+    AppState& app = gAppState;
+    const auto free = std::ranges::find(app.canvasViews, kCanvasViewInvalid, &CanvasViewState::id);
+    if (free == app.canvasViews.end()) {
+        MIDORI_LOG_ERROR("all {} canvas views are in use", kCanvasViewMax);
+        return kCanvasViewInvalid;
+    }
+    const auto view = static_cast<CanvasView>(free - app.canvasViews.begin());
+    std::array<CanvasView, kCanvasViewMax> tabs{};
+    *free = CanvasViewState{
+        .viewport = viewport,
+        .rect = {},
+        .id = view,
+        .canvas = canvas,
+        .window = window,
+        .pane = pane,
+        .tab = static_cast<std::uint8_t>(AppPaneTabs(window, pane, tabs)),
+    };
+    ViewActivate(view);
+    return view;
+}
+
+// Out of its pane: the tabs after it move left, the pane shows the one now in its place or the last, and a pane left
+// with none goes.
+void ViewTabRemove(CanvasView view) noexcept {
+    const CanvasViewState& state = gAppState.canvasViews[view];
+    const Window window = state.window;
+    const std::uint8_t pane = state.pane;
+    std::array<CanvasView, kCanvasViewMax> tabs{};
+    const std::uint32_t count = AppPaneTabs(window, pane, tabs);
+    CanvasView shown = kCanvasViewInvalid;
+    for (std::uint32_t i = state.tab + 1; i < count; ++i) {
+        --gAppState.canvasViews[tabs[i]].tab;
+    }
+    if (count > 1) {
+        shown = tabs[state.tab + 1u < count ? state.tab + 1u : state.tab - 1u];
+    }
+    WindowLayout& layout = gAppState.layouts[window];
+    if (layout.nodes[pane].active == view) {
+        layout.nodes[pane].active = shown;
+    }
+    gAppState.canvasViews[view].window = kWindowInvalid;
+    if (count == 1) {
+        LayoutPaneCollapse(window, pane);
+    }
+}
+
+// The node and what it holds over `area`: a split's two sides around its handle, a pane's active view under its tab
+// strip, which shows with two tabs or more.
+void LayoutLay(Window window, float dpiScale, std::uint8_t index, CanvasViewRect area) noexcept {
+    LayoutNode& node = gAppState.layouts[window].nodes[index];
+    node.rect = area;
+    if (node.split == LayoutSplit::None) {
+        if (node.active == kCanvasViewInvalid) {
+            return;
+        }
+        std::array<CanvasView, kCanvasViewMax> tabs{};
+        const int strip = AppPaneTabs(window, index, tabs) > 1
+                            ? std::min(static_cast<int>(std::lround(kLayoutTabStripDips * dpiScale)), area.height)
+                            : 0;
+        gAppState.canvasViews[node.active].rect =
+            CanvasViewRect{.x = area.x, .y = area.y + strip, .width = area.width, .height = area.height - strip};
+        return;
+    }
+    const int gap = kLayoutSplitterPixels;
+    const bool columns = node.split == LayoutSplit::Columns;
+    const int room = std::max((columns ? area.width : area.height) - gap, 0);
+    const int first = std::clamp(static_cast<int>(std::lround(static_cast<float>(room) * node.share)), 0, room);
+    CanvasViewRect a = area;
+    CanvasViewRect b = area;
+    if (columns) {
+        a.width = first;
+        b.x = area.x + first + gap;
+        b.width = room - first;
+    } else {
+        a.height = first;
+        b.y = area.y + first + gap;
+        b.height = room - first;
+    }
+    const std::uint8_t firstNode = node.first;
+    const std::uint8_t secondNode = node.second;
+    LayoutLay(window, dpiScale, firstNode, a);
+    LayoutLay(window, dpiScale, secondNode, b);
+}
+
+// The pane holding the client-area point, the focused one when none does.
+[[nodiscard]] std::uint8_t LayoutPaneAt(Window window, float x, float y) noexcept {
+    const WindowLayout& layout = gAppState.layouts[window];
+    for (std::uint8_t i = 0; i < layout.count; ++i) {
+        const LayoutNode& node = layout.nodes[i];
+        if (node.split == LayoutSplit::None && x >= static_cast<float>(node.rect.x)
+            && x < static_cast<float>(node.rect.x + node.rect.width) && y >= static_cast<float>(node.rect.y)
+            && y < static_cast<float>(node.rect.y + node.rect.height)) {
+            return i;
+        }
+    }
+    return layout.focused;
+}
+
+// The shown view under the pointer in the window it last moved in, else the window's focused one.
+[[nodiscard]] CanvasView WindowViewUnderPointer(Window window) noexcept {
+    const CanvasView view =
+        gAppState.layouts[window].nodes[LayoutPaneAt(window, gAppState.pointerX, gAppState.pointerY)].active;
+    return view == kCanvasViewInvalid ? WindowCanvasView(window) : view;
+}
+
 // A canvas nobody can see is gone: its unsaved changes were saved or discarded before, see
 // CanvasViewReleaseConfirmed.
 void CanvasViewDetach(CanvasView view) noexcept {
     ZoneScopedN("CanvasViewDetach");
     CanvasViewState& viewState = gAppState.canvasViews[view];
     const Canvas canvas = viewState.canvas;
+    const Window window = viewState.window;
+    ViewTabRemove(view);
     viewState = {};
+    WindowTitleUpdate(window);
     if (gAppState.navigate.view == view) {
         gAppState.navigate = {};
     }
@@ -94,19 +283,13 @@ void CanvasViewDetach(CanvasView view) noexcept {
     return canvas.path.empty() ? std::string(TextGet(Text::Untitled)) : PathUtf8(canvas.path.filename());
 }
 
+// The windows whose focused view shows the canvas.
 void CanvasTitlesUpdate(Canvas canvas) noexcept {
     ZoneScopedN("CanvasTitlesUpdate");
-    const CanvasState& state = gAppState.canvases[canvas];
-    std::array<char, 512> buffer{};
-    const std::string_view title(buffer.data(),
-                                 std::format_to_n(buffer.data(), buffer.size() - 1, "{}{} - {}", CanvasName(state),
-                                                  state.modified ? "*" : "", MIDORI_NAME)
-                                     .out);
-    for (const CanvasViewState& view : gAppState.canvasViews) {
-        if (view.id != kCanvasViewInvalid && view.canvas == canvas) {
-            if (const auto res = WindowSetTitle(view.window, title); !res) {
-                MIDORI_LOG_ERROR("WindowSetTitle failed: {}", ErrorMessage(res.error()));
-            }
+    for (Window window = 0; window < kWindowMax; ++window) {
+        if (const CanvasView view = WindowCanvasView(window);
+            view != kCanvasViewInvalid && gAppState.canvasViews[view].canvas == canvas) {
+            WindowTitleUpdate(window);
         }
     }
 }
@@ -140,23 +323,23 @@ void LayersPropertiesEdit(CanvasState& canvas, std::span<const Layer> layers,
     CanvasEdited(canvas.id, wasModified);
 }
 
-// The window's view shows `canvas` from now on, with a fresh viewport.
-void WindowShowCanvas(Window window, Canvas canvas) noexcept {
+// The window shows `canvas`: its view there when it has one, else a new tab of the focused pane at a fresh viewport.
+// Error::CanvasViewLimitReached when every view is taken; a canvas no view shows then is destroyed.
+[[nodiscard]] Result<void> WindowShowCanvas(Window window, Canvas canvas) noexcept {
     ZoneScopedN("WindowShowCanvas");
-    AppState& app = gAppState;
-    CanvasView view = WindowCanvasView(window);
-    if (view != kCanvasViewInvalid) {
-        if (app.canvasViews[view].canvas == canvas) {
-            return;
+    for (const CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id != kCanvasViewInvalid && view.window == window && view.canvas == canvas) {
+            ViewActivate(view.id);
+            return {};
         }
-        CanvasViewDetach(view);
-    } else {
-        const auto it = std::ranges::find(app.canvasViews, kCanvasViewInvalid, &CanvasViewState::id);
-        MIDORI_ASSERT(it != app.canvasViews.end(), "no free canvas view");
-        view = static_cast<CanvasView>(it - app.canvasViews.begin());
     }
-    app.canvasViews[view] = CanvasViewState{.viewport = {}, .id = view, .canvas = canvas, .window = window};
-    CanvasTitlesUpdate(canvas);
+    if (ViewTabAdd(window, gAppState.layouts[window].focused, canvas, {}) == kCanvasViewInvalid) {
+        if (!CanvasShownElsewhere(canvas, kCanvasViewInvalid)) {
+            CanvasDestroy(canvas);
+        }
+        return std::unexpected(Error::CanvasViewLimitReached);
+    }
+    return {};
 }
 
 // Dialogs run their own message loop; AppEvent drops what arrives meanwhile.
@@ -295,24 +478,30 @@ void WindowPlacementKeep(Window window) noexcept {
     return {};
 }
 
-// Replaces the window's canvas without asking: callers confirm first. Failures are shown to the user.
+// The file in a tab of the window, see WindowShowCanvas. Failures are shown to the user.
 [[nodiscard]] Result<void> WindowOpenFile(Window window, const std::filesystem::path& path) noexcept {
     ZoneScopedN("WindowOpenFile");
     // Already open, and so locked: show that canvas.
     std::error_code ec;
+    Canvas opened = kCanvasInvalid;
     for (const CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid && !canvas.path.empty() && std::filesystem::equivalent(canvas.path, path, ec)) {
-            WindowShowCanvas(window, canvas.id);
-            RecentFilesAdd(path);
-            return {};
+            opened = canvas.id;
+            break;
         }
     }
-    const auto canvas = CanvasOpen(path);
-    if (!canvas) {
-        AppError(window, TextFormat(Text::ErrorOpen, PathUtf8(path.filename()).c_str()), canvas.error());
-        return std::unexpected(canvas.error());
+    if (opened == kCanvasInvalid) {
+        const auto canvas = CanvasOpen(path);
+        if (!canvas) {
+            AppError(window, TextFormat(Text::ErrorOpen, PathUtf8(path.filename()).c_str()), canvas.error());
+            return std::unexpected(canvas.error());
+        }
+        opened = *canvas;
     }
-    WindowShowCanvas(window, *canvas);
+    if (const auto shown = WindowShowCanvas(window, opened); !shown) {
+        AppError(window, TextFormat(Text::ErrorOpen, PathUtf8(path.filename()).c_str()), shown.error());
+        return shown;
+    }
     RecentFilesAdd(path);
     return {};
 }
@@ -324,10 +513,11 @@ struct ViewPoint {
 
 // Client-area physical pixels to view DIPs around the view center, floored to a whole pixel like the
 // renderer's projection.
-[[nodiscard]] ViewPoint ViewPointFromPointer(const WindowState& window, float pointerX, float pointerY) noexcept {
-    const float centerX = std::floor(static_cast<float>(window.width) * 0.5f);
-    const float centerY = std::floor(static_cast<float>(window.height) * 0.5f);
-    return ViewPoint{.x = (pointerX - centerX) / window.dpiScale, .y = (pointerY - centerY) / window.dpiScale};
+[[nodiscard]] ViewPoint ViewPointFromPointer(const CanvasViewRect& rect, float dpiScale, float pointerX,
+                                             float pointerY) noexcept {
+    const float centerX = static_cast<float>(rect.x) + std::floor(static_cast<float>(rect.width) * 0.5f);
+    const float centerY = static_cast<float>(rect.y) + std::floor(static_cast<float>(rect.height) * 0.5f);
+    return ViewPoint{.x = (pointerX - centerX) / dpiScale, .y = (pointerY - centerY) / dpiScale};
 }
 
 [[nodiscard]] NavigateMode NavigateModeFromMods(KeyMod keyMods) noexcept {
@@ -348,7 +538,8 @@ struct ViewPoint {
     if (!windowState) {
         return std::unexpected(windowState.error());
     }
-    const ViewPoint point = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
+    const ViewPoint point =
+        ViewPointFromPointer(viewState.rect, windowState->dpiScale, gAppState.pointerX, gAppState.pointerY);
     // Moving the view by minus the point's offset brings the canvas point under it to the center.
     const Viewport under = ViewportMove(viewState.viewport, -point.x, -point.y);
     return StrokePoint{.x = under.posX,
@@ -359,32 +550,37 @@ struct ViewPoint {
                        .tiltY = gAppState.pointerTiltY};
 }
 
-// Starts a frame: the root folder tiles any view's client area overlaps get the new frame as `visibleFrame`, and the
-// grid positions there where a layer has a tile become the canvas's composite wants. Layer tiles are wanted by the
-// composites that need them. A rotated view marks the tiles of its bounding box.
+// Starts a frame: the windows' layouts are laid out, the root folder tiles any shown view overlaps get the new frame as
+// `visibleFrame`, and the grid positions there where a layer has a tile become the canvas's composite wants. Layer
+// tiles are wanted by the composites that need them. A rotated view marks the tiles of its bounding box.
 void TilesMarkVisible() noexcept {
     ZoneScopedN("TilesMarkVisible");
     const std::uint32_t frame = ++gAppState.frame;
+    for (Window window = 0; window < kWindowMax; ++window) {
+        AppLayoutUpdate(window);
+    }
     for (CanvasState& canvas : gAppState.canvases) {
         canvas.compositeWants.clear();
     }
     for (const CanvasViewState& view : gAppState.canvasViews) {
-        if (view.id == kCanvasViewInvalid) {
+        if (view.id == kCanvasViewInvalid || view.rect.width <= 0 || view.rect.height <= 0) {
             continue;
         }
         const auto windowState = WindowGetState(view.window);
         if (!windowState) {
             continue;
         }
-        const auto width = static_cast<float>(windowState->width);
-        const auto height = static_cast<float>(windowState->height);
+        const auto left = static_cast<float>(view.rect.x);
+        const auto top = static_cast<float>(view.rect.y);
+        const auto right = static_cast<float>(view.rect.x + view.rect.width);
+        const auto bottom = static_cast<float>(view.rect.y + view.rect.height);
         double minX = std::numeric_limits<double>::max();
         double minY = std::numeric_limits<double>::max();
         double maxX = std::numeric_limits<double>::lowest();
         double maxY = std::numeric_limits<double>::lowest();
         for (const auto [cornerX, cornerY] :
-             {std::pair{0.0f, 0.0f}, std::pair{width, 0.0f}, std::pair{0.0f, height}, std::pair{width, height}}) {
-            const ViewPoint point = ViewPointFromPointer(*windowState, cornerX, cornerY);
+             {std::pair{left, top}, std::pair{right, top}, std::pair{left, bottom}, std::pair{right, bottom}}) {
+            const ViewPoint point = ViewPointFromPointer(view.rect, windowState->dpiScale, cornerX, cornerY);
             const Viewport corner = ViewportMove(view.viewport, -point.x, -point.y);
             minX = std::min(minX, corner.posX);
             minY = std::min(minY, corner.posY);
@@ -512,8 +708,9 @@ void NavigateUpdate() noexcept {
     if (!windowState) {
         return;
     }
-    const auto [startX, startY] = ViewPointFromPointer(*windowState, navigate.pointerStartX, navigate.pointerStartY);
-    const auto [x, y] = ViewPointFromPointer(*windowState, gAppState.pointerX, gAppState.pointerY);
+    const auto [startX, startY] =
+        ViewPointFromPointer(view.rect, windowState->dpiScale, navigate.pointerStartX, navigate.pointerStartY);
+    const auto [x, y] = ViewPointFromPointer(view.rect, windowState->dpiScale, gAppState.pointerX, gAppState.pointerY);
     const Viewport start = navigate.viewportStart;
 
     switch (navigate.mode) {
@@ -632,9 +829,10 @@ void TagIslandShow(Window window, int step) noexcept {
     // The island's box as the rotated view shows it, with a margin around.
     const double c = std::abs(std::cos(viewport.rot));
     const double s = std::abs(std::sin(viewport.rot));
+    const CanvasViewRect& rect = app.canvasViews[view].rect;
     const double fit = 0.9
-                     * std::min(static_cast<double>(windowState->width) / ((width * c) + (height * s)),
-                                static_cast<double>(windowState->height) / ((width * s) + (height * c)));
+                     * std::min(static_cast<double>(rect.width) / ((width * c) + (height * s)),
+                                static_cast<double>(rect.height) / ((width * s) + (height * c)));
     const float zoom = std::clamp(static_cast<float>(fit / windowState->dpiScale), app.zoomMin, app.zoomMax);
     Viewport fitted = viewport;
     fitted.posX = (static_cast<double>(next->minX) * kSize) + (width * 0.5);
@@ -1582,7 +1780,9 @@ void TransformHoldEnd() noexcept {
 [[nodiscard]] BrushOutlineState BrushOutline(Window window) noexcept {
     ZoneScopedN("BrushOutline");
     const AppState& app = gAppState;
-    const CanvasView view = WindowCanvasView(window);
+    const CanvasView view = app.stroke.canvas != kCanvasInvalid && app.canvasViews[app.stroke.view].window == window
+                              ? app.stroke.view
+                              : WindowViewUnderPointer(window);
     const auto windowState = WindowGetState(window);
     // A selection has no brush.
     if (view == kCanvasViewInvalid || !windowState || !windowState->hovered || UiCursor(window) || app.spaceDown
@@ -1808,8 +2008,9 @@ void AppPaste(Window window) noexcept {
                                                 && copy.width == image->width && copy.height == image->height) {
         // The view's bounds on the canvas, at any rotation.
         const auto windowState = WindowGetState(window);
-        const double halfWidth = windowState ? windowState->width / windowState->dpiScale * 0.5 : 0.0;
-        const double halfHeight = windowState ? windowState->height / windowState->dpiScale * 0.5 : 0.0;
+        const CanvasViewRect& rect = gAppState.canvasViews[view].rect;
+        const double halfWidth = windowState ? rect.width / windowState->dpiScale * 0.5 : 0.0;
+        const double halfHeight = windowState ? rect.height / windowState->dpiScale * 0.5 : 0.0;
         const double c = std::abs(std::cos(static_cast<double>(viewport.rot)));
         const double s = std::abs(std::sin(static_cast<double>(viewport.rot)));
         const double reachX = ((c * halfWidth) + (s * halfHeight)) / std::abs(viewport.zoomX);
@@ -2361,6 +2562,64 @@ void EyedropperSample() noexcept {
     }
 }
 
+// window.new: another window showing the focused view's canvas from the same viewport, or a new canvas without one.
+[[nodiscard]] Result<void> WindowNewFrom(Window window) noexcept {
+    ZoneScopedN("WindowNewFrom");
+    const auto created = WindowCreate(WindowCreateInfo{.title = MIDORI_NAME});
+    if (!created) {
+        MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(created.error()));
+        return std::unexpected(created.error());
+    }
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return AppCanvasNew(*created);
+    }
+    const CanvasViewState& from = gAppState.canvasViews[view];
+    if (ViewTabAdd(*created, 0, from.canvas, from.viewport) == kCanvasViewInvalid) {
+        return std::unexpected(Error::CanvasViewLimitReached);
+    }
+    return {};
+}
+
+// view.splitRight and view.splitDown: the focused pane becomes two, the old one first, the new one showing its canvas
+// again from the same viewport, focused.
+void ViewSplit(Window window, LayoutSplit split) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    WindowLayout& layout = gAppState.layouts[window];
+    if (view == kCanvasViewInvalid || layout.count + 2 > kLayoutNodesMax) {
+        return;
+    }
+    const std::uint8_t pane = layout.focused;
+    const auto kept = layout.count;
+    const auto added = static_cast<std::uint8_t>(layout.count + 1);
+    layout.count = static_cast<std::uint8_t>(layout.count + 2);
+    layout.nodes[kept] = layout.nodes[pane];
+    layout.nodes[added] = LayoutNode{};
+    layout.nodes[pane] = LayoutNode{.share = 0.5f, .first = kept, .second = added, .split = split};
+    for (CanvasViewState& other : gAppState.canvasViews) {
+        if (other.id != kCanvasViewInvalid && other.window == window && other.pane == pane) {
+            other.pane = kept;
+        }
+    }
+    layout.focused = kept;
+    const CanvasViewState& from = gAppState.canvasViews[view];
+    if (ViewTabAdd(window, added, from.canvas, from.viewport) == kCanvasViewInvalid) {
+        LayoutPaneCollapse(window, added);
+    }
+}
+
+// view.nextTab and view.previousTab, wrapping around.
+void ViewTabStep(Window window, int step) noexcept {
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return;
+    }
+    std::array<CanvasView, kCanvasViewMax> tabs{};
+    const auto count = static_cast<int>(AppPaneTabs(window, gAppState.layouts[window].focused, tabs));
+    const int at = gAppState.canvasViews[view].tab;
+    ViewActivate(tabs[static_cast<std::size_t>((((at + step) % count) + count) % count)]);
+}
+
 [[nodiscard]] Result<void> ActionRun(Window window, ActionId action, std::uint32_t arg) noexcept {
     ZoneScopedN("ActionRun");
     AppState& app = gAppState;
@@ -2435,6 +2694,9 @@ void EyedropperSample() noexcept {
             return {};
         case ActionId::LayerToggleHidden:
             AppLayerToggleHidden(window);
+            return {};
+        case ActionId::LayerToggleLocked:
+            AppLayerToggleLocked(window);
             return {};
         case ActionId::LayerBlendNext:
         case ActionId::LayerBlendPrevious:
@@ -2589,6 +2851,37 @@ void EyedropperSample() noexcept {
             return {};
         case ActionId::TagDelete:
             AppTagDelete(window, arg);
+            return {};
+        case ActionId::WindowNew:
+            return WindowNewFrom(window);
+        case ActionId::ViewDuplicate:
+            if (const CanvasView view = WindowCanvasView(window); view != kCanvasViewInvalid) {
+                const CanvasViewState& from = app.canvasViews[view];
+                if (ViewTabAdd(window, app.layouts[window].focused, from.canvas, from.viewport) == kCanvasViewInvalid) {
+                    return std::unexpected(Error::CanvasViewLimitReached);
+                }
+            }
+            return {};
+        case ActionId::ViewSplitRight:
+        case ActionId::ViewSplitDown:
+            ViewSplit(window, action == ActionId::ViewSplitRight ? LayoutSplit::Columns : LayoutSplit::Rows);
+            return {};
+        case ActionId::ViewClose:
+            // The save dialog's message loop may have closed the window meanwhile.
+            if (const CanvasView view = WindowCanvasView(window);
+                view != kCanvasViewInvalid && CanvasViewReleaseConfirmed(view) && app.canvasViews[view].id == view) {
+                CanvasViewDetach(view);
+            }
+            return {};
+        case ActionId::ViewNextTab:
+        case ActionId::ViewPreviousTab:
+            ViewTabStep(window, action == ActionId::ViewNextTab ? 1 : -1);
+            return {};
+        case ActionId::ViewActivate:
+            if (arg < kCanvasViewMax && app.canvasViews[arg].id != kCanvasViewInvalid
+                && app.canvasViews[arg].window == window) {
+                ViewActivate(static_cast<CanvasView>(arg));
+            }
             return {};
         case ActionId::BrushTexture:
             return arg < kMdslTexturesMax ? AppBrushTextureOpen(window, arg) : Result<void>{};
@@ -2758,46 +3051,61 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     }
     JobsInit(JobsInitInfo{.execute = CanvasJobExecute, .readerCount = 0});
 
+    // Each file of the command line in its own window, else the files open at the last exit as their windows' tabs.
     // Gone files are skipped quietly: only the user's own choice of file is worth an error.
-    std::vector<std::filesystem::path> reopened;
-    std::vector<std::uint64_t> reopenedTagsChecked;
-    if (initInfo.files.empty() && gAppState.reopenFiles) {
+    std::vector<OpenFile> files;
+    for (std::size_t i = 0; i < initInfo.files.size() && i < kWindowMax; ++i) {
+        files.push_back(OpenFile{.path = initInfo.files[i], .tagsChecked = 0, .window = static_cast<std::uint8_t>(i)});
+    }
+    if (files.empty() && gAppState.reopenFiles) {
         std::error_code ec;
         for (const OpenFile& file : gAppState.openFiles) {
             if (std::filesystem::is_regular_file(file.path, ec)) {
-                reopened.push_back(file.path);
-                reopenedTagsChecked.push_back(file.tagsChecked);
+                files.push_back(file);
             }
         }
-        initInfo.files = reopened;
     }
     gAppState.openFiles.clear();
 
-    // One window per file, or one new canvas. A file that fails to open leaves a new canvas in its window.
-    // The platform owns the windows and destroys them in PlatformTerminate.
-    const std::size_t windowCount = std::max<std::size_t>(initInfo.files.size(), 1);
-    for (std::size_t i = 0; i < windowCount; ++i) {
-        // The first where the last one was left, the others where the system puts them.
-        WindowCreateInfo createInfo = i == 0 ? gAppState.windowPlacement : WindowCreateInfo{};
-        createInfo.title = MIDORI_NAME;
-        const auto window = WindowCreate(createInfo);
-        if (!window) {
-            MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(window.error()));
-            // Files already shown keep the app running; without any window it cannot start.
-            return i == 0 ? std::unexpected(window.error()) : Result<void>{};
+    // A window left without a tab, its files failing to open or none given, gets a new canvas. The platform owns the
+    // windows and destroys them in PlatformTerminate.
+    Window window = kWindowInvalid;
+    const auto ensureCanvas = [&window]() -> Result<void> {
+        if (window == kWindowInvalid || WindowCanvasView(window) != kCanvasViewInvalid) {
+            return {};
         }
-        if (i < initInfo.files.size() && WindowOpenFile(*window, initInfo.files[i])) {
-            if (CanvasState* canvas = WindowCanvas(*window); canvas && i < reopenedTagsChecked.size()) {
-                canvas->tagsChecked = reopenedTagsChecked[i] & canvas->tags;
-            }
-            continue;
-        }
-        if (const auto res = AppCanvasNew(*window); !res) {
+        if (const auto res = AppCanvasNew(window); !res) {
             MIDORI_LOG_ERROR("AppCanvasNew failed: {}", ErrorMessage(res.error()));
-            return std::unexpected(res.error());
+            return res;
+        }
+        return {};
+    };
+    for (std::size_t i = 0; i < std::max<std::size_t>(files.size(), 1); ++i) {
+        if (i == 0 || files[i].window != files[i - 1].window) {
+            if (const auto res = ensureCanvas(); !res) {
+                return res;
+            }
+            // The first where the last one was left, the others where the system puts them.
+            WindowCreateInfo createInfo = i == 0 ? gAppState.windowPlacement : WindowCreateInfo{};
+            createInfo.title = MIDORI_NAME;
+            const auto created = WindowCreate(createInfo);
+            if (!created) {
+                MIDORI_LOG_ERROR("WindowCreate failed: {}", ErrorMessage(created.error()));
+                // Files already shown keep the app running; without any window it cannot start.
+                if (i == 0) {
+                    return std::unexpected(created.error());
+                }
+                break;
+            }
+            window = *created;
+        }
+        if (i < files.size() && WindowOpenFile(window, files[i].path)) {
+            if (CanvasState* canvas = WindowCanvas(window)) {
+                canvas->tagsChecked = files[i].tagsChecked & canvas->tags;
+            }
         }
     }
-    return {};
+    return ensureCanvas();
 }
 
 Result<void> AppEvent(Event event) noexcept {
@@ -2818,6 +3126,19 @@ Result<void> AppEvent(Event event) noexcept {
         gAppState.pointerTiltY = event.pointer.tiltY;
     }
     const bool uiWants = UiEvent(event);
+    // A press over a pane focuses it first, so what the press starts acts on the view it shows. Not while a drag of any
+    // kind goes on, whose release may come over another pane.
+    if (event.type == EventType::Button && event.button.inputState == InputState::Press && !uiWants
+        && event.button.window < kWindowMax && gAppState.navigate.mode == NavigateMode::None
+        && gAppState.brushAdjust.mode == BrushAdjustMode::None
+        && (gAppState.stroke.canvas == kCanvasInvalid || gAppState.stroke.ended) && !AppTransforming()
+        && gAppState.eyedropper.view == kCanvasViewInvalid && gAppState.tagDrag.view == kCanvasViewInvalid) {
+        WindowLayout& layout = gAppState.layouts[event.button.window];
+        const std::uint8_t pane = LayoutPaneAt(event.button.window, gAppState.pointerX, gAppState.pointerY);
+        if (pane != layout.focused && layout.nodes[pane].active != kCanvasViewInvalid) {
+            ViewActivate(layout.nodes[pane].active);
+        }
+    }
     if (BrushAdjust(event) || Navigate(event, uiWants) || TransformEvent(event, uiWants) || TagDrag(event, uiWants)
         || Eyedropper(event, uiWants) || Paint(event, uiWants)) {
         return {};
@@ -2856,6 +3177,9 @@ Result<void> AppEvent(Event event) noexcept {
                     CanvasViewDetach(view.id);
                 }
             }
+            if (event.windowDestroy.window < kWindowMax) {
+                gAppState.layouts[event.windowDestroy.window] = {};
+            }
             break;
         case EventType::Key:
             break;
@@ -2884,6 +3208,7 @@ Result<void> AppEvent(Event event) noexcept {
 
 void AppWindowFrame(Window window) noexcept {
     ZoneScopedN("AppWindowFrame");
+    AppLayoutUpdate(window);
     const CanvasView view = WindowCanvasView(window);
     Viewport* viewport = nullptr;
     Color::Srgb* backgroundColor = nullptr;
@@ -2998,16 +3323,15 @@ void AppTerminate() noexcept {
 
 Result<void> AppCanvasNew(Window window) noexcept {
     ZoneScopedN("AppCanvasNew");
-    if (const CanvasView view = WindowCanvasView(window);
-        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
-        return {};
-    }
     const auto canvas = CanvasNew();
     if (!canvas) {
         AppError(window, TextGet(Text::ErrorCreate), canvas.error());
         return std::unexpected(canvas.error());
     }
-    WindowShowCanvas(window, *canvas);
+    if (const auto shown = WindowShowCanvas(window, *canvas); !shown) {
+        AppError(window, TextGet(Text::ErrorCreate), shown.error());
+        return shown;
+    }
     return {};
 }
 
@@ -3018,10 +3342,6 @@ Result<void> AppCanvasOpenRecent(Window window, std::size_t index) noexcept {
     }
     // Copied: opening reorders the list.
     const std::filesystem::path path = gAppState.recentFiles[index];
-    if (const CanvasView view = WindowCanvasView(window);
-        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
-        return {};
-    }
     const auto opened = WindowOpenFile(window, path);
     if (!opened) {
         std::erase(gAppState.recentFiles, path);
@@ -3031,10 +3351,6 @@ Result<void> AppCanvasOpenRecent(Window window, std::size_t index) noexcept {
 
 Result<void> AppCanvasOpen(Window window) noexcept {
     ZoneScopedN("AppCanvasOpen");
-    if (const CanvasView view = WindowCanvasView(window);
-        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
-        return {};
-    }
     const auto path = AppFileDialog(window, false, {});
     if (!path) {
         return std::unexpected(path.error());
@@ -3244,6 +3560,7 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
         case ActionId::LayerMoveUp:
         case ActionId::LayerMoveDown:
         case ActionId::LayerToggleHidden:
+        case ActionId::LayerToggleLocked:
         case ActionId::LayerBlendNext:
         case ActionId::LayerBlendPrevious:
             return needsLayer();
@@ -3363,6 +3680,13 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
                 return Text::ReasonNoCanvas;
             }
             return arg < kTagMax && (canvas->tags & (std::uint64_t{1} << arg)) != 0 ? Text::Count_ : Text::ReasonNoTag;
+        case ActionId::ViewDuplicate:
+        case ActionId::ViewSplitRight:
+        case ActionId::ViewSplitDown:
+        case ActionId::ViewClose:
+        case ActionId::ViewNextTab:
+        case ActionId::ViewPreviousTab:
+            return needsCanvas();
         case ActionId::TagNext:
         case ActionId::TagPrevious:
             if (!canvas) {
@@ -3379,9 +3703,15 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
 
 float AppZoomSupported(Window window) noexcept {
     const auto state = WindowGetState(window);
-    return state ? TileZoomMin(static_cast<float>(state->width) / state->dpiScale,
-                               static_cast<float>(state->height) / state->dpiScale)
-                 : kViewportZoomMin;
+    if (!state) {
+        return kViewportZoomMin;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    const CanvasViewRect rect = view == kCanvasViewInvalid
+                                  ? CanvasViewRect{.x = 0, .y = 0, .width = state->width, .height = state->height}
+                                  : gAppState.canvasViews[view].rect;
+    return TileZoomMin(static_cast<float>(rect.width) / state->dpiScale,
+                       static_cast<float>(rect.height) / state->dpiScale);
 }
 
 Result<void> AppToggleFullscreen(Window window) noexcept {
@@ -3438,6 +3768,52 @@ void AppTransformEnd(bool apply) noexcept {
         }
     }
     StrokeEnd();
+}
+
+CanvasView AppWindowView(Window window) noexcept {
+    if (window >= kWindowMax) {
+        return kCanvasViewInvalid;
+    }
+    const WindowLayout& layout = gAppState.layouts[window];
+    return layout.nodes[layout.focused].active;
+}
+
+std::uint32_t AppPaneTabs(Window window, std::uint8_t pane, std::span<CanvasView, kCanvasViewMax> tabs) noexcept {
+    std::uint32_t count = 0;
+    for (const CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id != kCanvasViewInvalid && view.window == window && view.pane == pane) {
+            tabs[count++] = view.id;
+        }
+    }
+    std::ranges::sort(tabs.first(count), {}, [](CanvasView view) { return gAppState.canvasViews[view].tab; });
+    return count;
+}
+
+std::string AppCanvasTitle(Canvas canvas) noexcept {
+    const CanvasState& state = gAppState.canvases[canvas];
+    return state.modified ? CanvasName(state) + "*" : CanvasName(state);
+}
+
+void AppLayoutUpdate(Window window) noexcept {
+    ZoneScopedN("AppLayoutUpdate");
+    const auto state = WindowGetState(window);
+    if (!state) {
+        return;
+    }
+    for (CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id != kCanvasViewInvalid && view.window == window) {
+            view.rect = {};
+        }
+    }
+    // One pane of one tab covers the whole client area as a lone view always did, under the docked panels too.
+    const WindowLayout& layout = gAppState.layouts[window];
+    std::array<CanvasView, kCanvasViewMax> tabs{};
+    const bool divided = layout.count > 1 || AppPaneTabs(window, 0, tabs) > 1;
+    const CanvasViewRect& area = layout.area;
+    LayoutLay(window, state->dpiScale, 0,
+              divided && area.width > 0 && area.height > 0
+                  ? area
+                  : CanvasViewRect{.x = 0, .y = 0, .width = state->width, .height = state->height});
 }
 
 bool AppEyedropperActive() noexcept {
@@ -3592,6 +3968,26 @@ void AppLayerToggleHidden(Window window) noexcept {
     LayersPropertiesEdit(*canvas, layers, after);
 }
 
+void AppLayerToggleLocked(Window window) noexcept {
+    ZoneScopedN("AppLayerToggleLocked");
+    CanvasState* canvas = WindowCanvas(window);
+    if (!canvas) {
+        return;
+    }
+    const std::vector<Layer> layers = LayersSelected(*canvas);
+    if (layers.empty()) {
+        return;
+    }
+    // All the same way, the opposite of the top one.
+    const bool locked = !LayerPropertiesGet(*canvas, layers.front()).locked;
+    std::vector<LayerProperties> after;
+    for (const Layer layer : layers) {
+        after.push_back(LayerPropertiesGet(*canvas, layer));
+        after.back().locked = locked;
+    }
+    LayersPropertiesEdit(*canvas, layers, after);
+}
+
 void AppLayerBlendMode(Window window, BlendMode blendMode) noexcept {
     ZoneScopedN("AppLayerBlendMode");
     CanvasState* canvas = WindowCanvas(window);
@@ -3636,16 +4032,44 @@ Result<void> AppQuit() noexcept {
 
 Result<void> AppWindowClose(Window window) noexcept {
     ZoneScopedN("AppWindowClose");
-    if (const CanvasView view = WindowCanvasView(window);
-        view != kCanvasViewInvalid && !CanvasViewReleaseConfirmed(view)) {
-        return {};
+    // Each canvas no other window shows, its tab brought up while asked.
+    for (const CanvasViewState& view : gAppState.canvasViews) {
+        if (view.id == kCanvasViewInvalid || view.window != window || !gAppState.canvases[view.canvas].modified
+            || CanvasShownOutside(view.canvas, window)
+            || std::ranges::any_of(gAppState.canvasViews.begin(), gAppState.canvasViews.begin() + view.id,
+                                   [&view](const CanvasViewState& before) {
+                                       return before.id != kCanvasViewInvalid && before.window == view.window
+                                           && before.canvas == view.canvas;
+                                   })) {
+            continue;
+        }
+        ViewActivate(view.id);
+        switch (AppAskSave(window, CanvasName(gAppState.canvases[view.canvas]))) {
+            case DialogChoice::Yes:
+                if (const auto saved = CanvasSaveWithDialogs(window, view.canvas, false); !saved || !*saved) {
+                    return {};
+                }
+                break;
+            case DialogChoice::No:
+                break;
+            case DialogChoice::Cancel:
+                return {};
+        }
     }
     // Closing the last window ends the app, with no window left to ask at exit.
     WindowPlacementKeep(window);
-    if (const CanvasState* canvas = WindowCanvas(window);
-        canvas && !canvas->path.empty() && !std::ranges::contains(gAppState.openFiles, canvas->path, &OpenFile::path)
-        && gAppState.openFiles.size() < kWindowMax) {
-        gAppState.openFiles.push_back(OpenFile{.path = canvas->path, .tagsChecked = canvas->tagsChecked});
+    std::vector<OpenFile>& openFiles = gAppState.openFiles;
+    const auto group = static_cast<std::uint8_t>(openFiles.empty() ? 0 : openFiles.back().window + 1);
+    for (std::uint8_t pane = 0; pane < gAppState.layouts[window].count; ++pane) {
+        std::array<CanvasView, kCanvasViewMax> tabs{};
+        const std::uint32_t count = AppPaneTabs(window, pane, tabs);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[tabs[i]].canvas];
+            if (!canvas.path.empty() && !std::ranges::contains(openFiles, canvas.path, &OpenFile::path)
+                && openFiles.size() < kCanvasViewMax && group < kWindowMax) {
+                openFiles.push_back(OpenFile{.path = canvas.path, .tagsChecked = canvas.tagsChecked, .window = group});
+            }
+        }
     }
     return WindowDestroy(window);
 }

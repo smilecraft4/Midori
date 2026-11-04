@@ -372,8 +372,10 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
 
 // The canvas pass's constants for `view` over a window of `width` x `height` physical pixels, and its page table's
 // region: every tile the window shows, plus one around so filtering finds its neighbours.
-[[nodiscard]] CanvasViewConstants CanvasViewConstantsMake(const Viewport& viewport, TileGridPos origin, UINT width,
-                                                          UINT height, float dpiScale) noexcept {
+[[nodiscard]] CanvasViewConstants CanvasViewConstantsMake(const Viewport& viewport, TileGridPos origin,
+                                                          const CanvasViewRect& rect, float dpiScale) noexcept {
+    const auto width = static_cast<UINT>(rect.width);
+    const auto height = static_cast<UINT>(rect.height);
     // canvas = pos + R^T (S^-1 v), with v the pixel in DIPs from the view center, floored to a whole pixel like the
     // brush and the pointer mapping. Computed in double relative to the origin tile, then narrowed.
     const double c = std::cos(static_cast<double>(viewport.rot));
@@ -409,10 +411,13 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
         return static_cast<TileAxis>(std::floor(pos / kTileSize));
     };
     const TileGridPos regionOrigin{.x = tileOf(minX) - 1, .y = tileOf(minY) - 1};
+    // The pixel shader sees render target pixels: the rect's origin moves into the offset.
+    const double targetOffsetX = offsetX - ((xx * rect.x) + (xy * rect.y));
+    const double targetOffsetY = offsetY - ((yx * rect.x) + (yy * rect.y));
     return CanvasViewConstants{
         .pixelToCanvasX = {static_cast<float>(xx), static_cast<float>(xy)},
         .pixelToCanvasY = {static_cast<float>(yx), static_cast<float>(yy)},
-        .canvasOffset = {static_cast<float>(offsetX), static_cast<float>(offsetY)},
+        .canvasOffset = {static_cast<float>(targetOffsetX), static_cast<float>(targetOffsetY)},
         .regionOrigin = regionOrigin,
         .regionWidth = static_cast<std::uint32_t>(tileOf(maxX) + 2 - regionOrigin.x),
         .regionHeight = static_cast<std::uint32_t>(tileOf(maxY) + 2 - regionOrigin.y),
@@ -1237,17 +1242,19 @@ void RecordTileDownloads() noexcept {
                 state.list->OMSetRenderTargets(1, &rtvs[i], FALSE, nullptr);
                 state.list->RSSetScissorRects(1, &rect);
                 for (const CanvasViewState& view : gAppState.canvasViews) {
-                    if (view.id == kCanvasViewInvalid || view.window != windows[i]) {
+                    if (view.id == kCanvasViewInvalid || view.window != windows[i] || view.rect.width <= 0
+                        || view.rect.height <= 0) {
                         continue;
                     }
-                    // Every view covers the whole client area for now, rebuilt every frame so a resize or DPI change
-                    // shows on the next present. One triangle covers it; the pixel shader looks each pixel's tiles up
-                    // in the view's page table, so filtering crosses tile edges like any other texel.
+                    // Each shown view in its rect of the window's layout, laid out by AppWindowFrame right before.
+                    // One triangle covers it; the pixel shader looks each pixel's tiles up in the view's page table,
+                    // so filtering crosses tile edges like any other texel.
                     TracyD3D12NamedZone(state.gpuProfiler, gpuCanvasZone, state.list, "GpuCanvas", true);
                     const float dpiScale = gPlatformState.windows[windows[i]].state.dpiScale;
                     const TileGridPos origin = ViewportOriginTile(view.viewport);
-                    CanvasViewConstants constants =
-                        CanvasViewConstantsMake(view.viewport, origin, slot.width, slot.height, dpiScale);
+                    const CD3DX12_RECT viewRect(view.rect.x, view.rect.y, view.rect.x + view.rect.width,
+                                                view.rect.y + view.rect.height);
+                    CanvasViewConstants constants = CanvasViewConstantsMake(view.viewport, origin, view.rect, dpiScale);
                     const CanvasState& viewCanvas = gAppState.canvases[view.canvas];
                     // A transform's box replaces the outline.
                     const auto transformBox = AppTransformBox(view.window);
@@ -1258,7 +1265,7 @@ void RecordTileDownloads() noexcept {
                                             : 0;
                     const Color::Srgb bg = viewCanvas.backgroundColor;
                     const float background[4] = {bg.r * bg.a, bg.g * bg.a, bg.b * bg.a, bg.a};
-                    state.list->ClearRenderTargetView(rtvs[i], background, 1, &rect);
+                    state.list->ClearRenderTargetView(rtvs[i], background, 1, &viewRect);
                     const std::size_t entries =
                         std::size_t{constants.regionWidth} * constants.regionHeight * (constants.selection + 1);
                     const bool overflow = pageTableUsed + entries > kPageTableEntriesMax;
@@ -1274,9 +1281,11 @@ void RecordTileDownloads() noexcept {
                     PageTableFill(gAppState.canvases[view.canvas], constants, origin,
                                   std::span(state.pageTablesMapped + first, entries));
                     pageTableUsed += entries;
-                    const CD3DX12_VIEWPORT target(0.0f, 0.0f, static_cast<float>(slot.width),
-                                                  static_cast<float>(slot.height));
+                    const CD3DX12_VIEWPORT target(static_cast<float>(view.rect.x), static_cast<float>(view.rect.y),
+                                                  static_cast<float>(view.rect.width),
+                                                  static_cast<float>(view.rect.height));
                     state.list->RSSetViewports(1, &target);
+                    state.list->RSSetScissorRects(1, &viewRect);
                     state.list->SetGraphicsRoot32BitConstants(kCanvasViewRootParameter, kCanvasViewConstantCount,
                                                               &constants, 0);
                     state.list->SetGraphicsRootShaderResourceView(kPageTableRootParameter,
@@ -1301,6 +1310,7 @@ void RecordTileDownloads() noexcept {
                     state.list->SetPipelineState(state.outlinePipeline);
                     state.list->SetGraphicsRootSignature(state.outlineRootSignature);
                     state.list->RSSetViewports(1, &target);
+                    state.list->RSSetScissorRects(1, &rect);
                     state.list->SetGraphicsRoot32BitConstants(0, kBrushOutlineConstantCount, &constants, 0);
                     state.list->DrawInstanced(4, 1, 0, 0);
                 }

@@ -302,5 +302,21 @@
     "tagDelete": "Supprimer",
     "askTagDelete": "Supprimer l'étiquette %s ?",
     "askTagDeleteContent": "Les endroits qu'elle couvre sont oubliés. Les étiquettes ne peuvent pas être annulées.",
-    "tag.delete": "Supprimer une étiquette et oublier les endroits qu'elle couvre, après confirmation"
+    "tag.delete": "Supprimer une étiquette et oublier les endroits qu'elle couvre, après confirmation",
+    "windowNewMenu": "Nouvelle fenêtre",
+    "tabDuplicate": "Dupliquer l'onglet",
+    "splitRight": "Diviser à droite",
+    "splitDown": "Diviser en bas",
+    "tabClose": "Fermer l'onglet",
+    "window.new": "Nouvelle fenêtre montrant le canevas depuis l'endroit de cette vue",
+    "view.duplicate": "Nouvel onglet montrant le canevas depuis l'endroit de cette vue",
+    "view.splitRight": "Diviser le panneau, le canevas montré à nouveau à droite",
+    "view.splitDown": "Diviser le panneau, le canevas montré à nouveau en bas",
+    "view.close": "Fermer l'onglet, en demandant d'enregistrer son canevas quand aucune autre vue ne le montre",
+    "view.nextTab": "Afficher l'onglet suivant du panneau",
+    "view.previousTab": "Afficher l'onglet précédent du panneau",
+    "view.activate": "Afficher un onglet et donner le focus à son panneau",
+    "layerVisibleTip": "Affiché",
+    "layerLockTip": "Verrouillé : ses pixels ne peuvent être ni peints, ni effacés, ni coupés, ni transformés. Un dossier verrouillé verrouille ce qu'il contient.",
+    "layer.toggleLocked": "Verrouiller ou déverrouiller les pixels des calques sélectionnés"
 }

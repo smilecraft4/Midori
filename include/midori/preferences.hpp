@@ -24,9 +24,10 @@ struct Preferences {
     float zoomMin{kViewportZoomMin};                // within [kViewportZoomMin, kViewportZoomMax], zoomMin <= zoomMax
     float zoomMax{kViewportZoomMax};
     std::vector<std::filesystem::path> recentFiles; // the most recent first, up to kRecentFilesMax
-    std::vector<OpenFile> openFiles;                // shown in a window at the last exit, up to kWindowMax
+    std::vector<OpenFile> openFiles;                // tabs at the last exit, up to kCanvasViewMax in kWindowMax windows
     std::string language;                           // a code of kLanguages, empty for the system's
-    std::vector<Color::Srgb> colors{Color::Srgb{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f}, Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}}; // ToolsState::colors
+    std::vector<Color::Srgb> colors{Color::Srgb{.r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f},
+                                    Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}}; // ToolsState::colors
     std::vector<Color::Srgb> recentColors;
     std::uint32_t colorSlot{};
     bool reopenFiles{true}; // launched without files, opens `openFiles`

@@ -29,6 +29,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <tracy/Tracy.hpp>
 
 namespace Midori {
@@ -571,9 +572,8 @@ void TagSwatch(Window window, const CanvasState& canvas, std::uint32_t tag, floa
 
 // Null when the window shows no canvas.
 [[nodiscard]] CanvasState* WindowCanvasGet(Window window) noexcept {
-    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
-    return view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid ? nullptr
-                                                                                 : &gAppState.canvases[view->canvas];
+    const CanvasView view = AppWindowView(window);
+    return view == kCanvasViewInvalid ? nullptr : &gAppState.canvases[gAppState.canvasViews[view].canvas];
 }
 
 // The tag's name, or the field renaming it after a double click; a right click offers to delete it. True when clicked
@@ -1047,41 +1047,38 @@ void ToolsWindow(Window window, ToolsState& tools) noexcept {
     ImGui::End();
 }
 
-// Canvas to view DIPs as in the renderer, then to client pixels around the floored center.
-[[nodiscard]] ImVec2 CanvasToScreen(const Viewport& viewport, const WindowState& windowState, double x,
-                                    double y) noexcept {
+// Canvas to view DIPs as in the renderer, then to client pixels around the view's floored center.
+[[nodiscard]] ImVec2 CanvasToScreen(const CanvasViewState& view, float dpiScale, double x, double y) noexcept {
+    const Viewport& viewport = view.viewport;
     const float c = std::cos(viewport.rot);
     const float s = std::sin(viewport.rot);
-    const float centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
-    const float centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
-    const float scale = windowState.dpiScale;
+    const float centerX = static_cast<float>(view.rect.x) + std::floor(static_cast<float>(view.rect.width) * 0.5f);
+    const float centerY = static_cast<float>(view.rect.y) + std::floor(static_cast<float>(view.rect.height) * 0.5f);
+    const float scale = dpiScale;
     const auto dx = static_cast<float>(x - viewport.posX);
     const auto dy = static_cast<float>(y - viewport.posY);
     return ImVec2(centerX + (((dx * c) - (dy * s)) * viewport.zoomX * scale),
                   centerY + (((dx * s) + (dy * c)) * viewport.zoomY * scale));
 }
 
-[[nodiscard]] TagPoint ScreenToCanvas(const Viewport& viewport, const WindowState& windowState, ImVec2 pos) noexcept {
+[[nodiscard]] TagPoint ScreenToCanvas(const CanvasViewState& view, float dpiScale, ImVec2 pos) noexcept {
+    const Viewport& viewport = view.viewport;
     const double c = std::cos(viewport.rot);
     const double s = std::sin(viewport.rot);
-    const double centerX = std::floor(static_cast<float>(windowState.width) * 0.5f);
-    const double centerY = std::floor(static_cast<float>(windowState.height) * 0.5f);
-    const double u = (pos.x - centerX) / (viewport.zoomX * windowState.dpiScale);
-    const double v = (pos.y - centerY) / (viewport.zoomY * windowState.dpiScale);
+    const double centerX = static_cast<double>(view.rect.x) + std::floor(static_cast<double>(view.rect.width) * 0.5);
+    const double centerY = static_cast<double>(view.rect.y) + std::floor(static_cast<double>(view.rect.height) * 0.5);
+    const double u = (pos.x - centerX) / (viewport.zoomX * dpiScale);
+    const double v = (pos.y - centerY) / (viewport.zoomY * dpiScale);
     return TagPoint{.x = viewport.posX + (u * c) + (v * s), .y = viewport.posY - (u * s) + (v * c)};
 }
 
-// Outlines every tile of the window's canvas view on screen, labeled with its atlas cell and grid position. Drawn
-// behind the UI windows, over the canvas.
-void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
+// Outlines every tile of the view on screen, labeled with its atlas cell and grid position. Drawn behind the UI
+// windows, over the canvas.
+void TileCellsOverlay(const CanvasViewState* view, const WindowState& windowState) noexcept {
     ZoneScopedN("TileCellsOverlay");
-    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
-    if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
-        return;
-    }
     const Viewport& viewport = view->viewport;
     const auto toScreen = [&](double x, double y) {
-        return CanvasToScreen(viewport, windowState, x, y);
+        return CanvasToScreen(*view, windowState.dpiScale, x, y);
     };
 
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
@@ -1114,11 +1111,7 @@ void TileCellsOverlay(Window window, const WindowState& windowState) noexcept {
 // While a Tags tool is current: the checked tags' tiles in their colors, and the tiles a drag is going over with its
 // shape. Otherwise the tiles carrying every selected tag, only with the tagZoneShown preference. Each row's run of
 // tiles is one quad. Behind the UI windows.
-void TagsOverlay(Window window, const WindowState& windowState, const ToolsState& tools) noexcept {
-    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
-    if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
-        return;
-    }
+void TagsOverlay(const CanvasViewState* view, const WindowState& windowState, const ToolsState& tools) noexcept {
     const CanvasState& canvas = gAppState.canvases[view->canvas];
     std::uint64_t shown = 0;
     if (ToolCurrent(tools).target == ToolTarget::Tags) {
@@ -1132,7 +1125,6 @@ void TagsOverlay(Window window, const WindowState& windowState, const ToolsState
         return;
     }
     ZoneScopedN("TagsOverlay");
-    const Viewport& viewport = view->viewport;
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     constexpr auto kSize = static_cast<double>(kTileSize);
     const auto runDraw = [&](TileGridPos first, std::int32_t lastX, ImU32 color) {
@@ -1140,9 +1132,10 @@ void TagsOverlay(Window window, const WindowState& windowState, const ToolsState
         const double x1 = static_cast<double>(lastX + 1) * kSize;
         const double y0 = static_cast<double>(first.y) * kSize;
         const double y1 = y0 + kSize;
-        drawList->AddQuadFilled(
-            CanvasToScreen(viewport, windowState, x0, y0), CanvasToScreen(viewport, windowState, x1, y0),
-            CanvasToScreen(viewport, windowState, x1, y1), CanvasToScreen(viewport, windowState, x0, y1), color);
+        drawList->AddQuadFilled(CanvasToScreen(*view, windowState.dpiScale, x0, y0),
+                                CanvasToScreen(*view, windowState.dpiScale, x1, y0),
+                                CanvasToScreen(*view, windowState.dpiScale, x1, y1),
+                                CanvasToScreen(*view, windowState.dpiScale, x0, y1), color);
     };
     // Sorted grid positions run along rows.
     const auto runsDraw = [&](auto&& positions, ImU32 color) {
@@ -1187,8 +1180,8 @@ void TagsOverlay(Window window, const WindowState& windowState, const ToolsState
             return std::ranges::binary_search(keys, TileKeyMake(0, 0, TileGridPos{.x = x, .y = y}));
         };
         const auto side = [&](double x0, double y0, double x1, double y1) {
-            drawList->AddLine(CanvasToScreen(viewport, windowState, x0, y0),
-                              CanvasToScreen(viewport, windowState, x1, y1), edge, thickness);
+            drawList->AddLine(CanvasToScreen(*view, windowState.dpiScale, x0, y0),
+                              CanvasToScreen(*view, windowState.dpiScale, x1, y1), edge, thickness);
         };
         for (const TileKey key : keys) {
             const TileGridPos pos = TileKeyGridPos(key);
@@ -1220,9 +1213,12 @@ void TagsOverlay(Window window, const WindowState& windowState, const ToolsState
     }
 
     // Over a shown zone, every tag of the tile under the pointer.
+    const ImVec2 mouse = ImGui::GetMousePos();
     if (drag.view != view->id && ImGui::IsMousePosValid() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)
-        && !ImGui::IsAnyItemActive()) {
-        const TagPoint point = ScreenToCanvas(viewport, windowState, ImGui::GetMousePos());
+        && !ImGui::IsAnyItemActive() && mouse.x >= static_cast<float>(view->rect.x)
+        && mouse.x < static_cast<float>(view->rect.x + view->rect.width) && mouse.y >= static_cast<float>(view->rect.y)
+        && mouse.y < static_cast<float>(view->rect.y + view->rect.height)) {
+        const TagPoint point = ScreenToCanvas(*view, windowState.dpiScale, ImGui::GetMousePos());
         const TileKey key = TileKeyMake(0, 0,
                                         TileGridPos{.x = static_cast<TileAxis>(std::floor(point.x / kSize)),
                                                     .y = static_cast<TileAxis>(std::floor(point.y / kSize))});
@@ -1256,15 +1252,16 @@ void TagsOverlay(Window window, const WindowState& windowState, const ToolsState
     if (drag.shape == ToolShape::Box) {
         const TagPoint a = drag.points.front();
         const TagPoint b = drag.points.back();
-        drawList->AddQuad(
-            CanvasToScreen(viewport, windowState, a.x, a.y), CanvasToScreen(viewport, windowState, b.x, a.y),
-            CanvasToScreen(viewport, windowState, b.x, b.y), CanvasToScreen(viewport, windowState, a.x, b.y), accent);
+        drawList->AddQuad(CanvasToScreen(*view, windowState.dpiScale, a.x, a.y),
+                          CanvasToScreen(*view, windowState.dpiScale, b.x, a.y),
+                          CanvasToScreen(*view, windowState.dpiScale, b.x, b.y),
+                          CanvasToScreen(*view, windowState.dpiScale, a.x, b.y), accent);
         return;
     }
     std::vector<ImVec2> points;
     points.reserve(drag.points.size());
     for (const TagPoint point : drag.points) {
-        points.push_back(CanvasToScreen(viewport, windowState, point.x, point.y));
+        points.push_back(CanvasToScreen(*view, windowState.dpiScale, point.x, point.y));
     }
     drawList->AddPolyline(points.data(), static_cast<int>(points.size()), accent, 1.0f,
                           drag.shape == ToolShape::Lasso ? ImDrawFlags_Closed : ImDrawFlags_None);
@@ -1277,13 +1274,13 @@ void TransformOverlay(Window window, const WindowState& windowState) noexcept {
         return;
     }
     ZoneScopedN("TransformOverlay");
-    const Viewport& viewport = gAppState.canvasViews[box->view].viewport;
+    const CanvasViewState* view = &gAppState.canvasViews[box->view];
     const SelectionBounds& source = box->source;
     const auto at = [&](double handleX, double handleY) {
         const double x = ((source.minX + source.maxX) * 0.5) + (handleX * (source.maxX - source.minX) * 0.5);
         const double y = ((source.minY + source.maxY) * 0.5) + (handleY * (source.maxY - source.minY) * 0.5);
         const StrokeTransformPoint to = StrokeTransformApply(box->transform, x, y);
-        return CanvasToScreen(viewport, windowState, to.x, to.y);
+        return CanvasToScreen(*view, windowState.dpiScale, to.x, to.y);
     };
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     // An accent rather than white or black, so it shows over light and dark paint alike.
@@ -1703,13 +1700,13 @@ void LayersWindow(Window window) noexcept {
         ImGui::End();
         return;
     }
-    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
-    if (view == gAppState.canvasViews.end() || view->id == kCanvasViewInvalid) {
+    const CanvasView view = AppWindowView(window);
+    if (view == kCanvasViewInvalid) {
         ImGui::TextUnformatted(TextGet(Text::NoCanvas));
         ImGui::End();
         return;
     }
-    CanvasState& canvas = gAppState.canvases[view->canvas];
+    CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[view].canvas];
 
     // The blend mode and opacity over the list: the active layer's shown, every selected one's set.
     const Layer active = canvas.activeLayer;
@@ -1806,6 +1803,16 @@ void LayersWindow(Window window) noexcept {
                 after.hidden = !visible;
                 LayerPropertiesEdit(canvas, id, before, after);
             }
+            ImGui::SetItemTooltip("%s", TextGet(Text::LayerVisibleTip));
+            ImGui::SameLine();
+            bool locked = HasAnyFlag(layer.flags, LayerFlags::Locked);
+            if (ImGui::Checkbox("##locked", &locked)) {
+                const LayerProperties before = LayerPropertiesGet(canvas, id);
+                LayerProperties after = before;
+                after.locked = locked;
+                LayerPropertiesEdit(canvas, id, before, after);
+            }
+            ImGui::SetItemTooltip("%s", TextGet(Text::LayerLockTip));
             ImGui::SameLine();
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (static_cast<float>(depth) * indent));
             if (folder) {
@@ -2141,9 +2148,13 @@ void SearchEntriesBuild(Window window) noexcept {
     for (const ToolState& tool : app.tools.library) {
         add(ActionId::ToolSelect, tool.id, tool.name.data());
     }
-    if (const auto view = std::ranges::find(app.canvasViews, window, &CanvasViewState::window);
-        view != app.canvasViews.end() && view->id != kCanvasViewInvalid) {
-        const CanvasState& canvas = app.canvases[view->canvas];
+    for (const CanvasViewState& tab : app.canvasViews) {
+        if (tab.id != kCanvasViewInvalid && tab.window == window) {
+            add(ActionId::ViewActivate, tab.id, AppCanvasTitle(tab.canvas));
+        }
+    }
+    if (const CanvasView view = AppWindowView(window); view != kCanvasViewInvalid) {
+        const CanvasState& canvas = app.canvases[app.canvasViews[view].canvas];
         for (const Layer layer : canvas.layersOrder) {
             if (!HasAnyFlag(canvas.layers[layer].flags, LayerFlags::Internal)) {
                 add(ActionId::LayerActivate, layer, canvas.layerNames[layer].data());
@@ -2543,6 +2554,144 @@ std::optional<WindowCursor> UiCursor(Window window) noexcept {
     }
 }
 
+// Each pane's tab strip once it has two tabs, the handles between the sides of each split, and with several panes an
+// accent frame around the focused view. Behind every other UI window: they never come to the front.
+void PanesDraw(Window window, const WindowState& windowState) noexcept {
+    ZoneScopedN("PanesDraw");
+    WindowLayout& layout = gAppState.layouts[window];
+    constexpr ImGuiWindowFlags kChrome = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
+                                       | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking
+                                       | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav
+                                       | ImGuiWindowFlags_NoFocusOnAppearing;
+    // Opaque: what the window leaves transparent shows the desktop.
+    const auto opaque = [](ImGuiCol color) {
+        ImVec4 value = ImGui::GetStyleColorVec4(color);
+        value.w = 1.0f;
+        return value;
+    };
+    // Around panes that leave part of the client area, under the docked panels, what no view covers.
+    if (const CanvasViewRect& root = layout.nodes[0].rect;
+        root.x > 0 || root.y > 0 || root.width < windowState.width || root.height < windowState.height) {
+        ImDrawList* background = ImGui::GetBackgroundDrawList();
+        const ImU32 fill = ImGui::GetColorU32(opaque(ImGuiCol_WindowBg));
+        const auto left = static_cast<float>(root.x);
+        const auto top = static_cast<float>(root.y);
+        const auto right = static_cast<float>(root.x + root.width);
+        const auto bottom = static_cast<float>(root.y + root.height);
+        const auto width = static_cast<float>(windowState.width);
+        const auto height = static_cast<float>(windowState.height);
+        background->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(width, top), fill);
+        background->AddRectFilled(ImVec2(0.0f, bottom), ImVec2(width, height), fill);
+        background->AddRectFilled(ImVec2(0.0f, top), ImVec2(left, bottom), fill);
+        background->AddRectFilled(ImVec2(right, top), ImVec2(width, bottom), fill);
+    }
+    const float strip = std::round(kLayoutTabStripDips * windowState.dpiScale);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, opaque(ImGuiCol_WindowBg));
+    for (std::uint8_t i = 0; i < layout.count; ++i) {
+        const LayoutNode& node = layout.nodes[i];
+        ImGui::PushID(i);
+        if (node.split == LayoutSplit::None) {
+            std::array<CanvasView, kCanvasViewMax> tabs{};
+            const std::uint32_t count = AppPaneTabs(window, i, tabs);
+            if (count > 1) {
+                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(node.rect.x), static_cast<float>(node.rect.y)));
+                ImGui::SetNextWindowSize(ImVec2(static_cast<float>(node.rect.width), strip));
+                ImGui::PushStyleVar(
+                    ImGuiStyleVar_WindowPadding,
+                    ImVec2(ImGui::GetStyle().FramePadding.x, std::max(0.0f, (strip - ImGui::GetFrameHeight()) * 0.5f)));
+                const std::string name = std::format("##tabs{}", i);
+                if (ImGui::Begin(name.c_str(), nullptr, kChrome)
+                    && ImGui::BeginTabBar("##tabBar", ImGuiTabBarFlags_FittingPolicyScroll)) {
+                    for (std::uint32_t t = 0; t < count; ++t) {
+                        const CanvasView view = tabs[t];
+                        const std::string label =
+                            std::format("{}###view{}", AppCanvasTitle(gAppState.canvasViews[view].canvas), view);
+                        bool open = true;
+                        const bool shown = ImGui::BeginTabItem(label.c_str(), &open,
+                                                               view == node.active ? ImGuiTabItemFlags_SetSelected
+                                                                                   : ImGuiTabItemFlags_None);
+                        const bool picked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+                        open = open && !ImGui::IsItemClicked(ImGuiMouseButton_Middle);
+                        if (shown) {
+                            ImGui::EndTabItem();
+                        }
+                        if ((picked && view != node.active) || !open) {
+                            ActionRequestPush(window, ActionId::ViewActivate, view);
+                        }
+                        if (!open) {
+                            ActionRequestPush(window, ActionId::ViewClose);
+                        }
+                    }
+                    ImGui::EndTabBar();
+                }
+                ImGui::End();
+                ImGui::PopStyleVar();
+            }
+            ImGui::PopID();
+            continue;
+        }
+        const LayoutNode& first = layout.nodes[node.first];
+        const bool columns = node.split == LayoutSplit::Columns;
+        const ImVec2 pos =
+            columns ? ImVec2(static_cast<float>(first.rect.x + first.rect.width), static_cast<float>(node.rect.y))
+                    : ImVec2(static_cast<float>(node.rect.x), static_cast<float>(first.rect.y + first.rect.height));
+        const auto gap = static_cast<float>(kLayoutSplitterPixels);
+        const ImVec2 size = columns ? ImVec2(gap, static_cast<float>(node.rect.height))
+                                    : ImVec2(static_cast<float>(node.rect.width), gap);
+        if (size.x <= 0.0f || size.y <= 0.0f) {
+            ImGui::PopID();
+            continue;
+        }
+        // The line itself, then a handle wider than it over both sides, which the pointer can find.
+        ImGui::GetBackgroundDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                                                      ImGui::GetColorU32(opaque(ImGuiCol_Separator)));
+        const float grab = std::round(kLayoutSplitterGrabDips * windowState.dpiScale);
+        const ImVec2 handlePos = columns ? ImVec2(pos.x - grab, pos.y) : ImVec2(pos.x, pos.y - grab);
+        const ImVec2 handleSize =
+            columns ? ImVec2(size.x + (grab * 2.0f), size.y) : ImVec2(size.x, size.y + (grab * 2.0f));
+        ImGui::SetNextWindowPos(handlePos);
+        ImGui::SetNextWindowSize(handleSize);
+        ImGui::SetNextWindowBgAlpha(0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, 1.0f));
+        const std::string name = std::format("##split{}", i);
+        if (ImGui::Begin(name.c_str(), nullptr, kChrome)) {
+            ImGui::InvisibleButton("##handle", handleSize);
+            const bool active = ImGui::IsItemActive();
+            if (active || ImGui::IsItemHovered()) {
+                ImGui::SetMouseCursor(columns ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                    ImGui::GetColorU32(opaque(active ? ImGuiCol_SeparatorActive : ImGuiCol_SeparatorHovered)));
+            }
+            const float room =
+                (columns ? static_cast<float>(node.rect.width) : static_cast<float>(node.rect.height)) - gap;
+            if (active && room > 0.0f) {
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const float along =
+                    columns ? mouse.x - static_cast<float>(node.rect.x) : mouse.y - static_cast<float>(node.rect.y);
+                layout.nodes[i].share = std::clamp((along - (gap * 0.5f)) / room, 0.05f, 0.95f);
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopID();
+    }
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    if (const CanvasView focused = AppWindowView(window); layout.count > 1 && focused != kCanvasViewInvalid) {
+        const CanvasViewRect& rect = gAppState.canvasViews[focused].rect;
+        const float thickness = std::max(1.0f, std::round(windowState.dpiScale));
+        ImGui::GetBackgroundDrawList()->AddRect(
+            ImVec2(static_cast<float>(rect.x) + (thickness * 0.5f), static_cast<float>(rect.y) + (thickness * 0.5f)),
+            ImVec2(static_cast<float>(rect.x + rect.width) - (thickness * 0.5f),
+                   static_cast<float>(rect.y + rect.height) - (thickness * 0.5f)),
+            ImGui::GetColorU32(ImGuiCol_CheckMark), 0.0f, thickness);
+    }
+}
+
 void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept {
     ZoneScopedN("UiWindowFrame");
     MIDORI_ASSERT(window < kWindowMax && gUiState.contexts[window], "UiWindowFrame: no context for window {}", window);
@@ -2564,17 +2713,36 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
 
     ImGui::NewFrame();
     // ImGui::ShowDemoWindow();
-    const auto view = std::ranges::find(gAppState.canvasViews, window, &CanvasViewState::window);
-    const bool hasCanvas = viewport && view != gAppState.canvasViews.end() && view->id != kCanvasViewInvalid;
-    StateOverlay(*state, hasCanvas ? viewport : nullptr, hasCanvas ? &gAppState.canvases[view->canvas] : nullptr,
-                 tools);
-    TagsOverlay(window, *state, tools);
+    const CanvasView focused = AppWindowView(window);
+    const bool hasCanvas = viewport && focused != kCanvasViewInvalid;
+    StateOverlay(*state, hasCanvas ? viewport : nullptr,
+                 hasCanvas ? &gAppState.canvases[gAppState.canvasViews[focused].canvas] : nullptr, tools);
+    for (const CanvasViewState& shown : gAppState.canvasViews) {
+        if (shown.id == kCanvasViewInvalid || shown.window != window || shown.rect.width <= 0
+            || shown.rect.height <= 0) {
+            continue;
+        }
+        ImDrawList* background = ImGui::GetBackgroundDrawList();
+        background->PushClipRect(ImVec2(static_cast<float>(shown.rect.x), static_cast<float>(shown.rect.y)),
+                                 ImVec2(static_cast<float>(shown.rect.x + shown.rect.width),
+                                        static_cast<float>(shown.rect.y + shown.rect.height)),
+                                 true);
+        TagsOverlay(&shown, *state, tools);
+        if (gUiState.tileCellsShown[window] && !gUiState.hidden[window]) {
+            TileCellsOverlay(&shown, *state);
+        }
+        background->PopClipRect();
+    }
     TransformOverlay(window, *state);
     WhichKeyOverlay(*state);
     if (gUiState.searchShown[window]) {
         SearchWindow(window);
     }
+    // Hidden, the panes divide the whole client area; else the middle the docked panels leave.
     if (gUiState.hidden[window]) {
+        gAppState.layouts[window].area = {};
+        AppLayoutUpdate(window);
+        PanesDraw(window, *state);
         BrushAdjustOverlay(window, *state, tools);
         ImGui::Render();
         return;
@@ -2621,6 +2789,12 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
                        state->displayMode == WindowDisplayMode::Fullscreened);
             MenuAction(window, Text::HideUi, ActionId::UiToggle, gUiState.hidden[window]);
             ImGui::Separator();
+            MenuAction(window, Text::WindowNewMenu, ActionId::WindowNew);
+            MenuAction(window, Text::TabDuplicate, ActionId::ViewDuplicate);
+            MenuAction(window, Text::SplitRight, ActionId::ViewSplitRight);
+            MenuAction(window, Text::SplitDown, ActionId::ViewSplitDown);
+            MenuAction(window, Text::TabClose, ActionId::ViewClose);
+            ImGui::Separator();
             MenuAction(window, Text::View, ActionId::PanelView, gUiState.viewShown[window]);
             MenuAction(window, Text::Toolbar, ActionId::PanelToolbar, gUiState.toolbarShown[window]);
             MenuAction(window, Text::Tools, ActionId::PanelTools, gUiState.toolsShown[window]);
@@ -2642,14 +2816,25 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
         ImGui::EndMainMenuBar();
     }
     // Panels dock around the canvas, which shows and takes input through the empty middle.
-    ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiID dockSpace = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+    if (const ImGuiDockNode* middle = ImGui::DockBuilderGetCentralNode(dockSpace)) {
+        gAppState.layouts[window].area = CanvasViewRect{
+            .x = static_cast<int>(std::lround(middle->Pos.x)),
+            .y = static_cast<int>(std::lround(middle->Pos.y)),
+            .width = static_cast<int>(std::lround(middle->Size.x)),
+            .height = static_cast<int>(std::lround(middle->Size.y)),
+        };
+    }
+    AppLayoutUpdate(window);
+    PanesDraw(window, *state);
     if (viewport && gUiState.viewShown[window]) {
         if (ImGui::Begin(TextLabel(Text::View), &gUiState.viewShown[window])) {
             ImGui::Text(TextGet(Text::ViewZoom), std::abs(viewport->zoomX) * 100.0f,
                         viewport->rot * 180.0f / std::numbers::pi_v<float>);
             // The pointer in canvas units, as painting places it.
-            const float centerX = std::floor(static_cast<float>(state->width) * 0.5f);
-            const float centerY = std::floor(static_cast<float>(state->height) * 0.5f);
+            const CanvasViewRect& rect = gAppState.canvasViews[focused].rect;
+            const float centerX = static_cast<float>(rect.x) + std::floor(static_cast<float>(rect.width) * 0.5f);
+            const float centerY = static_cast<float>(rect.y) + std::floor(static_cast<float>(rect.height) * 0.5f);
             const Viewport under = ViewportMove(*viewport, -(gAppState.pointerX - centerX) / state->dpiScale,
                                                 -(gAppState.pointerY - centerY) / state->dpiScale);
             ImGui::Text(TextGet(Text::ViewCenter), viewport->posX, viewport->posY);
@@ -2701,9 +2886,6 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     }
     if (gUiState.helpShown[window]) {
         HelpWindow(window, tools);
-    }
-    if (gUiState.tileCellsShown[window]) {
-        TileCellsOverlay(window, *state);
     }
     BrushAdjustOverlay(window, *state, tools);
     ImGui::Render();

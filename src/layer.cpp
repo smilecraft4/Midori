@@ -87,6 +87,7 @@ void LayerPropertiesApply(CanvasState& canvas, Layer layer, const LayerPropertie
     state.opacity = properties.opacity;
     state.blendMode = properties.blendMode;
     state.flags = properties.hidden ? state.flags | LayerFlags::Hidden : state.flags & ~LayerFlags::Hidden;
+    state.flags = properties.locked ? state.flags | LayerFlags::Locked : state.flags & ~LayerFlags::Locked;
     state.flags |= LayerFlags::Dirty;
     canvas.layerNames[layer] = properties.name;
     canvas.layerNames[layer].back() = '\0';
@@ -202,8 +203,16 @@ bool LayerOpsBlocked(const CanvasState& canvas) noexcept {
 }
 
 bool LayerPaintable(const CanvasState& canvas, Layer layer) noexcept {
-    return LayerEditable(canvas, layer)
-        && !HasAnyFlag(canvas.layers[layer].flags, LayerFlags::Folder | LayerFlags::Hidden | LayerFlags::Locked);
+    if (!LayerEditable(canvas, layer)
+        || HasAnyFlag(canvas.layers[layer].flags, LayerFlags::Folder | LayerFlags::Hidden | LayerFlags::Locked)) {
+        return false;
+    }
+    for (Layer parent = canvas.layerParents[layer]; parent != kLayerInvalid; parent = canvas.layerParents[parent]) {
+        if (HasAnyFlag(canvas.layers[parent].flags, LayerFlags::Locked)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Result<Layer> LayerNew(Canvas canvasId, const LayerCreateInfo& createInfo) noexcept {
@@ -458,6 +467,7 @@ LayerProperties LayerPropertiesGet(const CanvasState& canvas, Layer layer) noexc
         .name = canvas.layerNames[layer],
         .blendMode = state.blendMode,
         .hidden = HasAnyFlag(state.flags, LayerFlags::Hidden),
+        .locked = HasAnyFlag(state.flags, LayerFlags::Locked),
     };
 }
 
@@ -495,6 +505,8 @@ void LayerPropertiesCommit(Canvas canvasId, std::span<const Layer> layers,
         entry.before.blendMode = before[i].blendMode;
         entry.before.flags =
             before[i].hidden ? entry.before.flags | LayerFlags::Hidden : entry.before.flags & ~LayerFlags::Hidden;
+        entry.before.flags =
+            before[i].locked ? entry.before.flags | LayerFlags::Locked : entry.before.flags & ~LayerFlags::Locked;
     }
     if (!changed.empty()) {
         HistoryPushLayers(canvasId, {}, changed);

@@ -30,7 +30,7 @@ constexpr Canvas kCanvasMax = 16;
 constexpr Canvas kCanvasInvalid = std::numeric_limits<Canvas>::max();
 
 using CanvasView = std::uint8_t;
-constexpr CanvasView kCanvasViewMax = 16;
+constexpr CanvasView kCanvasViewMax = 64;
 constexpr CanvasView kCanvasViewInvalid = std::numeric_limits<CanvasView>::max();
 
 enum struct LayerFlags : std::uint8_t {
@@ -405,10 +405,10 @@ struct CanvasState {
     CanvasFile cache;     // a temporary file holding evicted tiles, only its tiles table used; null when not created
     HistoryState history;
     std::uint64_t tags{}; // bit i: tag i exists. Tags stay out of history
-    std::uint64_t tagsChecked{};        // the tags the Tag tool edits and shows
-    std::uint64_t tagsSelected{};       // tag.next and tag.previous go through the places carrying all of them
+    std::uint64_t tagsChecked{};      // the tags the Tag tool edits and shows
+    std::uint64_t tagsSelected{};     // tag.next and tag.previous go through the places carrying all of them
     Layer largestLayer{};
-    Layer activeLayer{kLayerInvalid};   // strokes paint into it; kLayerInvalid when none
+    Layer activeLayer{kLayerInvalid}; // strokes paint into it; kLayerInvalid when none
     // A Mask layer out of the order: coverage in its alpha clips every other stroke while `selectionBounds` is not
     // empty. Made with the first selection, never saved; kLayerInvalid before.
     Layer selection{kLayerInvalid};
@@ -417,10 +417,12 @@ struct CanvasState {
     bool modified{};           // changed since the last save, or since created
 };
 
-// A file shown in a window at exit, and how it was being worked on.
+// A file shown in a window at exit, and how it was being worked on. Files of one window share `window`, a number
+// counted from 0 in closing order, and reopen as its tabs.
 struct OpenFile {
     std::filesystem::path path;
     std::uint64_t tagsChecked;
+    std::uint8_t window;
 };
 
 // These never ask the user anything; the App* calls wrap them with dialogs.
@@ -481,17 +483,28 @@ struct CanvasViewCreateInfo {
     Window window{kWindowInvalid};
 };
 
-// Lives in AppState::canvasViews, indexed by its id. Attached to `canvas` and owned by `window`: it is
-// destroyed with the window.
+// Client-area physical pixels of the view's window.
+struct CanvasViewRect {
+    int x;
+    int y;
+    int width; // 0: not shown
+    int height;
+};
+
+// Lives in AppState::canvasViews, indexed by its id. Attached to `canvas` and owned by `window`, as one tab of one of
+// its panes: it is destroyed with the window. Several views may show one canvas, each from its own viewport.
 struct CanvasViewState {
     // Navigation history, apart from the canvas's: earlier viewports, the most recent last, and the ones stepped back
     // from. Each pan, zoom or rotation that ended somewhere else, reset or panel edit is one step.
     std::vector<Viewport> viewportUndo;
     std::vector<Viewport> viewportRedo;
     Viewport viewport;
+    CanvasViewRect rect; // where it shows, from its window's layout at the start of each frame; empty as a hidden tab
     CanvasView id{kCanvasViewInvalid}; // kCanvasViewInvalid marks the slot free
     Canvas canvas{kCanvasInvalid};
     Window window{kWindowInvalid};
+    std::uint8_t pane{}; // the leaf of its window's WindowLayout holding it
+    std::uint8_t tab{};  // its place among the pane's tabs, from 0, left to right
 };
 
 [[nodiscard]] Result<CanvasView> CanvasViewCreate(CanvasViewCreateInfo createInfo) noexcept;

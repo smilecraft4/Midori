@@ -302,5 +302,21 @@
     "tagDelete": "削除",
     "askTagDelete": "タグ %s を削除しますか？",
     "askTagDeleteContent": "このタグが付いた場所は失われます。タグの操作は元に戻せません。",
-    "tag.delete": "確認のうえ、タグを削除してその場所を忘れる"
+    "tag.delete": "確認のうえ、タグを削除してその場所を忘れる",
+    "windowNewMenu": "新しいウィンドウ",
+    "tabDuplicate": "タブを複製",
+    "splitRight": "右に分割",
+    "splitDown": "下に分割",
+    "tabClose": "タブを閉じる",
+    "window.new": "このビューの位置からキャンバスを表示する新しいウィンドウ",
+    "view.duplicate": "このビューの位置からキャンバスを表示する新しいタブ",
+    "view.splitRight": "ペインを分割し、右側にキャンバスをもう一度表示",
+    "view.splitDown": "ペインを分割し、下側にキャンバスをもう一度表示",
+    "view.close": "タブを閉じる（他のビューで表示されていなければキャンバスの保存を確認）",
+    "view.nextTab": "ペインの次のタブを表示",
+    "view.previousTab": "ペインの前のタブを表示",
+    "view.activate": "タブを表示してそのペインにフォーカス",
+    "layerVisibleTip": "表示",
+    "layerLockTip": "ロック：ピクセルの描画、消去、切り取り、変形ができません。ロックしたフォルダーは中身もロックします。",
+    "layer.toggleLocked": "選択したレイヤーのピクセルをロック/ロック解除"
 }

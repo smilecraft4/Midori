@@ -149,6 +149,39 @@ struct CopyState {
     bool copied;
 };
 
+// A window's client area split in two, again and again: a binary tree whose leaves are panes, each showing the active
+// one of its tabs (the canvas views whose `pane` it is).
+constexpr std::uint8_t kLayoutNodesMax = 15; // 8 panes and the 7 splits between them
+
+enum struct LayoutSplit : std::uint8_t {
+    None,    // a leaf: a pane
+    Columns, // `first` left of `second`
+    Rows,    // `first` above `second`
+};
+
+// A pane's tab strip, shown with two tabs or more, in DIPs. The line between the two sides of a split is one physical
+// pixel; its handle reaches kLayoutSplitterGrabDips over both sides.
+constexpr float kLayoutTabStripDips = 26.0f;
+constexpr int kLayoutSplitterPixels = 1;
+constexpr float kLayoutSplitterGrabDips = 3.0f;
+
+struct LayoutNode {
+    CanvasViewRect rect;                   // where it lies, its tab strip included; rebuilt with its views' rects
+    float share{0.5f};                     // a split: `first`'s part of its width or height, the rest `second`'s
+    std::uint8_t first{};                  // a split: its two nodes
+    std::uint8_t second{};
+    CanvasView active{kCanvasViewInvalid}; // a pane: its tab shown, kCanvasViewInvalid with no tab
+    LayoutSplit split{};
+};
+
+// nodes[0] is the root, nodes[0, count) in use. A pane with no tab left goes, its sibling taking the split's place.
+struct WindowLayout {
+    std::array<LayoutNode, kLayoutNodesMax> nodes{};
+    CanvasViewRect area{};  // what the panes divide: the UI's dock space middle as of its last frame; empty: all of it
+    std::uint8_t count{1};
+    std::uint8_t focused{}; // the pane the keyboard, menus and panels act on: WindowCanvasView is its active tab
+};
+
 // A left drag of a Color tool: the current color slot takes the color shown under the pointer, sampled once per update
 // while it moves.
 struct EyedropperState {
@@ -174,6 +207,7 @@ struct AppState {
     std::array<WindowState, kWindowMax> windows;
     std::array<CanvasState, kCanvasMax> canvases;
     std::array<CanvasViewState, kCanvasViewMax> canvasViews;
+    std::array<WindowLayout, kWindowMax> layouts; // indexed by window
     TileAtlasState atlas;
     TileTransfersState transfers;
     HistoryPoolState historyPool;
@@ -226,8 +260,20 @@ void AppWindowFrame(Window window) noexcept;
 [[nodiscard]] Result<void> AppUpdate() noexcept;
 void AppTerminate() noexcept;
 
-// The window shows a canvas, replacing its current one once the user has saved or discarded unsaved
-// changes. Canceling any dialog is not an error. Failures are shown to the user, then returned.
+// The view the keyboard, menus and panels act on: the active tab of the window's focused pane; kCanvasViewInvalid when
+// that pane has none.
+[[nodiscard]] CanvasView AppWindowView(Window window) noexcept;
+// The panes' and views' rects from the window's client area.
+void AppLayoutUpdate(Window window) noexcept;
+// The views of the pane, by tab order, at most kCanvasViewMax.
+[[nodiscard]] std::uint32_t AppPaneTabs(Window window, std::uint8_t pane,
+                                        std::span<CanvasView, kCanvasViewMax> tabs) noexcept;
+// The canvas's name as titles and tabs show it, with a * once modified.
+[[nodiscard]] std::string AppCanvasTitle(Canvas canvas) noexcept;
+
+// Each opens the canvas in a new tab of the window's focused pane; a file already open gets a view of its canvas, or
+// that view when this window has one. Canceling any dialog is not an error. Failures are shown to the user, then
+// returned.
 [[nodiscard]] Result<void> AppCanvasNew(Window window) noexcept;
 [[nodiscard]] Result<void> AppCanvasOpen(Window window) noexcept;
 // A file of `recentFiles`; one that does not open leaves the list.
@@ -257,6 +303,7 @@ void AppLayerMove(Window window, bool up) noexcept;
 // The next layer or folder above, or below, becomes active and the only one selected. No undo step.
 void AppLayerSelect(Window window, bool up) noexcept;
 void AppLayerToggleHidden(Window window) noexcept;
+void AppLayerToggleLocked(Window window) noexcept;
 void AppLayerBlendMode(Window window, BlendMode blendMode) noexcept;
 // The blend mode after the active layer's, or before it, wrapping around.
 void AppLayerBlendModeCycle(Window window, bool next) noexcept;

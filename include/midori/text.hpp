@@ -240,6 +240,13 @@ enum struct Text : std::uint8_t {
     TagDelete,
     AskTagDelete,
     AskTagDeleteContent,
+    WindowNewMenu,
+    TabDuplicate,
+    SplitRight,
+    SplitDown,
+    TabClose,
+    LayerVisibleTip,
+    LayerLockTip,
     Count_,
 };
 
@@ -487,6 +494,14 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "tagDelete", .english = "Delete"},
     {.key = "askTagDelete", .english = "Delete the tag %s?"},
     {.key = "askTagDeleteContent", .english = "The places it covers are forgotten. Tags have no undo."},
+    {.key = "windowNewMenu", .english = "New window"},
+    {.key = "tabDuplicate", .english = "Duplicate tab"},
+    {.key = "splitRight", .english = "Split right"},
+    {.key = "splitDown", .english = "Split down"},
+    {.key = "tabClose", .english = "Close tab"},
+    {.key = "layerVisibleTip", .english = "Shown"},
+    {.key = "layerLockTip",
+     .english = "Locked: no painting, erasing, cutting or transforming its pixels. A locked folder locks what it holds."},
 }};
 
 struct LanguageInfo {

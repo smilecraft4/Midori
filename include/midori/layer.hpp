@@ -15,6 +15,7 @@ struct LayerProperties {
     std::array<char, kLayerNameLenMax> name;
     BlendMode blendMode;
     bool hidden;
+    bool locked; // its pixels, and those of everything inside a locked folder, take no edit
 
     [[nodiscard]] bool operator==(const LayerProperties&) const = default;
 };
@@ -36,7 +37,7 @@ void LayerCompositesTouch(CanvasState& canvas, TileKey key) noexcept;
 [[nodiscard]] std::vector<Layer> LayersSelected(const CanvasState& canvas) noexcept;
 // Layer ops wait for the canvas's merge, its stroke and its pending undo or redo steps.
 [[nodiscard]] bool LayerOpsBlocked(const CanvasState& canvas) noexcept;
-// In the order, not a folder, neither hidden nor locked.
+// In the order, not a folder, neither hidden nor locked, nor inside a locked folder.
 [[nodiscard]] bool LayerPaintable(const CanvasState& canvas, Layer layer) noexcept;
 
 // Each pushes one history record. Error::CanvasBusy while LayerOpsBlocked, Error::LayerOpInvalid for the root, a

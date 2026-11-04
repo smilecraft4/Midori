@@ -571,8 +571,9 @@ Result<Preferences> PreferencesLoad() noexcept {
     }
     Read(root, "recentFiles", preferences.recentFiles, kRecentFilesMax);
     if (const auto open = root.find("openFiles"); open != root.end() && open->is_array()) {
+        // Before tabs, each file had a window of its own. A window's files stay together, numbered in order.
         for (const Json& entry : *open) {
-            if (preferences.openFiles.size() == kWindowMax) {
+            if (preferences.openFiles.size() == kCanvasViewMax) {
                 break;
             }
             if (!entry.is_object()) {
@@ -582,7 +583,15 @@ Result<Preferences> PreferencesLoad() noexcept {
             if (filePath == entry.end() || !filePath->is_string()) {
                 continue;
             }
-            OpenFile openFile{.path = PathFromUtf8(filePath->get_ref<const std::string&>()), .tagsChecked = 0};
+            const std::uint32_t previous = preferences.openFiles.empty() ? 0 : preferences.openFiles.back().window;
+            std::uint32_t window = preferences.openFiles.empty() ? 0 : previous + 1;
+            Read(entry, "window", window);
+            if (window >= kWindowMax || window < previous) {
+                continue;
+            }
+            OpenFile openFile{.path = PathFromUtf8(filePath->get_ref<const std::string&>()),
+                              .tagsChecked = 0,
+                              .window = static_cast<std::uint8_t>(window)};
             if (const auto checked = entry.find("tagsChecked");
                 checked != entry.end() && checked->is_number_unsigned()) {
                 openFile.tagsChecked = checked->get<std::uint64_t>();
@@ -614,7 +623,8 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
     }
     Json openFiles = Json::array();
     for (const OpenFile& file : preferences.openFiles) {
-        openFiles.push_back(Json{{"path", PathUtf8(file.path)}, {"tagsChecked", file.tagsChecked}});
+        openFiles.push_back(
+            Json{{"path", PathUtf8(file.path)}, {"tagsChecked", file.tagsChecked}, {"window", file.window}});
     }
     const Json root{
         {"version", kPreferencesVersion},
