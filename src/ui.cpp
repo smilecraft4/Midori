@@ -44,7 +44,8 @@ constexpr std::chrono::milliseconds kUiSettle{600};
 constexpr float kFontSize = 15.0f; // DIPs
 
 constexpr std::array<Text, std::to_underlying(BlendMode::Count_)> kBlendModeTexts = {
-    Text::BlendNormal, Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen, Text::BlendNormalOkLab, Text::Erase,
+    Text::BlendNormal,      Text::BlendMultiply, Text::BlendAdd, Text::BlendScreen,
+    Text::BlendNormalOkLab, Text::Erase,         Text::BlendMin, Text::BlendMax,
 };
 constexpr std::array<Text, kBrushInputCount> kBrushInputTexts = {
     Text::BrushInputPressure, Text::BrushInputTiltX,  Text::BrushInputTiltY,
@@ -1301,15 +1302,57 @@ void TransformOverlay(Window window, const WindowState& windowState) noexcept {
     }
 }
 
-// In the bottom right corner, from the bottom line up: the view's position, zoom and rotation, the active layer's name,
-// blend mode and opacity with how many more are selected, then the current tool with its blend mode or selection
-// operation. Faint so it never draws the eye, behind the UI windows and shown with them hidden too. Without a canvas,
-// only the tool.
-void StateOverlay(const WindowState& windowState, const Viewport* viewport, const CanvasState* canvas,
+// One row along the bottom right, as a status bar, left to right: the key sequence in progress, the current tool with
+// its blend mode or selection operation, the current color, the active layer's name, blend mode and opacity with how
+// many more are selected, the selection's size or the transform in progress, the document's unsaved mark and file
+// size, the view's position, zoom and rotation, then its step in the navigation history. Faint so it never draws the
+// eye, behind the UI windows and shown with them hidden too. Without a canvas, only the keys, tool and color.
+void StateOverlay(const WindowState& windowState, const CanvasViewState* view, const CanvasState* canvas,
                   const ToolsState& tools) noexcept {
     ZoneScopedN("StateOverlay");
-    std::array<std::array<char, 128>, 3> lines{};
-    if (viewport) {
+    constexpr std::size_t kNavigation = 0;
+    constexpr std::size_t kView = 1;
+    constexpr std::size_t kDocument = 2;
+    constexpr std::size_t kSelection = 3;
+    constexpr std::size_t kLayer = 4;
+    constexpr std::size_t kColor = 5;
+    constexpr std::size_t kTool = 6;
+    constexpr std::size_t kKeys = 7;
+    std::array<std::array<char, 128>, 8> lines{};
+    if (const KeymapState& keymap = gAppState.keymap; keymap.pendingLength > 0) {
+        std::string keys;
+        for (std::uint8_t i = 0; i < keymap.pendingLength; ++i) {
+            keys += KeyChordKeys(keymap.pending[i]);
+            keys += ", ";
+        }
+        keys += "...";
+        std::format_to_n(lines[kKeys].data(), lines[kKeys].size() - 1, "{}", keys);
+    }
+    if (canvas) {
+        // Never saved, only the mark: no file to measure.
+        if (canvas->file.env) {
+            const double mib = static_cast<double>(CanvasFileSizeGet(canvas->file).used) / (1024.0 * 1024.0);
+            std::format_to_n(lines[kDocument].data(), lines[kDocument].size() - 1, "{}{:.1f} MiB",
+                             canvas->modified ? "* " : "", mib);
+        } else if (canvas->modified) {
+            lines[kDocument][0] = '*';
+        }
+        if (AppTransforming() && gAppState.stroke.canvas == canvas->id) {
+            const TransformParams& params = gAppState.transform.params;
+            std::format_to_n(lines[kSelection].data(), lines[kSelection].size() - 1,
+                             "{:+.0f}, {:+.0f} {:.1f}% × {:.1f}% {:.1f}°", params.offsetX, params.offsetY,
+                             params.scaleX * 100.0, params.scaleY * 100.0, params.rotation * 180.0 / std::numbers::pi);
+        } else if (const SelectionBounds& bounds = canvas->selectionBounds; !SelectionEmpty(bounds)) {
+            std::format_to_n(lines[kSelection].data(), lines[kSelection].size() - 1, "{:.0f} × {:.0f}",
+                             bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+        }
+    }
+    if (view) {
+        if (const std::size_t steps = view->viewportUndo.size() + view->viewportRedo.size() + 1; steps > 1) {
+            std::format_to_n(lines[kNavigation].data(), lines[kNavigation].size() - 1, "{}/{}",
+                             view->viewportUndo.size() + 1, steps);
+        }
+        const Viewport* viewport = &view->viewport;
         const char* flip = "";
         if (viewport->zoomX < 0.0f && viewport->zoomY < 0.0f) {
             flip = " flip XY";
@@ -1319,7 +1362,7 @@ void StateOverlay(const WindowState& windowState, const Viewport* viewport, cons
             flip = " flip Y";
         }
         // The texel under the view center.
-        std::format_to_n(lines[0].data(), lines[0].size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
+        std::format_to_n(lines[kView].data(), lines[kView].size() - 1, "{}, {} {:.1f}% {:.1f}\u00B0{}",
                          static_cast<std::int64_t>(std::floor(viewport->posX)),
                          static_cast<std::int64_t>(std::floor(viewport->posY)), std::abs(viewport->zoomX) * 100.0f,
                          viewport->rot * 180.0f / std::numbers::pi_v<float>, flip);
@@ -1331,37 +1374,63 @@ void StateOverlay(const WindowState& windowState, const Viewport* viewport, cons
         const char* blendMode = TextGet(kBlendModeTexts[std::to_underlying(layer.blendMode)]);
         const float opacity = layer.opacity * 100.0f;
         if (selected > 1) {
-            std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1, blendMode,
-                             opacity);
+            std::format_to_n(lines[kLayer].data(), lines[kLayer].size() - 1, "{} (+{}) {} {:.0f}%", name, selected - 1,
+                             blendMode, opacity);
         } else {
-            std::format_to_n(lines[1].data(), lines[1].size() - 1, "{} {} {:.0f}%", name, blendMode, opacity);
+            std::format_to_n(lines[kLayer].data(), lines[kLayer].size() - 1, "{} {} {:.0f}%", name, blendMode, opacity);
         }
+    }
+    const Color::Srgb color = tools.colors[tools.colorSlot];
+    const auto channel = [](float value) {
+        return std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f);
+    };
+    if (color.a < 1.0f) {
+        std::format_to_n(lines[kColor].data(), lines[kColor].size() - 1, "#{:02X}{:02X}{:02X} {:.0f}%",
+                         channel(color.r), channel(color.g), channel(color.b), color.a * 100.0f);
+    } else {
+        std::format_to_n(lines[kColor].data(), lines[kColor].size() - 1, "#{:02X}{:02X}{:02X}", channel(color.r),
+                         channel(color.g), channel(color.b));
     }
     const ToolState& tool = ToolCurrent(tools);
     if (tool.target == ToolTarget::Color) {
-        std::format_to_n(lines[2].data(), lines[2].size() - 1, "{}", tool.name.data());
+        std::format_to_n(lines[kTool].data(), lines[kTool].size() - 1, "{}", tool.name.data());
     } else {
         const char* mode = tool.target == ToolTarget::Layer
                              ? TextGet(kBlendModeTexts[std::to_underlying(tool.blendMode)])
                              : TextGet(kSelectionOpTexts[std::to_underlying(tool.selectionOp)]);
-        std::format_to_n(lines[2].data(), lines[2].size() - 1, "{} {}", tool.name.data(), mode);
+        std::format_to_n(lines[kTool].data(), lines[kTool].size() - 1, "{} {}", tool.name.data(), mode);
     }
 
     ImFont* font = ImGui::GetFont();
-    const float size = ImGui::GetFontSize() * 1.15f;
+    const float size = ImGui::GetFontSize() * 0.85f;
     const float margin = 10.0f * windowState.dpiScale;
+    const float gap = size * 2.0f;
     const float shadow = std::max(1.0f, std::round(windowState.dpiScale));
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    float bottom = static_cast<float>(windowState.height) - margin;
-    for (const std::array<char, 128>& line : lines) {
+    const float bottom = static_cast<float>(windowState.height) - margin;
+    float right = static_cast<float>(windowState.width) - margin;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const char* line = lines[i].data();
         if (line[0] == '\0') {
             continue;
         }
-        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, line.data());
-        const ImVec2 pos(static_cast<float>(windowState.width) - extent.x - margin, bottom - extent.y);
-        drawList->AddText(font, size, ImVec2(pos.x + shadow, pos.y + shadow), IM_COL32(0, 0, 0, 100), line.data());
-        drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 170), line.data());
-        bottom = pos.y;
+        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, line);
+        const ImVec2 pos(right - extent.x, bottom - extent.y);
+        drawList->AddText(font, size, ImVec2(pos.x + shadow, pos.y + shadow), IM_COL32(0, 0, 0, 100), line);
+        drawList->AddText(font, size, pos, IM_COL32(255, 255, 255, 170), line);
+        right = pos.x;
+        if (i == kColor) {
+            const float side = std::round(extent.y * 0.75f);
+            const float top = std::round(pos.y + ((extent.y - side) * 0.5f));
+            const ImVec2 min(std::round(right - (size * 0.4f) - side), top);
+            const ImVec2 max(min.x + side, top + side);
+            drawList->AddRectFilled(ImVec2(min.x + shadow, min.y + shadow), ImVec2(max.x + shadow, max.y + shadow),
+                                    IM_COL32(0, 0, 0, 100));
+            drawList->AddRectFilled(min, max, ImGui::ColorConvertFloat4ToU32(ImVec4(color.r, color.g, color.b, 1.0f)));
+            drawList->AddRect(min, max, IM_COL32(255, 255, 255, 170), 0.0f, shadow);
+            right = min.x;
+        }
+        right -= gap;
     }
 }
 
@@ -1585,6 +1654,17 @@ void StatisticsWindow(Window window) noexcept {
             static_cast<int>(keymap.pendingLength));
         row("Held, repeating", "%d, %d", keymap.holding, keymap.repeating);
         row("Action requests", "%d", static_cast<int>(app.actionRequests.size()));
+        ImGui::EndTable();
+    }
+    // The last debug.benchmark's timings, so far while it runs.
+    const BenchmarkState& bench = app.benchmark;
+    if ((bench.phase != BenchmarkPhase::None || !bench.results.empty())
+        && ImGui::CollapsingHeader("Benchmark", ImGuiTreeNodeFlags_DefaultOpen) && table("benchmark")) {
+        constexpr std::array kPhases = {"done", "painting", "navigating", "opening", "exporting"};
+        row("Phase", "%s", kPhases[std::to_underlying(bench.phase)]);
+        for (const BenchmarkResult& result : bench.results) {
+            row(std::string(result.name).c_str(), "%.1f ms", result.milliseconds);
+        }
         ImGui::EndTable();
     }
     ImGui::End();
@@ -1929,9 +2009,9 @@ void SettingsWindow(Window window) noexcept {
         if (ImGui::Selectable(TextGet(Text::LanguageSystem), gAppState.language.empty())) {
             ActionRequestPush(window, ActionId::SettingsLanguage, 0);
         }
-        for (std::size_t i = 0; i < kLanguages.size(); ++i) {
-            if (ImGui::Selectable(kLanguages[i].name, gAppState.language == kLanguages[i].code)) {
-                ActionRequestPush(window, ActionId::SettingsLanguage, static_cast<std::uint32_t>(i + 1));
+        for (const LanguageInfo& language : kLanguages) {
+            if (ImGui::Selectable(language.name, gAppState.language == language.code)) {
+                ActionRequestPush(window, ActionId::SettingsLanguage, language.id);
             }
         }
         ImGui::EndCombo();
@@ -1971,6 +2051,9 @@ struct HelpEntry {
 constexpr std::array kHelpPaint = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GesturePaint},
     HelpEntry{.keys = Text::GestureCtrlHold, .action = Text::GestureCtrlTransform},
+    HelpEntry{.keys = Text::GestureRightDrag, .action = Text::GesturePan},
+    HelpEntry{.keys = Text::GestureWheel, .action = Text::GestureZoomPointer},
+    HelpEntry{.keys = Text::GestureRightDragWheel, .action = Text::GestureRotatePointer},
 };
 constexpr std::array kHelpErase = {
     HelpEntry{.keys = Text::GestureLeftDrag, .action = Text::GestureErase},
@@ -2002,6 +2085,9 @@ constexpr std::array kHelpNavigate = {
     HelpEntry{.keys = Text::GestureCtrlDrag, .action = Text::GestureZoom},
     HelpEntry{.keys = Text::GestureShiftDrag, .action = Text::GestureRotate},
     HelpEntry{.keys = Text::GestureAlt, .action = Text::GestureSnapView},
+    HelpEntry{.keys = Text::GestureRightDrag, .action = Text::GesturePan},
+    HelpEntry{.keys = Text::GestureWheel, .action = Text::GestureZoomPointer},
+    HelpEntry{.keys = Text::GestureRightDragWheel, .action = Text::GestureRotatePointer},
 };
 constexpr std::array kHelpAdjust = {
     HelpEntry{.keys = Text::GestureMove, .action = Text::GestureAdjustMove},
@@ -2171,8 +2257,8 @@ void SearchEntriesBuild(Window window) noexcept {
         add(ActionId::CanvasOpenRecent, static_cast<std::uint32_t>(i), PathUtf8(app.recentFiles[i].filename()));
     }
     add(ActionId::SettingsLanguage, 0, TextGet(Text::LanguageSystem));
-    for (std::size_t i = 0; i < kLanguages.size(); ++i) {
-        add(ActionId::SettingsLanguage, static_cast<std::uint32_t>(i + 1), kLanguages[i].name);
+    for (const LanguageInfo& language : kLanguages) {
+        add(ActionId::SettingsLanguage, language.id, language.name);
     }
     for (std::size_t i = 0; i < kSelectionOpTexts.size(); ++i) {
         add(ActionId::SelectionOp, static_cast<std::uint32_t>(i), TextGet(kSelectionOpTexts[i]));
@@ -2423,7 +2509,7 @@ Result<ImGuiContext*> UiWindowInit(Window window) noexcept {
     gUiState.tileCellsShown[window] = false;
     gUiState.statisticsShown[window] = false;
     gUiState.imguiMetricsShown[window] = false;
-    gUiState.hidden[window] = false;
+    gUiState.hidden[window] = gUiState.preferences.hidden;
     gUiState.helpShown[window] = gUiState.preferences.helpShown;
     gUiState.menuBarShown[window] = gUiState.preferences.menuBarShown;
     gUiState.viewShown[window] = gUiState.preferences.viewShown;
@@ -2479,6 +2565,12 @@ bool UiEvent(const Event& event) noexcept {
             ApplyDpiScale(event.windowResize.dpiScale);
             return false;
         case EventType::WindowFocus:
+            if (!event.windowFocus.focused) {
+                gUiState.layerRenaming[window] = -1;
+                gUiState.toolRenaming[window] = 0;
+                gUiState.tagRenaming[window] = -1;
+                gUiState.searchShown[window] = false;
+            }
             io.AddFocusEvent(event.windowFocus.focused);
             return false;
         case EventType::WindowClose:
@@ -2554,8 +2646,8 @@ std::optional<WindowCursor> UiCursor(Window window) noexcept {
     }
 }
 
-// Each pane's tab strip once it has two tabs, the handles between the sides of each split, and with several panes an
-// accent frame around the focused view. Behind every other UI window: they never come to the front.
+// Each pane's tab strip once it has two tabs, and the handles between the sides of each split. Behind every other UI
+// window: they never come to the front.
 void PanesDraw(Window window, const WindowState& windowState) noexcept {
     ZoneScopedN("PanesDraw");
     WindowLayout& layout = gAppState.layouts[window];
@@ -2681,15 +2773,6 @@ void PanesDraw(Window window, const WindowState& windowState) noexcept {
     }
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
-    if (const CanvasView focused = AppWindowView(window); layout.count > 1 && focused != kCanvasViewInvalid) {
-        const CanvasViewRect& rect = gAppState.canvasViews[focused].rect;
-        const float thickness = std::max(1.0f, std::round(windowState.dpiScale));
-        ImGui::GetBackgroundDrawList()->AddRect(
-            ImVec2(static_cast<float>(rect.x) + (thickness * 0.5f), static_cast<float>(rect.y) + (thickness * 0.5f)),
-            ImVec2(static_cast<float>(rect.x + rect.width) - (thickness * 0.5f),
-                   static_cast<float>(rect.y + rect.height) - (thickness * 0.5f)),
-            ImGui::GetColorU32(ImGuiCol_CheckMark), 0.0f, thickness);
-    }
 }
 
 void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundColor, ToolsState& tools) noexcept {
@@ -2715,7 +2798,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     // ImGui::ShowDemoWindow();
     const CanvasView focused = AppWindowView(window);
     const bool hasCanvas = viewport && focused != kCanvasViewInvalid;
-    StateOverlay(*state, hasCanvas ? viewport : nullptr,
+    StateOverlay(*state, hasCanvas ? &gAppState.canvasViews[focused] : nullptr,
                  hasCanvas ? &gAppState.canvases[gAppState.canvasViews[focused].canvas] : nullptr, tools);
     for (const CanvasViewState& shown : gAppState.canvasViews) {
         if (shown.id == kCanvasViewInvalid || shown.window != window || shown.rect.width <= 0
@@ -2738,6 +2821,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
     if (gUiState.searchShown[window]) {
         SearchWindow(window);
     }
+    gUiState.preferences.hidden = gUiState.hidden[window];
     // Hidden, the panes divide the whole client area; else the middle the docked panels leave.
     if (gUiState.hidden[window]) {
         gAppState.layouts[window].area = {};
@@ -2754,6 +2838,7 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             ImGui::Separator();
             MenuAction(window, Text::Save, ActionId::CanvasSave);
             MenuAction(window, Text::SaveAs, ActionId::CanvasSaveAs);
+            MenuAction(window, Text::Export, ActionId::CanvasExport);
             // The file name, its folder on the right.
             const std::vector<std::filesystem::path>& recent = gAppState.recentFiles;
             if (ImGui::BeginMenu(TextLabel(Text::OpenRecent), !recent.empty())) {
@@ -2811,6 +2896,8 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             MenuAction(window, Text::TileCells, ActionId::DebugTileCells, gUiState.tileCellsShown[window]);
             MenuAction(window, Text::Statistics, ActionId::DebugStatistics, gUiState.statisticsShown[window]);
             MenuAction(window, Text::ImGuiMetrics, ActionId::DebugImGuiMetrics, gUiState.imguiMetricsShown[window]);
+            ImGui::Separator();
+            MenuAction(window, Text::Benchmark, ActionId::DebugBenchmark);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();

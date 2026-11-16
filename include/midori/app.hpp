@@ -18,6 +18,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Midori {
@@ -41,6 +42,7 @@ struct NavigateState {
     float pointerStartY;
     CanvasView view{kCanvasViewInvalid};
     NavigateMode mode{}; // None while not navigating
+    Button button{};     // Left: with view.navigate held, the modes from the modifiers; Right: a pan alone
 };
 
 // Pointer distance from the center, in DIPs, for an opacity or hardness of 1.
@@ -201,6 +203,51 @@ struct BrushOutlineState {
     bool shown;
 };
 
+// A PNG being exported over the updates: the canvas's root composites at `remaining` are wanted a few at a time, and
+// each one current is copied into `pixels`; the file is written once none remain.
+struct ExportState {
+    std::filesystem::path path;
+    std::vector<std::byte> pixels;  // RGBA8 premultiplied, width x height, rows top to bottom
+    std::vector<TileKey> remaining; // grid positions (level-0 keys, layer bits zero) not copied yet, row by row
+    std::int64_t x;                 // the canvas texel of its top left pixel
+    std::int64_t y;
+    std::uint32_t width;
+    std::uint32_t height;
+    Color::Srgb background;        // under everything, as the canvas shows it; alpha 0 leaves the image transparent
+    Canvas canvas{kCanvasInvalid}; // kCanvasInvalid while not exporting
+    Window window{kWindowInvalid}; // the one it was asked from, which shows its errors
+    bool masked;                   // times the selection's coverage; else cropped to what is drawn
+};
+
+enum struct BenchmarkPhase : std::uint8_t {
+    None,
+    Paint,    // strokes over a generated scene, until every tile is composited
+    Navigate, // a scripted zoom and pan across it, frame by frame
+    Open,     // saved, closed and opened again, until the whole view shows
+    Export,   // the whole scene as a PNG
+};
+
+struct BenchmarkResult {
+    std::string_view name;
+    double milliseconds;
+};
+
+// debug.benchmark, run over the updates in a tab of its own, closed at the end. Each phase waits for the app to be idle
+// before the next starts; the results go to benchmarks.csv beside preferences.json and the statistics window.
+struct BenchmarkState {
+    std::vector<BenchmarkResult> results;            // the last run's, in phase order
+    std::filesystem::path file;                      // the scene saved, in the temp directory
+    std::chrono::steady_clock::time_point phaseStart;
+    std::chrono::steady_clock::time_point frameTime; // the last update's while navigating
+    double frameMax;                                 // milliseconds between two updates while navigating
+    std::uint32_t step;                              // strokes painted, or frames navigated
+    std::uint32_t idleUpdates;                       // in a row with nothing left to do, see BenchmarkSettled
+    Canvas canvas{kCanvasInvalid};
+    CanvasView view{kCanvasViewInvalid};
+    Window window{kWindowInvalid};
+    BenchmarkPhase phase{};
+};
+
 // Owned by the main thread. A canvas id indexes `canvases`, a canvas view id indexes `canvasViews`.
 // Pointer and keyboard state is the devices', not any one view's.
 struct AppState {
@@ -220,12 +267,21 @@ struct AppState {
     CopyState copy;
     TagDragState tagDrag;
     EyedropperState eyedropper;
+    ExportState exporting;
+    BenchmarkState benchmark;
     ToolsState tools;
     std::chrono::steady_clock::time_point brushCheckTime; // debug builds: when the shaders' files were last looked at
-    std::vector<std::filesystem::path> brushExamples;     // the .mdsl files in brushes/ next to the exe, by name
-    KeymapState keymap;                             // keybinds.json beside preferences.json, else kDefaultBindings
-    std::vector<ActionId> recentActions;            // the most recent first, up to kRecentActionsMax
-    std::vector<ActionRequest> actionRequests;      // picked by the UI, run by the next AppUpdate
+    // The last wheel notch or zoom key, and its view: the steps that follow it quickly join its navigation history
+    // step.
+    std::chrono::steady_clock::time_point viewStepTime;
+    CanvasView viewStepView{kCanvasViewInvalid};
+    std::chrono::steady_clock::time_point autosaveTime; // the last autosave, or the launch
+    bool autosaveInput{};                               // a key or button since then: something may have changed
+    bool exportBackground{true};                        // the export dialog's check box, as last left this run
+    std::vector<std::filesystem::path> brushExamples;   // the .mdsl files in brushes/ next to the exe, by name
+    KeymapState keymap;                                 // keybinds.json beside preferences.json, else kDefaultBindings
+    std::vector<ActionId> recentActions;                // the most recent first, up to kRecentActionsMax
+    std::vector<ActionRequest> actionRequests;          // picked by the UI, run by the next AppUpdate
     std::vector<std::filesystem::path> recentFiles; // opened or saved as, the most recent first, up to kRecentFilesMax
     std::vector<OpenFile> openFiles;                // of the windows closed since the exit began, in closing order
     std::string language;                           // the preference, a code of kLanguages or empty for the system's

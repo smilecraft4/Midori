@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <span>
 #include <string>
 #include <string_view>
@@ -32,7 +33,7 @@ using Json = nlohmann::json;
 constexpr int kPreferencesVersion = 2;
 // Names rather than numbers, so the file reads and edits by hand. Indexed by the enums they name.
 constexpr std::array<std::string_view, std::to_underlying(BlendMode::Count_)> kBlendModeNames = {
-    "normal", "multiply", "add", "screen", "normalOkLab", "erase",
+    "normal", "multiply", "add", "screen", "normalOkLab", "erase", "min", "max",
 };
 constexpr std::array<std::string_view, 3> kToolShapeNames = {"path", "box", "lasso"};
 constexpr std::array<std::string_view, 4> kToolTargetNames = {"layer", "selection", "tags", "color"};
@@ -121,6 +122,12 @@ Result<void> JsonFileWrite(const std::filesystem::path& path, const Json& root) 
 void Read(const Json& json, const char* key, float& value, float min, float max) noexcept {
     if (const auto found = json.find(key); found != json.end() && found->is_number()) {
         value = std::clamp(found->get<float>(), min, max);
+    }
+}
+
+void Read(const Json& json, const char* key, double& value, double min, double max) noexcept {
+    if (const auto found = json.find(key); found != json.end() && found->is_number()) {
+        value = std::clamp(found->get<double>(), min, max);
     }
 }
 
@@ -351,6 +358,34 @@ void ReadBrush(const Json& json, BrushState& brush, const MdslBrush& source) noe
     return Json{{"params", paramsJson}, {"curves", curvesJson}};
 }
 
+// A zoom keeps its sign, a flip, with its size within [kViewportZoomMin, kViewportZoomMax].
+void ReadZoom(const Json& json, const char* key, float& zoom) noexcept {
+    float read = zoom;
+    Read(json, key, read, -kViewportZoomMax, kViewportZoomMax);
+    if (std::abs(read) >= kViewportZoomMin) {
+        zoom = read;
+    }
+}
+
+void Read(const Json& json, const char* key, Viewport& viewport) noexcept {
+    const auto found = json.find(key);
+    if (found == json.end() || !found->is_object()) {
+        return;
+    }
+    Read(*found, "x", viewport.posX, -kViewportPosMax, kViewportPosMax);
+    Read(*found, "y", viewport.posY, -kViewportPosMax, kViewportPosMax);
+    ReadZoom(*found, "zoomX", viewport.zoomX);
+    ReadZoom(*found, "zoomY", viewport.zoomY);
+    Read(*found, "rotation", viewport.rot, -std::numbers::pi_v<float>, std::numbers::pi_v<float>);
+}
+
+[[nodiscard]] Json ViewportJson(const Viewport& viewport) noexcept {
+    return Json{
+        {"x", viewport.posX},      {"y", viewport.posY},       {"zoomX", viewport.zoomX},
+        {"zoomY", viewport.zoomY}, {"rotation", viewport.rot},
+    };
+}
+
 [[nodiscard]] Json ColorJson(const Color::Srgb& color) noexcept {
     return Json::array({color.r, color.g, color.b, color.a});
 }
@@ -547,6 +582,7 @@ Result<Preferences> PreferencesLoad() noexcept {
         Read(*ui, "colorShown", preferences.ui.colorShown);
         Read(*ui, "helpShown", preferences.ui.helpShown);
         Read(*ui, "menuBarShown", preferences.ui.menuBarShown);
+        Read(*ui, "hidden", preferences.ui.hidden);
         Read(*ui, "tagZoneShown", preferences.ui.tagZoneShown);
         if (const auto settings = ui->find("imguiSettings"); settings != ui->end() && settings->is_string()) {
             preferences.ui.imguiSettings = settings->get_ref<const std::string&>();
@@ -590,8 +626,10 @@ Result<Preferences> PreferencesLoad() noexcept {
                 continue;
             }
             OpenFile openFile{.path = PathFromUtf8(filePath->get_ref<const std::string&>()),
+                              .viewport = {},
                               .tagsChecked = 0,
                               .window = static_cast<std::uint8_t>(window)};
+            Read(entry, "viewport", openFile.viewport);
             if (const auto checked = entry.find("tagsChecked");
                 checked != entry.end() && checked->is_number_unsigned()) {
                 openFile.tagsChecked = checked->get<std::uint64_t>();
@@ -623,8 +661,10 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
     }
     Json openFiles = Json::array();
     for (const OpenFile& file : preferences.openFiles) {
-        openFiles.push_back(
-            Json{{"path", PathUtf8(file.path)}, {"tagsChecked", file.tagsChecked}, {"window", file.window}});
+        openFiles.push_back(Json{{"path", PathUtf8(file.path)},
+                                 {"viewport", ViewportJson(file.viewport)},
+                                 {"tagsChecked", file.tagsChecked},
+                                 {"window", file.window}});
     }
     const Json root{
         {"version", kPreferencesVersion},
@@ -646,6 +686,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
              {"colorShown", preferences.ui.colorShown},
              {"helpShown", preferences.ui.helpShown},
              {"menuBarShown", preferences.ui.menuBarShown},
+             {"hidden", preferences.ui.hidden},
              {"tagZoneShown", preferences.ui.tagZoneShown},
              {"imguiSettings", preferences.ui.imguiSettings},
          }},

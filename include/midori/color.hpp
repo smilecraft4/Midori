@@ -29,6 +29,8 @@ enum struct BlendMode : std::uint8_t {
     Screen,
     NormalOkLab, // Normal with the colors mixed in OkLab
     Erase,       // each of the source's channels is how much of that channel below goes
+    Min,
+    Max,
     Count_,
 };
 

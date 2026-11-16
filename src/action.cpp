@@ -55,25 +55,6 @@ constexpr std::array<std::string_view, 3> kActionKindNames = {"Press", "Repeat",
     return std::ranges::equal(a, b, [](char x, char y) { return Lower(x) == Lower(y); });
 }
 
-[[nodiscard]] std::string ChordKeys(KeyChord chord) noexcept {
-    std::string keys;
-    for (const ModName& mod : kModNames) {
-        if (HasAnyFlag(chord.mods, mod.mod)) {
-            if (!keys.empty()) {
-                keys += '+';
-            }
-            keys += PlatformKeyName(mod.key);
-        }
-    }
-    if (chord.key != Key::Unknown) {
-        if (!keys.empty()) {
-            keys += '+';
-        }
-        keys += PlatformKeyName(chord.key);
-    }
-    return keys;
-}
-
 // A Hold action is only ever held. Another is held only when it reads its Hold bindings.
 bool TriggerFits(ActionId action, ActionKind trigger) noexcept {
     const ActionInfo& info = kActions[std::to_underlying(action)];
@@ -196,6 +177,25 @@ Result<std::filesystem::path> BindingsPath() noexcept {
 }
 
 } // namespace
+
+std::string KeyChordKeys(KeyChord chord) noexcept {
+    std::string keys;
+    for (const ModName& mod : kModNames) {
+        if (HasAnyFlag(chord.mods, mod.mod)) {
+            if (!keys.empty()) {
+                keys += '+';
+            }
+            keys += PlatformKeyName(mod.key);
+        }
+    }
+    if (chord.key != Key::Unknown) {
+        if (!keys.empty()) {
+            keys += '+';
+        }
+        keys += PlatformKeyName(chord.key);
+    }
+    return keys;
+}
 
 Result<KeyBinding> KeyBindingParse(std::string_view keys, ActionKind trigger) noexcept {
     KeyBinding binding{.length = 0, .trigger = trigger};
@@ -320,7 +320,8 @@ void KeymapLoad(KeymapState& keymap) noexcept {
 
     // A Navigate binding only works while view.navigate is held, so it shows with its keys first: "Space+R".
     const auto navigate = std::ranges::find(keymap.bindings, ActionId::ViewNavigate, &KeyBinding::action);
-    const std::string navigateKeys = navigate == keymap.bindings.end() ? std::string() : ChordKeys(navigate->chords[0]);
+    const std::string navigateKeys =
+        navigate == keymap.bindings.end() ? std::string() : KeyChordKeys(navigate->chords[0]);
     for (const KeyBinding& binding : keymap.bindings) {
         std::string keys;
         if (binding.context == ActionContext::Navigate && !navigateKeys.empty()) {
@@ -330,7 +331,7 @@ void KeymapLoad(KeymapState& keymap) noexcept {
             if (i > 0) {
                 keys += ", ";
             }
-            keys += ChordKeys(binding.chords[i]);
+            keys += KeyChordKeys(binding.chords[i]);
         }
         if (binding.trigger != kActions[std::to_underlying(binding.action)].kind) {
             keys += " (";

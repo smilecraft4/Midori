@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -44,6 +45,14 @@ constexpr std::size_t kNavigationHistoryMax = 256;
 // Pointer travel, in DIPs, that doubles or halves the zoom.
 constexpr float kZoomDragDips = 200.0f;
 constexpr float kRotateSnap = std::numbers::pi_v<float> / 12.0f; // 15 degrees
+// Wheel notches that double or halve the zoom.
+constexpr float kWheelZoomNotches = 4.0f;
+// Wheel notches and zoom keys this close after the last one join its navigation history step.
+constexpr std::chrono::milliseconds kViewStepMerge{600};
+// brush.larger and brush.smaller multiply or divide the size by it.
+constexpr float kBrushSizeStep = 1.25f;
+// How often, at most, a modified canvas is written to the recovery folder.
+constexpr std::chrono::minutes kAutosaveInterval{3};
 
 constexpr std::string_view kCanvasTypeName = "Midori canvas";
 constexpr std::string_view kCanvasExtension = "mori";
@@ -414,7 +423,7 @@ void WindowPlacementKeep(Window window) noexcept {
 [[nodiscard]] Result<bool> CanvasSaveWithDialogs(Window window, Canvas canvas, bool saveAs) noexcept {
     ZoneScopedN("CanvasSaveWithDialogs");
     const CanvasState& state = gAppState.canvases[canvas];
-    if (!saveAs && state.file.env) {
+    if (!saveAs && state.file.env && state.recovered.empty()) {
         if (const auto res = CanvasSave(canvas); !res) {
             AppError(window, TextFormat(Text::ErrorSave, CanvasName(state).c_str()), res.error());
             return std::unexpected(res.error());
@@ -649,6 +658,7 @@ void NavigationPush(CanvasView view, const Viewport& previous) noexcept {
     }
     state.viewportUndo.push_back(previous);
     state.viewportRedo.clear();
+    gAppState.viewStepView = kCanvasViewInvalid;
 }
 
 // Back to the previous viewport, or forward again with `redo`.
@@ -663,14 +673,28 @@ void NavigationStep(CanvasView view, bool redo) noexcept {
     to.push_back(state.viewport);
     state.viewport = from.back();
     from.pop_back();
+    gAppState.viewStepView = kCanvasViewInvalid;
+}
+
+// Before a wheel notch or zoom key changes the view: a history step of its own, unless a drag holds one already or the
+// last notch or key on this view was moments ago, so a run of them is one step.
+void ViewStepBegin(CanvasView view) noexcept {
+    AppState& app = gAppState;
+    const auto now = std::chrono::steady_clock::now();
+    if (app.navigate.mode == NavigateMode::None
+        && (app.viewStepView != view || now - app.viewStepTime > kViewStepMerge)) {
+        NavigationPush(view, app.canvasViews[view].viewport);
+    }
+    app.viewStepView = view;
+    app.viewStepTime = now;
 }
 
 [[nodiscard]] bool ViewportEqual(const Viewport& a, const Viewport& b) noexcept {
     return a.posX == b.posX && a.posY == b.posY && a.zoomX == b.zoomX && a.zoomY == b.zoomY && a.rot == b.rot;
 }
 
-// Starts a drag, or switches the one in progress to `mode` from where it is.
-void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
+// Starts a drag with `button`, or switches the one in progress to `mode` from where it is, keeping its button.
+void NavigateBegin(CanvasView view, NavigateMode mode, Button button = Button::Left) noexcept {
     ZoneScopedN("NavigateBegin");
     const Viewport& viewport = gAppState.canvasViews[view].viewport;
     const bool dragging = gAppState.navigate.mode != NavigateMode::None;
@@ -681,6 +705,7 @@ void NavigateBegin(CanvasView view, NavigateMode mode) noexcept {
         .pointerStartY = gAppState.pointerY,
         .view = view,
         .mode = mode,
+        .button = dragging ? gAppState.navigate.button : button,
     };
 }
 
@@ -856,40 +881,135 @@ void ViewStep(Window window, bool forward) noexcept {
     }
 }
 
+// The next zoom past `zoom`, in or out, among those ZoomSnap lands on: 1, 1.5, 2, 3, 4, 6... and 2/3, 1/2, 1/3, 1/4...
+[[nodiscard]] float ZoomLevelNext(float zoom, bool in) noexcept {
+    float next = in ? kViewportZoomMax : kViewportZoomMin;
+    for (int k = -7; k <= 6; ++k) {
+        const float power = std::exp2(static_cast<float>(k));
+        for (const float level : {power, power * (k < 0 ? 4.0f / 3.0f : 1.5f)}) {
+            if (in && level > zoom * 1.01f) {
+                next = std::min(next, level);
+            } else if (!in && level < zoom / 1.01f) {
+                next = std::max(next, level);
+            }
+        }
+    }
+    return next;
+}
+
+// view.zoomIn, view.zoomOut and view.zoomActual, around the view center; flips and rotation are kept.
+void ViewZoom(Window window, ActionId action) noexcept {
+    AppState& app = gAppState;
+    const CanvasView view = WindowCanvasView(window);
+    const auto windowState = WindowGetState(window);
+    if (view == kCanvasViewInvalid || !windowState) {
+        return;
+    }
+    Viewport& viewport = app.canvasViews[view].viewport;
+    const float zoomX = std::abs(viewport.zoomX);
+    const float zoomY = std::abs(viewport.zoomY);
+    float amountX = 1.0f / zoomX;
+    float amountY = 1.0f / zoomY;
+    if (action != ActionId::ViewZoomActual) {
+        amountX = ZoomLevelNext(zoomX, action == ActionId::ViewZoomIn) / zoomX;
+        amountY = amountX;
+    }
+    ViewStepBegin(view);
+    viewport = ViewportSnap(ViewportZoom(viewport, amountX, amountY, app.zoomMin, app.zoomMax), windowState->dpiScale);
+    if (app.navigate.mode != NavigateMode::None) {
+        NavigateBegin(app.navigate.view, app.navigate.mode);
+    }
+}
+
+// A wheel notch over a view zooms around the pointer, keeping the canvas point under it; during a right drag it turns
+// the view 15 degrees around the pointer instead, and the pan goes on from there. Up zooms in and turns clockwise.
+[[nodiscard]] bool NavigateWheel(const WheelEvent& wheel, bool uiWants) noexcept {
+    AppState& app = gAppState;
+    const bool turning = app.navigate.mode == NavigateMode::Pan && app.navigate.button == Button::Right;
+    const bool busy = (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended && !AppTransforming())
+                   || app.transform.drag != TransformDrag::None || app.eyedropper.view != kCanvasViewInvalid
+                   || app.tagDrag.view != kCanvasViewInvalid || app.navigate.mode != NavigateMode::None;
+    if (wheel.window >= kWindowMax || wheel.deltaY == 0.0f || (!turning && (uiWants || busy))) {
+        return turning;
+    }
+    const CanvasView view = turning ? app.navigate.view : WindowViewUnderPointer(wheel.window);
+    const auto windowState = WindowGetState(wheel.window);
+    if (view == kCanvasViewInvalid || !windowState || app.canvasViews[view].window != wheel.window) {
+        return turning;
+    }
+    CanvasViewState& state = app.canvasViews[view];
+    const auto [x, y] = ViewPointFromPointer(state.rect, windowState->dpiScale, app.pointerX, app.pointerY);
+    Viewport viewport = ViewportMove(state.viewport, -x, -y);
+    if (turning) {
+        // A single flip mirrors the turn on screen.
+        const bool mirrored = (viewport.zoomX < 0.0f) != (viewport.zoomY < 0.0f);
+        const float turn = wheel.deltaY * kRotateSnap;
+        viewport = ViewportRotate(viewport, mirrored ? -turn : turn);
+    } else {
+        const float amount = std::exp2(wheel.deltaY / kWheelZoomNotches);
+        viewport = ViewportZoom(viewport, amount, amount, app.zoomMin, app.zoomMax);
+        ViewStepBegin(view);
+    }
+    state.viewport = ViewportSnap(ViewportMove(viewport, x, y), windowState->dpiScale);
+    if (turning) {
+        NavigateBegin(view, NavigateMode::Pan);
+    }
+    return true;
+}
+
 // While view.navigate is held: left drag pans, with Ctrl zooms and with Shift rotates, around the view center. Holding
 // Alt snaps the zoom (ZoomSnap) and the rotation to 15 degrees. Pressing or releasing Ctrl or Shift mid-drag switches
-// mode from where the pointer is. Returns true when the event belongs to navigation. Releases and focus loss are
-// handled even when the UI wants them, so a drag never sticks.
+// mode from where the pointer is. Without the keyboard: right drag pans, and the wheel zooms or, during that drag,
+// rotates (NavigateWheel). Returns true when the event belongs to navigation. Releases and focus loss are handled even
+// when the UI wants them, so a drag never sticks.
 [[nodiscard]] bool Navigate(const Event& event, bool uiWants) noexcept {
     ZoneScopedN("Navigate");
     AppState& app = gAppState;
     switch (event.type) {
         case EventType::Key: {
             const NavigateMode mode = NavigateModeFromMods(app.keyMods);
-            if (app.navigate.mode != NavigateMode::None && app.navigate.mode != mode) {
+            if (app.navigate.mode == NavigateMode::None || app.navigate.button != Button::Left) {
+                return false;
+            }
+            if (app.navigate.mode != mode) {
                 NavigateBegin(app.navigate.view, mode);
-            } else if (app.navigate.mode != NavigateMode::None) {
+            } else {
                 // Alt pressed or released snaps or frees the view right away.
                 NavigateUpdate();
             }
             return false;
         }
         case EventType::Button: {
-            if (event.button.button != Button::Left) {
+            const Button button = event.button.button;
+            if (button != Button::Left && button != Button::Right) {
                 return false;
             }
-            if (event.button.inputState == InputState::Release && app.navigate.mode != NavigateMode::None) {
+            if (event.button.inputState == InputState::Release && app.navigate.mode != NavigateMode::None
+                && app.navigate.button == button) {
                 NavigateEnd();
                 return true;
             }
             const CanvasView view = WindowCanvasView(event.button.window);
-            if (view != kCanvasViewInvalid && event.button.inputState == InputState::Press && app.spaceDown
-                && !uiWants) {
+            if (view == kCanvasViewInvalid || event.button.inputState != InputState::Press || uiWants
+                || app.navigate.mode != NavigateMode::None) {
+                return false;
+            }
+            if (button == Button::Left && app.spaceDown) {
                 NavigateBegin(view, NavigateModeFromMods(app.keyMods));
+                return true;
+            }
+            // Not over a stroke or a drag of another kind; a transform waiting for its next drag lets it pan.
+            if (button == Button::Right && !app.spaceDown
+                && (app.stroke.canvas == kCanvasInvalid || app.stroke.ended || AppTransforming())
+                && app.transform.drag == TransformDrag::None && app.eyedropper.view == kCanvasViewInvalid
+                && app.tagDrag.view == kCanvasViewInvalid) {
+                NavigateBegin(view, NavigateMode::Pan, Button::Right);
                 return true;
             }
             return false;
         }
+        case EventType::Wheel:
+            return NavigateWheel(event.wheel, uiWants);
         case EventType::Pointer: {
             if (app.navigate.mode == NavigateMode::None
                 || app.canvasViews[app.navigate.view].window != event.pointer.window) {
@@ -899,14 +1019,8 @@ void ViewStep(Window window, bool forward) noexcept {
             return true;
         }
         case EventType::WindowFocus:
-            // Keys held are released without an event.
             if (!event.windowFocus.focused) {
-                app.spaceDown = false;
                 NavigateEnd();
-                app.keymap.holding = -1;
-                app.keymap.repeating = -1;
-                app.keymap.pendingLength = 0;
-                app.keymap.down.reset();
             }
             return false;
         default:
@@ -1272,6 +1386,40 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
     adjust.centerY = app.pointerY;
 }
 
+// brush.smaller and brush.larger: kBrushSizeStep at a time, in whole canvas units from 1 up, as the radius adjust keeps
+// them, moving at least one. Not while stroking or adjusting.
+void BrushSizeStep(bool larger) noexcept {
+    AppState& app = gAppState;
+    const std::vector<MdslParam>& params = ToolSource(app.tools, ToolCurrent(app.tools)).params;
+    const int param = BrushAdjustParam(params, BrushAdjustMode::Radius);
+    if (param < 0 || app.brushAdjust.mode != BrushAdjustMode::None
+        || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
+        return;
+    }
+    const MdslParam& info = params[static_cast<std::size_t>(param)];
+    float& size = ToolCurrent(app.tools).brush.params[static_cast<std::size_t>(param)].value[0];
+    float next = larger ? size * kBrushSizeStep : size / kBrushSizeStep;
+    if (next >= 1.0f) {
+        next = larger ? std::max(std::round(next), std::floor(size) + 1.0f)
+                      : std::min(std::round(next), std::ceil(size) - 1.0f);
+    }
+    size = std::clamp(next, info.min, info.max);
+}
+
+// brush.opacitySet, `percent` of full opacity within the param's range. Not while stroking or adjusting.
+void BrushOpacitySet(std::uint32_t percent) noexcept {
+    AppState& app = gAppState;
+    const std::vector<MdslParam>& params = ToolSource(app.tools, ToolCurrent(app.tools)).params;
+    const int param = BrushAdjustParam(params, BrushAdjustMode::Opacity);
+    if (param < 0 || app.brushAdjust.mode != BrushAdjustMode::None
+        || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended)) {
+        return;
+    }
+    const MdslParam& info = params[static_cast<std::size_t>(param)];
+    ToolCurrent(app.tools).brush.params[static_cast<std::size_t>(param)].value[0] =
+        std::clamp(static_cast<float>(percent) / 100.0f, info.min, info.max);
+}
+
 // Holding Shift moves the value 10 times slower and Alt snaps it to powers of two, a layer opacity to multiples of 5%,
 // together or not. Left click or Enter keeps the value, right click or Escape restores it. While adjusting, every
 // input event belongs to it.
@@ -1320,7 +1468,7 @@ void BrushAdjustBegin(Window window, BrushAdjustMode mode) noexcept {
             return true;
         case EventType::WindowFocus:
             if (!event.windowFocus.focused) {
-                BrushAdjustKeep();
+                BrushAdjustCancel();
             }
             return false;
         default:
@@ -1743,6 +1891,9 @@ void TransformHoldEnd() noexcept {
 [[nodiscard]] WindowCursor AppCursor(Window window) noexcept {
     ZoneScopedN("AppCursor");
     const AppState& app = gAppState;
+    if (app.brushAdjust.mode != BrushAdjustMode::None && app.canvasViews[app.brushAdjust.view].window == window) {
+        return WindowCursor::Arrow;
+    }
     if (const auto ui = UiCursor(window)) {
         return *ui;
     }
@@ -1762,7 +1913,7 @@ void TransformHoldEnd() noexcept {
         case NavigateMode::Zoom:
             return WindowCursor::ResizeNESW;
         case NavigateMode::Rotate:
-            return WindowCursor::None;
+            return WindowCursor::Arrow;
         case NavigateMode::None:
             break;
     }
@@ -2261,6 +2412,603 @@ void AppCopy(Window window, bool cut) noexcept {
     }
 }
 
+// Grid positions of the root composites an export wants at once.
+constexpr std::size_t kExportWindow = 16;
+
+// A layer `folder` shows, through shown folders, has a tile at `gridPos`: its composite there has content, as
+// CompositePrepare decides.
+[[nodiscard]] bool FolderShowsTile(const CanvasState& canvas, Layer folder, TileKey gridPos) noexcept {
+    const Layer top = canvas.layerHeights[folder];
+    const int bottom = static_cast<int>(top) - canvas.layers[folder].descendants;
+    for (int h = static_cast<int>(top) - 1; h >= bottom;
+         h -= canvas.layers[canvas.layersOrder[static_cast<std::size_t>(h)]].descendants + 1) {
+        const Layer child = canvas.layersOrder[static_cast<std::size_t>(h)];
+        const LayerState& layer = canvas.layers[child];
+        if (HasAnyFlag(layer.flags, LayerFlags::Hidden) || layer.opacity <= 0.0f) {
+            continue;
+        }
+        if (HasAnyFlag(layer.flags, LayerFlags::Folder)
+                ? FolderShowsTile(canvas, child, gridPos)
+                : canvas.tileIndices.contains(TileGridPosLayerKey(gridPos, child))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The grid positions where a layer in the order has a level-0 tile, as a box; false when there are none.
+[[nodiscard]] bool CanvasDrawnGrid(const CanvasState& canvas, TileGridPos& min, TileGridPos& max) noexcept {
+    bool any = false;
+    for (const TileState& tile : canvas.tiles) {
+        const Layer layer = TileKeyLayer(tile.key);
+        if (TileKeyMip(tile.key) != 0 || HasAnyFlag(tile.flags, TileFlags::Composite)
+            || canvas.layerHeights[layer] == kLayerInvalid
+            || HasAnyFlag(canvas.layers[layer].flags, LayerFlags::Mask)) {
+            continue;
+        }
+        const TileGridPos pos = TileKeyGridPos(tile.key);
+        min = any ? TileGridPos{.x = std::min(min.x, pos.x), .y = std::min(min.y, pos.y)} : pos;
+        max = any ? TileGridPos{.x = std::max(max.x, pos.x), .y = std::max(max.y, pos.y)} : pos;
+        any = true;
+    }
+    return any;
+}
+
+// What an export covers: the selection's bounds, times its coverage, or else every tile drawn, cropped to what shows
+// once composited. Canvas texels, max exclusive.
+struct ExportRegion {
+    std::int64_t minX;
+    std::int64_t minY;
+    std::int64_t maxX;
+    std::int64_t maxY;
+    bool masked;
+};
+
+// False when nothing is drawn and nothing selected.
+[[nodiscard]] bool ExportRegionGet(const CanvasState& canvas, ExportRegion& region) noexcept {
+    region.masked = canvas.selection != kLayerInvalid && !SelectionEmpty(canvas.selectionBounds);
+    if (region.masked) {
+        region.minX = static_cast<std::int64_t>(std::floor(canvas.selectionBounds.minX));
+        region.minY = static_cast<std::int64_t>(std::floor(canvas.selectionBounds.minY));
+        region.maxX = static_cast<std::int64_t>(std::ceil(canvas.selectionBounds.maxX));
+        region.maxY = static_cast<std::int64_t>(std::ceil(canvas.selectionBounds.maxY));
+        return true;
+    }
+    TileGridPos min{};
+    TileGridPos max{};
+    if (!CanvasDrawnGrid(canvas, min, max)) {
+        return false;
+    }
+    region.minX = std::int64_t{min.x} * kTileSize;
+    region.minY = std::int64_t{min.y} * kTileSize;
+    region.maxX = (std::int64_t{max.x} + 1) * kTileSize;
+    region.maxY = (std::int64_t{max.y} + 1) * kTileSize;
+    return true;
+}
+
+// ExportUpdate then writes `path` over the next updates, the canvas's background colour under it when `background`.
+void ExportStart(Window window, const CanvasState& canvas, const ExportRegion& region, std::filesystem::path path,
+                 bool background) noexcept {
+    const auto tileOf = [](std::int64_t pos) {
+        return static_cast<TileAxis>(pos >= 0 ? pos / kTileSize : ((pos + 1) / kTileSize) - 1);
+    };
+    ExportState& job = gAppState.exporting;
+    job = ExportState{
+        .path = std::move(path),
+        .pixels = std::vector<std::byte>(
+            static_cast<std::size_t>((region.maxX - region.minX) * (region.maxY - region.minY) * 4)),
+        .remaining = {},
+        .x = region.minX,
+        .y = region.minY,
+        .width = static_cast<std::uint32_t>(region.maxX - region.minX),
+        .height = static_cast<std::uint32_t>(region.maxY - region.minY),
+        .background = background ? canvas.backgroundColor : Color::Srgb{},
+        .canvas = canvas.id,
+        .window = window,
+        .masked = region.masked,
+    };
+    for (TileAxis y = tileOf(region.minY); y <= tileOf(region.maxY - 1); ++y) {
+        for (TileAxis x = tileOf(region.minX); x <= tileOf(region.maxX - 1); ++x) {
+            job.remaining.push_back(TileKeyMake(0, 0, TileGridPos{.x = x, .y = y}));
+        }
+    }
+}
+
+// canvas.export: asks for a PNG file, then exports the ExportRegion. The dialog's check box puts the background colour
+// under it, as the view shows it; unchecked, the image keeps its alpha.
+void AppExport(Window window) noexcept {
+    ZoneScopedN("AppExport");
+    if (ActionBlocked(window, ActionId::CanvasExport, 0) != Text::Count_) {
+        return;
+    }
+    const CanvasState& canvas = *WindowCanvas(window);
+    ExportRegion region{};
+    if (!ExportRegionGet(canvas, region)) {
+        return;
+    }
+    if (region.maxX - region.minX > kPlatformImageSideMax || region.maxY - region.minY > kPlatformImageSideMax) {
+        AppError(window, TextFormat(Text::ErrorExport, CanvasName(canvas).c_str()), Error::ImageTooLarge);
+        return;
+    }
+    std::filesystem::path initial =
+        canvas.path.empty()
+            ? std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(TextGet(Text::Untitled))))
+            : canvas.path;
+    initial.replace_extension(".png");
+    gAppState.modal = true;
+    const auto path = DialogFileSave(DialogFileInfo{
+        .initial = initial,
+        .typeName = TextGet(Text::ExportFileType),
+        .extension = "png",
+        .check = TextGet(Text::ExportBackground),
+        .checked = &gAppState.exportBackground,
+        .window = window,
+    });
+    gAppState.modal = false;
+    if (!path) {
+        AppError(window, TextGet(Text::ErrorFileDialog), path.error());
+        return;
+    }
+    if (!path->empty()) {
+        ExportStart(window, canvas, region, *path, gAppState.exportBackground);
+    }
+}
+
+// An export's background, premultiplied, from 0 to 255; all 0 for none.
+[[nodiscard]] std::array<unsigned, 4> ExportUnder(const Color::Srgb& background) noexcept {
+    const auto byte = [](float value) {
+        return static_cast<unsigned>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+    const float a = background.a;
+    return {byte(background.r * a), byte(background.g * a), byte(background.b * a), byte(a)};
+}
+
+// A premultiplied pixel over `under`, as the view draws the canvas over its background.
+void PixelOver(std::byte* pixel, const std::array<unsigned, 4>& under) noexcept {
+    const unsigned rest = 255u - std::to_integer<unsigned>(pixel[3]);
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+        pixel[channel] =
+            static_cast<std::byte>(std::to_integer<unsigned>(pixel[channel]) + (((under[channel] * rest) + 127) / 255));
+    }
+}
+
+// The export's image cropped to its pixels with any alpha, unless a selection's, the background put under it, then
+// written; its errors shown in its window.
+void ExportFinish() noexcept {
+    ZoneScopedN("ExportFinish");
+    ExportState& job = gAppState.exporting;
+    PlatformImage image{.pixels = {}, .width = job.width, .height = job.height};
+    std::uint32_t left = job.width;
+    std::uint32_t top = job.height;
+    std::uint32_t right = 0;
+    std::uint32_t bottom = 0;
+    for (std::uint32_t y = 0; y < job.height; ++y) {
+        for (std::uint32_t x = 0; x < job.width; ++x) {
+            if (job.pixels[(((std::size_t{y} * job.width) + x) * 4) + 3] != std::byte{0}) {
+                left = std::min(left, x);
+                top = std::min(top, y);
+                right = std::max(right, x + 1);
+                bottom = std::max(bottom, y + 1);
+            }
+        }
+    }
+    // A selection keeps its bounds; an image with nothing showing stays whole.
+    if (job.masked || right == 0) {
+        image.pixels = std::move(job.pixels);
+    } else {
+        image.width = right - left;
+        image.height = bottom - top;
+        image.pixels.resize(std::size_t{image.width} * image.height * 4);
+        for (std::uint32_t y = 0; y < image.height; ++y) {
+            std::memcpy(image.pixels.data() + (std::size_t{y} * image.width * 4),
+                        job.pixels.data() + (((std::size_t{top + y} * job.width) + left) * 4),
+                        std::size_t{image.width} * 4);
+        }
+    }
+    // A selection's took its shape as it was copied.
+    if (const std::array<unsigned, 4> under = ExportUnder(job.background); !job.masked && under[3] != 0) {
+        for (std::size_t i = 0; i < image.pixels.size(); i += 4) {
+            PixelOver(image.pixels.data() + i, under);
+        }
+    }
+    const Window window = WindowGetState(job.window) ? job.window : kWindowInvalid;
+    const std::filesystem::path path = job.path;
+    job = {};
+    if (const auto res = PlatformImageWrite(path, image); !res) {
+        AppError(window, TextFormat(Text::ErrorExport, PathUtf8(path.filename()).c_str()), res.error());
+    }
+}
+
+// Each update, after TilesMarkVisible: the export's next positions whose root composite is current are copied, the
+// others wanted, so the next submit composites them. Positions where nothing shows stay transparent.
+void ExportUpdate() noexcept {
+    ExportState& job = gAppState.exporting;
+    if (job.canvas == kCanvasInvalid) {
+        return;
+    }
+    ZoneScopedN("ExportUpdate");
+    CanvasState& canvas = gAppState.canvases[job.canvas];
+    const Layer root = canvas.layersOrder.back();
+    const std::array<unsigned, 4> under = ExportUnder(job.background);
+    std::vector<TileKey> done;
+    std::vector<TileKey> keys; // per position copied, the root's tile then, masked, the selection's
+    std::vector<bool> shown;   // per position copied: false for one only the background covers
+    for (std::size_t i = 0; i < job.remaining.size() && i < kExportWindow; ++i) {
+        const TileKey gridPos = job.remaining[i];
+        if (!FolderShowsTile(canvas, root, gridPos)) {
+            done.push_back(gridPos);
+            // A selection's background takes its shape here; without one, ExportFinish puts it under all.
+            if (job.masked && under[3] != 0) {
+                keys.push_back(TileGridPosLayerKey(gridPos, root));
+                keys.push_back(TileGridPosLayerKey(gridPos, canvas.selection));
+                shown.push_back(false);
+            }
+            continue;
+        }
+        const TileKey key = TileGridPosLayerKey(gridPos, root);
+        if (const auto found = canvas.tileIndices.find(key); found != canvas.tileIndices.end()) {
+            TileState& tile = canvas.tiles[found->second];
+            tile.visibleFrame = gAppState.frame;
+            if (!HasAnyFlag(tile.flags, TileFlags::Dirty) && tile.cell != kTileAtlasCellInvalid
+                && !std::ranges::contains(canvas.composites, key)) {
+                done.push_back(gridPos);
+                keys.push_back(key);
+                if (job.masked) {
+                    keys.push_back(TileGridPosLayerKey(gridPos, canvas.selection));
+                }
+                shown.push_back(true);
+                continue;
+            }
+        }
+        canvas.compositeWants.push_back(CompositeWant{.gridPos = gridPos, .level = 0});
+    }
+    if (!keys.empty()) {
+        const std::size_t tileBytes = TileBytes(canvas.pixelFormat);
+        std::vector<std::byte> pixels(keys.size() * tileBytes);
+        if (const auto res = CanvasTilesGet(canvas, keys, pixels); !res) {
+            const Window window = WindowGetState(job.window) ? job.window : kWindowInvalid;
+            const std::string name = PathUtf8(job.path.filename());
+            job = {};
+            AppError(window, TextFormat(Text::ErrorExport, name.c_str()), res.error());
+            return;
+        }
+        constexpr std::int64_t kSize = kTileSize;
+        const std::size_t stride = job.masked ? 2 : 1;
+        for (std::size_t k = 0; k < keys.size(); k += stride) {
+            std::byte* composite = pixels.data() + (k * tileBytes);
+            const std::byte* mask = job.masked ? composite + tileBytes : nullptr;
+            // A stale tile where nothing shows any more.
+            if (!shown[k / stride]) {
+                std::fill_n(composite, tileBytes, std::byte{0});
+            }
+            const TileGridPos pos = TileKeyGridPos(keys[k]);
+            const std::int64_t tileX = std::int64_t{pos.x} * kSize;
+            const std::int64_t tileY = std::int64_t{pos.y} * kSize;
+            const std::int64_t endX = job.x + job.width;
+            const std::int64_t endY = job.y + job.height;
+            for (std::int64_t y = std::max(job.y, tileY); y < std::min(endY, tileY + kSize); ++y) {
+                for (std::int64_t x = std::max(job.x, tileX); x < std::min(endX, tileX + kSize); ++x) {
+                    const auto texel = static_cast<std::size_t>((((y - tileY) * kSize) + (x - tileX)) * 4);
+                    std::byte* out = job.pixels.data() + ((((y - job.y) * job.width) + (x - job.x)) * 4);
+                    std::copy_n(composite + texel, 4, out);
+                    if (!mask) {
+                        continue;
+                    }
+                    PixelOver(out, under);
+                    const unsigned coverage = std::to_integer<unsigned>(mask[texel + 3]);
+                    for (std::size_t channel = 0; channel < 4; ++channel) {
+                        out[channel] =
+                            static_cast<std::byte>(((std::to_integer<unsigned>(out[channel]) * coverage) + 127) / 255);
+                    }
+                }
+            }
+        }
+    }
+    std::erase_if(job.remaining, [&](TileKey gridPos) { return std::ranges::contains(done, gridPos); });
+    if (job.remaining.empty()) {
+        ExportFinish();
+    }
+}
+
+// The benchmark's scene: kBenchmarkLayers layers, each crossed by kBenchmarkStrokes waves over a square of
+// kBenchmarkSide canvas units around the origin; then kBenchmarkFrames of zooming in and panning across it.
+constexpr std::uint32_t kBenchmarkLayers = 4;
+constexpr std::uint32_t kBenchmarkStrokes = 24;
+constexpr double kBenchmarkSide = 6144.0;
+constexpr std::uint32_t kBenchmarkFrames = 240;
+// Updates in a row with nothing left to do before a phase counts as done.
+constexpr std::uint32_t kBenchmarkSettleUpdates = 3;
+
+[[nodiscard]] double MillisecondsSince(std::chrono::steady_clock::time_point start) noexcept {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+void BenchmarkRecord(std::string_view name, double milliseconds) noexcept {
+    gAppState.benchmark.results.push_back(BenchmarkResult{.name = name, .milliseconds = milliseconds});
+    MIDORI_LOG_INFO("benchmark: {} {:.1f} ms", name, milliseconds);
+}
+
+// What the phase started is done: no stroke, export or work of the app's for kBenchmarkSettleUpdates updates.
+[[nodiscard]] bool BenchmarkSettled() noexcept {
+    AppState& app = gAppState;
+    const bool idle = !app.busy && app.stroke.canvas == kCanvasInvalid && app.exporting.canvas == kCanvasInvalid;
+    app.benchmark.idleUpdates = idle ? app.benchmark.idleUpdates + 1 : 0;
+    return app.benchmark.idleUpdates >= kBenchmarkSettleUpdates;
+}
+
+// The whole scene in the view, at a zoom from it to 400% by `t` from 0 to 1, circling in toward the center and turning.
+[[nodiscard]] Viewport BenchmarkViewport(const CanvasViewState& view, float dpiScale, double t) noexcept {
+    const double side = std::min(view.rect.width, view.rect.height) / static_cast<double>(dpiScale);
+    const double fit = std::max(side, 1.0) / kBenchmarkSide;
+    const double radius = kBenchmarkSide * 0.3 * (1.0 - t);
+    const double angle = t * 4.0 * std::numbers::pi;
+    return Viewport{
+        .posX = std::cos(angle) * radius,
+        .posY = std::sin(angle) * radius,
+        .zoomX = static_cast<float>(fit * std::pow(4.0 / fit, t)),
+        .zoomY = static_cast<float>(fit * std::pow(4.0 / fit, t)),
+        .rot = static_cast<float>(t * std::numbers::pi / 6.0),
+    };
+}
+
+// Stroke `index`: a wave across the scene on the layer it falls to, in that layer's hue, with the built-in brush at
+// size 48.
+void BenchmarkStroke(std::uint32_t index) noexcept {
+    const BenchmarkState& bench = gAppState.benchmark;
+    CanvasState& canvas = gAppState.canvases[bench.canvas];
+    const std::uint32_t layer = index / kBenchmarkStrokes;
+    // Bottom first; the root is last.
+    canvas.activeLayer = canvas.layersOrder[layer];
+    const MdslBrush& source = gAppState.tools.shaders[0].brush;
+    BrushState brush{};
+    BrushParamsDefault(brush, source);
+    if (const int size = BrushParamFind(source.params, "size"); size >= 0) {
+        brush.params[static_cast<std::size_t>(size)].value[0] = 48.0f;
+    }
+    const double half = kBenchmarkSide * 0.5;
+    const double row =
+        ((static_cast<double>(index % kBenchmarkStrokes) + 0.5) / kBenchmarkStrokes * kBenchmarkSide) - half;
+    const double hue = 2.0 * std::numbers::pi * static_cast<double>(layer) / kBenchmarkLayers;
+    const auto channel = [hue](double offset) {
+        return static_cast<float>(0.5 + (0.5 * std::cos(hue + offset)));
+    };
+    const auto point = [&](double x) {
+        return StrokePoint{
+            .x = x,
+            .y = row + (std::sin((x / 300.0) + static_cast<double>(layer)) * 120.0),
+            .time = (x + half) / kBenchmarkSide,
+            .pressure = 0.8f,
+            .tiltX = 0.0f,
+            .tiltY = 0.0f,
+        };
+    };
+    StrokeBegin(StrokeBeginInfo{
+        .brush = brush,
+        .color = Color::Srgb{.r = channel(0.0), .g = channel(2.1), .b = channel(4.2), .a = 1.0f},
+        .point = point(-half),
+        .layer = canvas.activeLayer,
+        .view = bench.view,
+        .mode = StrokeMode::Paint,
+        .blendMode = BlendMode::Normal,
+        .shape = StrokeShape::Brush,
+        .shader = 0,
+    });
+    for (double x = -half + 8.0; x <= half; x += 8.0) {
+        StrokeTo(point(x));
+    }
+    StrokeEnd();
+}
+
+// debug.benchmark: a new tab with kBenchmarkLayers layers, which BenchmarkUpdate paints, navigates, saves, opens again
+// and exports.
+void AppBenchmarkStart(Window window) noexcept {
+    ZoneScopedN("AppBenchmarkStart");
+    AppState& app = gAppState;
+    if (ActionBlocked(window, ActionId::DebugBenchmark, 0) != Text::Count_) {
+        return;
+    }
+    if (const auto res = AppCanvasNew(window); !res) {
+        MIDORI_LOG_ERROR("benchmark: no canvas: {}", ErrorMessage(res.error()));
+        return;
+    }
+    const CanvasView view = WindowCanvasView(window);
+    if (view == kCanvasViewInvalid) {
+        return;
+    }
+    for (std::uint32_t i = 1; i < kBenchmarkLayers; ++i) {
+        AppLayerNew(window, false);
+    }
+    app.benchmark = BenchmarkState{
+        .results = {},
+        .file = {},
+        .phaseStart = std::chrono::steady_clock::now(),
+        .frameTime = {},
+        .frameMax = 0.0,
+        .step = 0,
+        .idleUpdates = 0,
+        .canvas = app.canvasViews[view].canvas,
+        .view = view,
+        .window = window,
+        .phase = BenchmarkPhase::Paint,
+    };
+    MIDORI_LOG_INFO("benchmark: started, {} {} {}", MIDORI_VERSION_STRING, MIDORI_PROFILE, MIDORI_COMPILER);
+}
+
+// Appended to benchmarks.csv beside preferences.json, a header first in a new file, so runs compare across versions.
+void BenchmarkWrite() noexcept {
+    const BenchmarkState& bench = gAppState.benchmark;
+    const auto settings = PlatformUserSettingsPath();
+    if (!settings) {
+        return;
+    }
+    const std::filesystem::path path = *settings / MIDORI_NAME / "benchmarks.csv";
+    std::error_code ec;
+    const bool header = !std::filesystem::exists(path, ec);
+    std::ofstream file(path, std::ios::binary | std::ios::app);
+    if (header) {
+        file << "date,version,profile,compiler";
+        for (const BenchmarkResult& result : bench.results) {
+            file << ',' << result.name << " (ms)";
+        }
+        file << '\n';
+    }
+    const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    file << std::format("{:%F %T},{},{},{}", now, MIDORI_VERSION_STRING, MIDORI_PROFILE, MIDORI_COMPILER);
+    for (const BenchmarkResult& result : bench.results) {
+        file << std::format(",{:.1f}", result.milliseconds);
+    }
+    file << '\n';
+    if (!file) {
+        MIDORI_LOG_WARN("benchmark: writing {} failed", PathUtf8(path));
+    }
+}
+
+// The benchmark's tab closed, its files deleted; the results stay for the statistics window.
+void BenchmarkEnd(bool completed) noexcept {
+    BenchmarkState& bench = gAppState.benchmark;
+    if (completed) {
+        BenchmarkWrite();
+    }
+    if (bench.view != kCanvasViewInvalid && gAppState.canvasViews[bench.view].id == bench.view) {
+        CanvasViewDetach(bench.view);
+    }
+    std::error_code ec;
+    if (!bench.file.empty()) {
+        std::filesystem::remove(bench.file, ec);
+        std::filesystem::path png = bench.file;
+        std::filesystem::remove(png.replace_extension(".png"), ec);
+    }
+    bench.file.clear();
+    bench.phase = BenchmarkPhase::None;
+}
+
+// Each update: one stroke at a time, then a frame of navigation at a time, then the save, open and export, each phase
+// timed until the app settles. Stops when its tab or window is closed.
+void BenchmarkUpdate() noexcept {
+    AppState& app = gAppState;
+    BenchmarkState& bench = app.benchmark;
+    if (bench.phase == BenchmarkPhase::None) {
+        return;
+    }
+    ZoneScopedN("BenchmarkUpdate");
+    const auto windowState = WindowGetState(bench.window);
+    if (!windowState || bench.view == kCanvasViewInvalid || app.canvasViews[bench.view].id != bench.view
+        || app.canvasViews[bench.view].canvas != bench.canvas) {
+        MIDORI_LOG_WARN("benchmark: stopped, its tab or window closed");
+        bench.view = kCanvasViewInvalid;
+        BenchmarkEnd(false);
+        return;
+    }
+    CanvasViewState& view = app.canvasViews[bench.view];
+    switch (bench.phase) {
+        case BenchmarkPhase::Paint:
+            if (app.stroke.canvas != kCanvasInvalid) {
+                return;
+            }
+            if (bench.step < kBenchmarkLayers * kBenchmarkStrokes) {
+                // The built-in brush, the same everywhere, compiles only once a tool picks it, so the benchmark asks
+                // for it, and times from its first stroke.
+                if (const ToolShader& builtIn = app.tools.shaders[0]; !GraphicsBrushLoaded(0)) {
+                    if (!builtIn.error.empty()) {
+                        MIDORI_LOG_ERROR("benchmark: the built-in brush does not compile: {}", builtIn.error);
+                        BenchmarkEnd(false);
+                    } else if (!builtIn.compiling && !builtIn.ready) {
+                        BrushShaderLoad(0);
+                    }
+                    return;
+                }
+                if (bench.step == 0) {
+                    bench.phaseStart = std::chrono::steady_clock::now();
+                }
+                BenchmarkStroke(bench.step++);
+                return;
+            }
+            if (!BenchmarkSettled()) {
+                return;
+            }
+            BenchmarkRecord("paint", MillisecondsSince(bench.phaseStart));
+            bench.phase = BenchmarkPhase::Navigate;
+            bench.step = 0;
+            bench.phaseStart = std::chrono::steady_clock::now();
+            bench.frameTime = bench.phaseStart;
+            return;
+        case BenchmarkPhase::Navigate: {
+            const auto now = std::chrono::steady_clock::now();
+            bench.frameMax =
+                std::max(bench.frameMax, std::chrono::duration<double, std::milli>(now - bench.frameTime).count());
+            bench.frameTime = now;
+            if (bench.step < kBenchmarkFrames) {
+                const double t = static_cast<double>(bench.step++) / (kBenchmarkFrames - 1);
+                view.viewport = ViewportSnap(BenchmarkViewport(view, windowState->dpiScale, t), windowState->dpiScale);
+                return;
+            }
+            if (!BenchmarkSettled()) {
+                return;
+            }
+            BenchmarkRecord("navigate", MillisecondsSince(bench.phaseStart));
+            BenchmarkRecord("slowest frame", bench.frameMax);
+
+            std::error_code ec;
+            bench.file = std::filesystem::temp_directory_path(ec) / "midori-benchmark.mori";
+            auto start = std::chrono::steady_clock::now();
+            if (const auto saved = CanvasSaveAs(bench.canvas, bench.file); !saved) {
+                MIDORI_LOG_ERROR("benchmark: save failed: {}", ErrorMessage(saved.error()));
+                BenchmarkEnd(false);
+                return;
+            }
+            BenchmarkRecord("save", MillisecondsSince(start));
+            CanvasViewDetach(bench.view);
+            bench.view = kCanvasViewInvalid;
+            start = std::chrono::steady_clock::now();
+            const auto opened = CanvasOpen(bench.file);
+            if (!opened) {
+                MIDORI_LOG_ERROR("benchmark: open failed: {}", ErrorMessage(opened.error()));
+                BenchmarkEnd(false);
+                return;
+            }
+            BenchmarkRecord("open", MillisecondsSince(start));
+            if (const auto shown = WindowShowCanvas(bench.window, *opened); !shown) {
+                MIDORI_LOG_ERROR("benchmark: the saved scene not shown: {}", ErrorMessage(shown.error()));
+                BenchmarkEnd(false);
+                return;
+            }
+            bench.canvas = *opened;
+            bench.view = WindowCanvasView(bench.window);
+            app.canvasViews[bench.view].viewport =
+                BenchmarkViewport(app.canvasViews[bench.view], windowState->dpiScale, 0.0);
+            bench.phase = BenchmarkPhase::Open;
+            bench.phaseStart = start;
+            return;
+        }
+        case BenchmarkPhase::Open: {
+            if (!BenchmarkSettled()) {
+                return;
+            }
+            BenchmarkRecord("open until shown", MillisecondsSince(bench.phaseStart));
+            ExportRegion region{};
+            if (!ExportRegionGet(app.canvases[bench.canvas], region)) {
+                MIDORI_LOG_ERROR("benchmark: the saved scene holds no painted tile");
+                BenchmarkEnd(false);
+                return;
+            }
+            std::filesystem::path png = bench.file;
+            ExportStart(bench.window, app.canvases[bench.canvas], region, png.replace_extension(".png"), true);
+            bench.phase = BenchmarkPhase::Export;
+            bench.phaseStart = std::chrono::steady_clock::now();
+            return;
+        }
+        case BenchmarkPhase::Export:
+            if (!BenchmarkSettled()) {
+                return;
+            }
+            BenchmarkRecord("export", MillisecondsSince(bench.phaseStart));
+            BenchmarkEnd(true);
+            return;
+        case BenchmarkPhase::None:
+            return;
+    }
+}
+
 // The drag's tiles to its canvas's checked tags, then no drag.
 void TagDragEnd() noexcept {
     TagDragState& drag = gAppState.tagDrag;
@@ -2647,6 +3395,12 @@ void ViewTabStep(Window window, int step) noexcept {
             return AppCanvasSave(window);
         case ActionId::CanvasSaveAs:
             return AppCanvasSaveAs(window);
+        case ActionId::CanvasExport:
+            AppExport(window);
+            return {};
+        case ActionId::DebugBenchmark:
+            AppBenchmarkStart(window);
+            return {};
         case ActionId::HistoryUndo:
             // Undoing a transform in progress cancels it.
             if (AppTransforming()) {
@@ -2671,6 +3425,18 @@ void ViewTabStep(Window window, int step) noexcept {
             return {};
         case ActionId::BrushHardness:
             BrushAdjustBegin(window, BrushAdjustMode::Hardness);
+            return {};
+        case ActionId::BrushSmaller:
+        case ActionId::BrushLarger:
+            BrushSizeStep(action == ActionId::BrushLarger);
+            return {};
+        case ActionId::BrushOpacitySet:
+            BrushOpacitySet(arg);
+            return {};
+        case ActionId::ViewZoomIn:
+        case ActionId::ViewZoomOut:
+        case ActionId::ViewZoomActual:
+            ViewZoom(window, action);
             return {};
         case ActionId::LayerNew:
             AppLayerNew(window, false);
@@ -2768,8 +3534,9 @@ void ViewTabStep(Window window, int step) noexcept {
             if (arg == 0) {
                 app.language.clear();
                 TextLoad(PlatformLanguage());
-            } else if (arg <= kLanguages.size()) {
-                app.language = kLanguages[arg - 1].code;
+            } else if (const auto language = std::ranges::find(kLanguages, arg, &LanguageInfo::id);
+                       language != kLanguages.end()) {
+                app.language = language->code;
                 TextLoad(app.language);
             }
             return {};
@@ -2900,7 +3667,9 @@ void ViewTabStep(Window window, int step) noexcept {
 void ActionEnd(ActionId action) noexcept {
     if (action == ActionId::ViewNavigate) {
         gAppState.spaceDown = false;
-        NavigateEnd();
+        if (gAppState.navigate.button == Button::Left) {
+            NavigateEnd();
+        }
     }
 }
 
@@ -2977,7 +3746,8 @@ void ActionEnd(ActionId action) noexcept {
 [[nodiscard]] bool AppBusy(bool streaming) noexcept {
     const AppState& app = gAppState;
     const StrokeState& stroke = app.stroke;
-    if (streaming || app.paste.canvas != kCanvasInvalid || !app.historyPool.ops.empty()
+    if (streaming || app.paste.canvas != kCanvasInvalid || app.exporting.canvas != kCanvasInvalid
+        || !app.historyPool.ops.empty()
         || std::ranges::any_of(app.tools.shaders,
                                [](const ToolShader& shader) { return shader.compiling || shader.ready; })
         || (stroke.canvas != kCanvasInvalid
@@ -2996,6 +3766,132 @@ void ActionEnd(ActionId action) noexcept {
             && (canvas.history.pending != 0 || canvas.merge.result != kLayerInvalid || !canvas.creates.empty()
                 || !canvas.mipBuilds.empty() || !canvas.composites.empty());
     });
+}
+
+// Where autosaves go, in the app's folder under PlatformUserSettingsPath.
+[[nodiscard]] Result<std::filesystem::path> RecoveryFolder() noexcept {
+    const auto settings = PlatformUserSettingsPath();
+    if (!settings) {
+        return std::unexpected(settings.error());
+    }
+    return *settings / MIDORI_NAME / "recovery";
+}
+
+// Every kAutosaveInterval after a key or button, each modified canvas is written whole into the recovery folder, for
+// the next launch to offer back after a crash. Waits for a stroke, paste, drag or adjust to end.
+void Autosave() noexcept {
+    ZoneScopedN("Autosave");
+    AppState& app = gAppState;
+    const auto now = std::chrono::steady_clock::now();
+    if (!app.autosaveInput || now - app.autosaveTime < kAutosaveInterval || app.modal
+        || (app.stroke.canvas != kCanvasInvalid && !app.stroke.ended) || app.paste.canvas != kCanvasInvalid
+        || app.navigate.mode != NavigateMode::None || app.brushAdjust.mode != BrushAdjustMode::None) {
+        return;
+    }
+    app.autosaveTime = now;
+    app.autosaveInput = false;
+    const auto folder = RecoveryFolder();
+    std::error_code ec;
+    if (folder) {
+        std::filesystem::create_directories(*folder, ec);
+    }
+    if (!folder || ec) {
+        MIDORI_LOG_ERROR("Autosave: no recovery folder");
+        return;
+    }
+    for (CanvasState& canvas : app.canvases) {
+        if (canvas.id == kCanvasInvalid || !canvas.modified) {
+            continue;
+        }
+        // One file per canvas, named apart from those an earlier run left.
+        std::filesystem::path backup = canvas.backup;
+        if (backup.empty()) {
+            const auto stamp = std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1);
+            backup = *folder / std::format("{}-{}.{}", stamp, canvas.id, kCanvasExtension);
+        }
+        if (const auto res = CanvasBackup(canvas.id, backup); !res) {
+            MIDORI_LOG_WARN("Autosave of {} failed: {}", CanvasName(canvas), ErrorMessage(res.error()));
+            app.autosaveInput = true;
+            continue;
+        }
+        canvas.backup = std::move(backup);
+    }
+}
+
+// An autosave a crash left, and the file it was made from: empty for a canvas never saved.
+struct RecoveredFile {
+    std::filesystem::path backup;
+    std::filesystem::path path;
+};
+
+// Asks whether to bring back the autosaves a crash left: Yes returns them, No deletes them, Cancel keeps them for the
+// next launch. What an interrupted autosave left is deleted.
+[[nodiscard]] std::vector<RecoveredFile> RecoveryAsk() noexcept {
+    ZoneScopedN("RecoveryAsk");
+    std::vector<RecoveredFile> found;
+    const auto folder = RecoveryFolder();
+    if (!folder) {
+        return found;
+    }
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(*folder, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::filesystem::path& path = it->path();
+        if (path.extension() == ".txt") {
+            continue;
+        }
+        if (path.extension() != std::filesystem::path(".").concat(kCanvasExtension)) {
+            std::error_code removed;
+            std::filesystem::remove(path, removed);
+            continue;
+        }
+        std::ifstream note(CanvasBackupNote(path), std::ios::binary);
+        const std::string utf8((std::istreambuf_iterator<char>(note)), std::istreambuf_iterator<char>());
+        found.push_back(RecoveredFile{.backup = path, .path = std::u8string(utf8.begin(), utf8.end())});
+    }
+    if (found.empty()) {
+        return found;
+    }
+    std::ranges::sort(found, {}, &RecoveredFile::backup);
+    const std::string instruction = TextFormat(Text::AskRecover, static_cast<unsigned>(found.size()));
+    gAppState.modal = true;
+    const DialogChoice choice = DialogAsk(DialogAskInfo{
+        .title = MIDORI_NAME,
+        .instruction = instruction,
+        .content = TextGet(Text::AskRecoverContent),
+        .yes = TextGet(Text::AskRecoverYes),
+        .no = TextGet(Text::AskRecoverNo),
+        .window = kWindowInvalid,
+    });
+    gAppState.modal = false;
+    if (choice == DialogChoice::No) {
+        for (const RecoveredFile& file : found) {
+            CanvasBackupRemove(file.backup);
+        }
+    }
+    if (choice != DialogChoice::Yes) {
+        found.clear();
+    }
+    return found;
+}
+
+// An autosave as a tab of `window`, modified, its file only suggested when saving. One that fails to show stays in the
+// recovery folder.
+void RecoveredOpen(Window window, const RecoveredFile& file) noexcept {
+    ZoneScopedN("RecoveredOpen");
+    const auto canvas = CanvasOpen(file.backup);
+    if (!canvas) {
+        AppError(window, TextFormat(Text::ErrorOpen, PathUtf8(file.backup.filename()).c_str()), canvas.error());
+        return;
+    }
+    CanvasState& state = gAppState.canvases[*canvas];
+    state.path = file.path;
+    state.modified = true;
+    if (const auto shown = WindowShowCanvas(window, *canvas); !shown) {
+        AppError(window, TextFormat(Text::ErrorOpen, PathUtf8(file.backup.filename()).c_str()), shown.error());
+        return;
+    }
+    state.recovered = file.backup;
+    CanvasTitlesUpdate(*canvas);
 }
 
 } // namespace
@@ -3051,16 +3947,25 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
     }
     JobsInit(JobsInitInfo{.execute = CanvasJobExecute, .readerCount = 0});
 
+    CacheLeftoversRemove();
+    gAppState.autosaveTime = std::chrono::steady_clock::now();
+    const std::vector<RecoveredFile> recovered = RecoveryAsk();
+
     // Each file of the command line in its own window, else the files open at the last exit as their windows' tabs.
-    // Gone files are skipped quietly: only the user's own choice of file is worth an error.
+    // Gone files are skipped quietly: only the user's own choice of file is worth an error. A file recovered from its
+    // autosave is not opened again from the older one on disk.
     std::vector<OpenFile> files;
     for (std::size_t i = 0; i < initInfo.files.size() && i < kWindowMax; ++i) {
-        files.push_back(OpenFile{.path = initInfo.files[i], .tagsChecked = 0, .window = static_cast<std::uint8_t>(i)});
+        files.push_back(OpenFile{
+            .path = initInfo.files[i], .viewport = {}, .tagsChecked = 0, .window = static_cast<std::uint8_t>(i)});
     }
     if (files.empty() && gAppState.reopenFiles) {
         std::error_code ec;
         for (const OpenFile& file : gAppState.openFiles) {
-            if (std::filesystem::is_regular_file(file.path, ec)) {
+            const bool isRecovered = std::ranges::any_of(recovered, [&](const RecoveredFile& r) {
+                return !r.path.empty() && std::filesystem::equivalent(r.path, file.path, ec);
+            });
+            if (std::filesystem::is_regular_file(file.path, ec) && !isRecovered) {
                 files.push_back(file);
             }
         }
@@ -3103,7 +4008,13 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
             if (CanvasState* canvas = WindowCanvas(window)) {
                 canvas->tagsChecked = files[i].tagsChecked & canvas->tags;
             }
+            if (const CanvasView view = WindowCanvasView(window); view != kCanvasViewInvalid) {
+                gAppState.canvasViews[view].viewport = files[i].viewport;
+            }
         }
+    }
+    for (const RecoveredFile& file : recovered) {
+        RecoveredOpen(window, file);
     }
     return ensureCanvas();
 }
@@ -3115,8 +4026,23 @@ Result<void> AppEvent(Event event) noexcept {
         && event.type != EventType::WindowDestroy) {
         return {};
     }
+    if (event.type == EventType::Key || event.type == EventType::Button) {
+        gAppState.autosaveInput = true;
+    }
     if (event.type == EventType::Key) {
         gAppState.keyMods = event.key.keyMods;
+    } else if (event.type == EventType::WindowFocus && !event.windowFocus.focused) {
+        // Keys held are released without an event.
+        gAppState.keyMods = KeyMod::None;
+        gAppState.spaceDown = false;
+        gAppState.pointerPressure = 0.0f;
+        gAppState.pointerTiltX = 0.0f;
+        gAppState.pointerTiltY = 0.0f;
+        gAppState.viewStepView = kCanvasViewInvalid;
+        gAppState.keymap.holding = -1;
+        gAppState.keymap.repeating = -1;
+        gAppState.keymap.pendingLength = 0;
+        gAppState.keymap.down.reset();
     } else if (event.type == EventType::Pointer) {
         gAppState.pointerTime = event.pointer.time;
         gAppState.pointerX = event.pointer.posX;
@@ -3250,6 +4176,8 @@ Result<void> AppUpdate() noexcept {
     StrokeUpdate();
     BrushShadersUpdate();
     PasteUpdate();
+    ExportUpdate();
+    BenchmarkUpdate();
     for (const CanvasState& canvas : gAppState.canvases) {
         if (canvas.id != kCanvasInvalid) {
             const bool wasModified = canvas.modified;
@@ -3261,6 +4189,7 @@ Result<void> AppUpdate() noexcept {
     if (gAppState.eyedropper.view != kCanvasViewInvalid && gAppState.eyedropper.moved) {
         EyedropperSample();
     }
+    Autosave();
     // A dialog an action opens may close windows, so each request checks its own.
     for (const ActionRequest& request : std::exchange(gAppState.actionRequests, {})) {
         if (!WindowGetState(request.window)) {
@@ -3270,9 +4199,10 @@ Result<void> AppUpdate() noexcept {
             return res;
         }
     }
-    // Otherwise a window presents only after input, see UiWantsFrame, and sleeps in between.
+    // Otherwise a window presents only after input, see UiWantsFrame, and sleeps in between. A benchmark keeps every
+    // frame coming, but is no work: it waits for the rest to be done.
     gAppState.busy = AppBusy(streaming);
-    if (gAppState.busy) {
+    if (gAppState.busy || gAppState.benchmark.phase != BenchmarkPhase::None) {
         for (const CanvasViewState& view : gAppState.canvasViews) {
             if (view.id != kCanvasViewInvalid) {
                 GraphicsWindowRequestFrame(view.window);
@@ -3516,6 +4446,24 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
         case ActionId::LayerNew:
         case ActionId::LayerNewFolder:
             return needsEdit();
+        case ActionId::CanvasExport: {
+            const Text blocked = needsEdit();
+            if (blocked != Text::Count_) {
+                return blocked;
+            }
+            if (app.exporting.canvas != kCanvasInvalid) {
+                return Text::ReasonExporting;
+            }
+            TileGridPos min{};
+            TileGridPos max{};
+            const bool selected = canvas->selection != kLayerInvalid && !SelectionEmpty(canvas->selectionBounds);
+            return selected || CanvasDrawnGrid(*canvas, min, max) ? Text::Count_ : Text::ReasonNothingDrawn;
+        }
+        case ActionId::DebugBenchmark:
+            if (app.benchmark.phase != BenchmarkPhase::None) {
+                return Text::ReasonBenchmarking;
+            }
+            return app.exporting.canvas != kCanvasInvalid ? Text::ReasonExporting : Text::Count_;
         case ActionId::HistoryUndo:
         case ActionId::HistoryRedo: {
             if (!canvas) {
@@ -3550,6 +4498,10 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
                 return Text::ReasonNoCanvas;
             }
             return painting ? Text::ReasonPainting : Text::Count_;
+        case ActionId::BrushSmaller:
+        case ActionId::BrushLarger:
+        case ActionId::BrushOpacitySet:
+            return painting ? Text::ReasonPainting : Text::Count_;
         case ActionId::LayerOpacity:
             if (painting) {
                 return Text::ReasonPainting;
@@ -3575,6 +4527,9 @@ Text ActionBlocked(Window window, ActionId action, std::uint32_t arg) noexcept {
         case ActionId::ViewReset:
         case ActionId::ViewFlipHorizontal:
         case ActionId::ViewFlipVertical:
+        case ActionId::ViewZoomIn:
+        case ActionId::ViewZoomOut:
+        case ActionId::ViewZoomActual:
             return needsCanvas();
         case ActionId::ViewBack:
         case ActionId::ViewForward: {
@@ -4064,10 +5019,14 @@ Result<void> AppWindowClose(Window window) noexcept {
         std::array<CanvasView, kCanvasViewMax> tabs{};
         const std::uint32_t count = AppPaneTabs(window, pane, tabs);
         for (std::uint32_t i = 0; i < count; ++i) {
-            const CanvasState& canvas = gAppState.canvases[gAppState.canvasViews[tabs[i]].canvas];
+            const CanvasViewState& view = gAppState.canvasViews[tabs[i]];
+            const CanvasState& canvas = gAppState.canvases[view.canvas];
             if (!canvas.path.empty() && !std::ranges::contains(openFiles, canvas.path, &OpenFile::path)
                 && openFiles.size() < kCanvasViewMax && group < kWindowMax) {
-                openFiles.push_back(OpenFile{.path = canvas.path, .tagsChecked = canvas.tagsChecked, .window = group});
+                openFiles.push_back(OpenFile{.path = canvas.path,
+                                             .viewport = view.viewport,
+                                             .tagsChecked = canvas.tagsChecked,
+                                             .window = group});
             }
         }
     }

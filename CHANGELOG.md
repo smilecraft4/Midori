@@ -5,7 +5,78 @@ All notable changes to Midori are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.2.5] - 2026-11-16
+
+### Fixed
+
+- Input
+  - Switching away from a window with Alt+Tab left Alt held in Midori, which kept the eyedropper active. Losing focus
+    now clears held modifiers and other temporary input and UI state.
+
+## [0.2.4] - 2026-11-11
+
+### Fixed
+
+- Development
+  - The in-app benchmark painted nothing and never finished when the current tool used another brush than the built-in
+    one: it waited for the built-in brush, which only compiles once a tool picks it. It now asks for it, times from its
+    first stroke, and logs why it stops whenever it does.
+
+## [0.2.3] - 2026-11-11
+
+### Added
+
+- Development
+  - Tests: `midori_tests`, run by `ctest --preset <preset>`, a small runner of Midori's own with no dependency. They
+    cover tile keys and their order, the atlas's Morton cells, curves, mdsl (the built-in brush, determinism, errors),
+    key bindings and sequences, fuzzy search, viewport math and colour conversions.
+  - CPU benchmark: `midori_bench`, the fastest and median time per call of mdsl translation and stamp(), QOI tile
+    encoding and decoding, the F1 search, curve baking, key presses and OkLab conversions.
+  - In-app benchmark (Debug > Benchmark, `debug.benchmark`): paints a generated 4-layer canvas, sweeps the view across
+    it, saves, opens and exports it in a tab of its own, then shows the timings in the statistics window and appends
+    them to `benchmarks.csv` beside `preferences.json`.
+
+### Changed
+
+- Development
+  - The core builds as a static library, `midori_core`, which the app, the tests and the benchmark link.
+
+## [0.2.2] - 2026-11-11
+
+### Changed
+
+- Portability
+  - Canvas files and tile caches open through one helper: libmdbx's wide-path calls on Windows, which keep paths
+    with accented characters working there, and its UTF-8 calls elsewhere. The core no longer calls Windows-only
+    libmdbx functions, a first step toward the iPad port.
+
+## [0.2.1] - 2026-11-11
+
+### Added
+
+- Files
+  - *Off-theme:* "Include the background colour" check box under the file type when exporting, on by default and
+    remembered until Midori closes. Checked, the image is drawn over the canvas's background colour as the view shows
+    it, a selection's in its shape; unchecked, it keeps its transparency.
+
+### Changed
+
+- Files
+  - The open and save dialogs use the system's modern file dialog (IFileDialog) instead of the older one.
+
+## [0.2.0] - 2026-11-11
+
+Groundwork. This first version carries one off-theme change, approved because the proof of concept could not get an
+image out.
+
+### Added
+
+- Files
+  - *Off-theme:* Export to PNG (File > Export..., Ctrl+Shift+E, `canvas.export`): what the canvas shows, without the
+    background colour so transparency is kept. The selection exports its bounds through its coverage; without one,
+    everything drawn, cropped to the visible pixels. Up to 16384 pixels a side.
+
+## [0.1.0] - 2026-11-11
 
 The proof of concept: an infinite, tiled raster canvas on Windows (Direct3D 12).
 
@@ -14,7 +85,11 @@ The proof of concept: an infinite, tiled raster canvas on Windows (Direct3D 12).
 - Canvas
   - Infinite canvas made of 256x256 tiles, streamed in and out of a GPU tile atlas as the view moves.
   - Navigation: pan, zoom, rotate (snapping to 15°), and flip horizontally or vertically, held on Space.
-  - Navigation history: Space+Z goes back to the previous view and Space+Shift+Z forward again.
+  - Navigation with the mouse alone: right drag pans, the wheel zooms around the pointer, and the wheel during a right
+    drag rotates around it, 15° a notch.
+  - Zoom steps through texel-friendly levels (=, -, numpad + and -), and Ctrl+1 for the actual size.
+  - Navigation history: Space+Z goes back to the previous view and Space+Shift+Z forward again. A quick run of wheel
+    notches or zoom keys is one step.
   - Transforms snap to whole pixels, so an unrotated canvas stays sharp at whole zoom levels.
   - Coarser tile levels used when zoomed out, rebuilt after an edit.
   - Display filters: nearest, bilinear, bicubic, Mitchell, Lanczos-2 (default) and Lanczos-3.
@@ -22,17 +97,21 @@ The proof of concept: an infinite, tiled raster canvas on Windows (Direct3D 12).
 - Files
   - The `.mori` canvas file, stored with libmdbx, with tiles compressed as QOI.
   - New, Open, Save and Save As, asking before unsaved changes are lost.
-  - Recent files, and a setting to reopen the files that were open at the last exit.
+  - Recent files, and a setting to reopen the files that were open at the last exit, each with its view (position,
+    zoom, rotation and flips).
   - Files given on the command line each open in their own window.
   - Tiles not shown are moved to a temporary disk cache, so canvases can be larger than video memory.
+  - Autosave: every 3 minutes of activity, unsaved canvases are written to a recovery folder, never over their files.
+    After a crash, the next launch offers to recover them as unsaved canvases.
 - Painting
   - Brush strokes with pen pressure and tilt through Wintab, falling back to the mouse.
   - Flow and opacity that behave like Photoshop's: a stroke never goes past its opacity, even over itself.
-  - Blend modes: Normal, Multiply, Add, Screen, Normal (OkLab) and Erase.
+  - Blend modes: Normal, Multiply, Add, Screen, Normal (OkLab), Min, Max and Erase.
   - Erasing is a blend mode, so one brush paints and erases. Its colour sets how much of each channel is removed.
   - Box and lasso shapes filled with the brush.
   - Brush outline under the pointer.
   - Brush size, opacity and hardness changed by dragging (F, Shift+F, Ctrl+F).
+  - Brush size in steps ([ and ]) and opacity by tenths from the number keys (1 to 9, 0 for full).
 - Brushes
   - mdsl, Midori's brush language: a brush is a `.mdsl` file with a `stamp()` run on the CPU and a `paint()` run on
     the GPU, compiled when Midori runs and read again whenever the file changes.

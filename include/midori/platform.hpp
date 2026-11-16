@@ -136,6 +136,8 @@ constexpr std::uint32_t kPlatformImageSideMax = 16384;
 
 // The image file at `path`, PNG, JPEG and whatever else the system decodes, its alpha straight.
 [[nodiscard]] Result<PlatformImage> PlatformImageRead(const std::filesystem::path& path) noexcept;
+// The image as a PNG file at `path`, its alpha straight, written aside then renamed over it.
+[[nodiscard]] Result<void> PlatformImageWrite(const std::filesystem::path& path, const PlatformImage& image) noexcept;
 
 // The first of the system's UI fonts for `script` that is installed.
 [[nodiscard]] Result<std::filesystem::path> PlatformFontPath(FontScript script) noexcept;
@@ -173,6 +175,8 @@ struct DialogFileInfo {
     std::filesystem::path initial; // save: the suggested file
     std::string_view typeName;     // UTF-8, as the file type filter shows it
     std::string_view extension;    // without the dot; several split by ';', the first the default
+    std::string_view check;        // UTF-8, a check box under the file type, shown with `checked` only
+    bool* checked{};               // in: its state when the dialog opens; out: when the user picks a file
     Window window{kWindowInvalid};
 };
 

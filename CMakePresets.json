@@ -7,6 +7,14 @@
       "hidden": true,
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      },
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
@@ -44,5 +52,11 @@
     { "name": "clang-release", "configurePreset": "clang", "configuration": "Release" },
     { "name": "msvc-debug", "configurePreset": "msvc", "configuration": "Debug" },
     { "name": "msvc-release", "configurePreset": "msvc", "configuration": "Release" }
+  ],
+  "testPresets": [
+    { "name": "clang-debug", "configurePreset": "clang", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "clang-release", "configurePreset": "clang", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "msvc-debug", "configurePreset": "msvc", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "msvc-release", "configurePreset": "msvc", "configuration": "Release", "output": { "outputOnFailure": true } }
   ]
 }

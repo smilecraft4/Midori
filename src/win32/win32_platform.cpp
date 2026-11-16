@@ -16,9 +16,9 @@
 #include "win32_resource.h"
 
 #include <commctrl.h>
-#include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <wincodec.h>
 #include <objbase.h>
 #include <psapi.h>
@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <numbers>
 #include <ranges>
@@ -135,46 +136,86 @@ int DialogTask(Window window, std::string_view title, std::string_view instructi
     return pressed;
 }
 
-// Long enough for the longest Windows path.
-constexpr DWORD kDialogPathMax = 32768;
+// Releases the COM object it holds.
+template<class T>
+struct ComRef {
+    T* ptr{};
 
-// "Name (*.a;*.b)\0*.a;*.b\0", the string's own terminator ending the list.
-[[nodiscard]] std::wstring DialogFilter(const DialogFileInfo& info) noexcept {
+    ComRef() = default;
+    ComRef(const ComRef&) = delete;
+    ComRef& operator=(const ComRef&) = delete;
+    ~ComRef() {
+        if (ptr) {
+            ptr->Release();
+        }
+    }
+};
+
+// IFileDialog, which takes a check box under the file type. COM must be initialized.
+[[nodiscard]] Result<std::filesystem::path> DialogFileShow(const DialogFileInfo& info, bool save) noexcept {
     std::wstring patterns;
     for (const auto part : std::views::split(info.extension, ';')) {
         patterns += (patterns.empty() ? L"*." : L";*.") + WideFromUtf8(std::string_view(part.begin(), part.end()));
     }
-    std::wstring filter = WideFromUtf8(info.typeName) + L" (" + patterns + L")";
-    filter.push_back(L'\0');
-    filter += patterns;
-    filter.push_back(L'\0');
-    return filter;
+    const std::wstring typeName = WideFromUtf8(info.typeName) + L" (" + patterns + L")";
+    const COMDLG_FILTERSPEC filter{.pszName = typeName.c_str(), .pszSpec = patterns.c_str()};
+    const std::wstring extension = WideFromUtf8(info.extension.substr(0, info.extension.find(';')));
+    const std::wstring check = WideFromUtf8(info.check);
+    constexpr DWORD kCheckId = 1;
+
+    ComRef<IFileDialog> dialog;
+    FILEOPENDIALOGOPTIONS options{};
+    if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog.ptr)))
+        || FAILED(dialog.ptr->GetOptions(&options))
+        || FAILED(dialog.ptr->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_PATHMUSTEXIST
+                                         | (save ? FOS_OVERWRITEPROMPT : FOS_FILEMUSTEXIST)))
+        || FAILED(dialog.ptr->SetFileTypes(1, &filter)) || FAILED(dialog.ptr->SetDefaultExtension(extension.c_str()))) {
+        MIDORI_LOG_ERROR("the file dialog could not be made");
+        return std::unexpected(Error::DialogFailed);
+    }
+    if (!info.initial.empty()) {
+        dialog.ptr->SetFileName(info.initial.filename().c_str());
+        ComRef<IShellItem> folder;
+        if (info.initial.has_parent_path()
+            && SUCCEEDED(
+                SHCreateItemFromParsingName(info.initial.parent_path().c_str(), nullptr, IID_PPV_ARGS(&folder.ptr)))) {
+            dialog.ptr->SetFolder(folder.ptr);
+        }
+    }
+    ComRef<IFileDialogCustomize> customize;
+    if (info.checked && SUCCEEDED(dialog.ptr->QueryInterface(IID_PPV_ARGS(&customize.ptr)))) {
+        customize.ptr->AddCheckButton(kCheckId, check.c_str(), *info.checked ? TRUE : FALSE);
+    }
+    if (const HRESULT shown = dialog.ptr->Show(DialogOwner(info.window)); FAILED(shown)) {
+        if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+            return std::filesystem::path();
+        }
+        MIDORI_LOG_ERROR("the file dialog failed: {:#010x}", static_cast<std::uint32_t>(shown));
+        return std::unexpected(Error::DialogFailed);
+    }
+    if (BOOL checked = FALSE; customize.ptr && SUCCEEDED(customize.ptr->GetCheckButtonState(kCheckId, &checked))) {
+        *info.checked = checked != FALSE;
+    }
+    ComRef<IShellItem> item;
+    PWSTR raw = nullptr;
+    if (FAILED(dialog.ptr->GetResult(&item.ptr)) || FAILED(item.ptr->GetDisplayName(SIGDN_FILESYSPATH, &raw))) {
+        MIDORI_LOG_ERROR("the file dialog gave no file");
+        return std::unexpected(Error::DialogFailed);
+    }
+    std::filesystem::path path(raw);
+    CoTaskMemFree(raw);
+    return path;
 }
 
 [[nodiscard]] Result<std::filesystem::path> DialogFile(const DialogFileInfo& info, bool save) noexcept {
     ZoneScopedN("DialogFile");
-    const std::wstring filter = DialogFilter(info);
-    const std::wstring extension = WideFromUtf8(info.extension.substr(0, info.extension.find(';')));
-    std::wstring file = info.initial.wstring();
-    file.resize(kDialogPathMax, L'\0');
-
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = DialogOwner(info.window);
-    ofn.lpstrFilter = filter.c_str();
-    ofn.lpstrFile = file.data();
-    ofn.nMaxFile = kDialogPathMax;
-    ofn.lpstrDefExt = extension.c_str();
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
-    if (save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn)) {
-        file.resize(wcslen(file.c_str()));
-        return std::filesystem::path(std::move(file));
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    auto path = DialogFileShow(info, save);
+    if (SUCCEEDED(init)) {
+        CoUninitialize();
     }
-    if (const DWORD error = CommDlgExtendedError(); error != 0) {
-        MIDORI_LOG_ERROR("{} failed: {:#x}", save ? "GetSaveFileNameW" : "GetOpenFileNameW", error);
-        return std::unexpected(Error::DialogFailed);
-    }
-    return std::filesystem::path();
+    return path;
 }
 
 void DispatchResize(Window window) noexcept {
@@ -891,6 +932,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             break;
         case WM_SETFOCUS:
         case WM_KILLFOCUS:
+            if (message == WM_KILLFOCUS) {
+                if (GetCapture() == hwnd) {
+                    ReleaseCapture();
+                }
+                slot.tabletButtons = 0;
+                slot.tabletProximity = false;
+                slot.highSurrogate = 0;
+            }
             DispatchFocus(window, message == WM_SETFOCUS);
             return 0;
         case WT_PACKET:
@@ -1366,21 +1415,6 @@ void AssertAbort() noexcept {
 
 namespace {
 
-// Releases the COM object it holds.
-template<class T>
-struct ComRef {
-    T* ptr{};
-
-    ComRef() = default;
-    ComRef(const ComRef&) = delete;
-    ComRef& operator=(const ComRef&) = delete;
-    ~ComRef() {
-        if (ptr) {
-            ptr->Release();
-        }
-    }
-};
-
 // The first frame `decoder` reads, converted by WIC to `format`, 32 bits a pixel.
 [[nodiscard]] Result<PlatformImage> ImageDecode(IWICImagingFactory* factory, IWICBitmapDecoder* decoder,
                                                 const WICPixelFormatGUID& format) noexcept {
@@ -1462,9 +1496,26 @@ struct ComRef {
     return true;
 }
 
-// Straight BGRA, the order and alpha both clipboard formats take, as PNG into movable memory the clipboard then owns.
-// Null when WIC fails. COM must be initialized.
-[[nodiscard]] HGLOBAL PngEncode(std::span<std::byte> bgra, UINT width, UINT height) noexcept {
+// Premultiplied RGBA to straight BGRA, the order and alpha PNG and the clipboard bitmap take.
+[[nodiscard]] std::vector<std::byte> BgraStraight(const PlatformImage& image) noexcept {
+    std::vector<std::byte> bgra(image.pixels.size());
+    for (std::size_t i = 0; i < image.pixels.size(); i += 4) {
+        const auto alpha = std::to_integer<unsigned>(image.pixels[i + 3]);
+        const auto straight = [&](std::size_t channel) {
+            const unsigned value = std::to_integer<unsigned>(image.pixels[i + channel]);
+            return static_cast<std::byte>(alpha == 0 ? 0u : std::min(255u, ((value * 255u) + (alpha / 2)) / alpha));
+        };
+        bgra[i] = straight(2);
+        bgra[i + 1] = straight(1);
+        bgra[i + 2] = straight(0);
+        bgra[i + 3] = image.pixels[i + 3];
+    }
+    return bgra;
+}
+
+// Straight BGRA as PNG into movable memory, which the caller or the clipboard then owns; `size` is the PNG's, the
+// memory may be larger. Null when WIC fails. COM must be initialized.
+[[nodiscard]] HGLOBAL PngEncode(std::span<std::byte> bgra, UINT width, UINT height, std::size_t& size) noexcept {
     ComRef<IWICImagingFactory> factory;
     ComRef<IStream> stream;
     ComRef<IWICBitmapEncoder> encoder;
@@ -1484,8 +1535,14 @@ struct ComRef {
         MIDORI_LOG_WARN("PNG of {}x{} not encoded", width, height);
         return nullptr;
     }
+    ULARGE_INTEGER end{};
     HGLOBAL memory = nullptr;
-    return SUCCEEDED(GetHGlobalFromStream(stream.ptr, &memory)) ? memory : nullptr;
+    if (FAILED(stream.ptr->Seek(LARGE_INTEGER{}, STREAM_SEEK_CUR, &end))
+        || FAILED(GetHGlobalFromStream(stream.ptr, &memory))) {
+        return nullptr;
+    }
+    size = static_cast<std::size_t>(end.QuadPart);
+    return memory;
 }
 
 // The same pixels as a bottom-up bitmap with an alpha mask, the layout most apps read.
@@ -1583,6 +1640,44 @@ Result<PlatformImage> PlatformImageRead(const std::filesystem::path& path) noexc
     return image;
 }
 
+Result<void> PlatformImageWrite(const std::filesystem::path& path, const PlatformImage& image) noexcept {
+    ZoneScopedN("PlatformImageWrite");
+    std::vector<std::byte> bgra = BgraStraight(image);
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    std::size_t size = 0;
+    HGLOBAL png = PngEncode(bgra, image.width, image.height, size);
+    if (SUCCEEDED(init)) {
+        CoUninitialize();
+    }
+    const void* bytes = png ? GlobalLock(png) : nullptr;
+    if (!bytes) {
+        if (png) {
+            GlobalFree(png);
+        }
+        return std::unexpected(Error::ImageEncodeFailed);
+    }
+    std::filesystem::path temp = path;
+    temp += L".tmp";
+    bool written = false;
+    {
+        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+        file.write(static_cast<const char*>(bytes), static_cast<std::streamsize>(size));
+        written = static_cast<bool>(file);
+    }
+    GlobalUnlock(png);
+    GlobalFree(png);
+    std::error_code ec;
+    if (written) {
+        std::filesystem::rename(temp, path, ec);
+    }
+    if (!written || ec) {
+        MIDORI_LOG_ERROR("writing {} failed", PathUtf8(path));
+        std::filesystem::remove(temp, ec);
+        return std::unexpected(Error::ImageEncodeFailed);
+    }
+    return {};
+}
+
 std::uint32_t PlatformClipboardSequence() noexcept {
     return GetClipboardSequenceNumber();
 }
@@ -1592,20 +1687,10 @@ Result<void> PlatformClipboardSetImage(Window window, const PlatformImage& image
     if (!WindowValid(window)) {
         return std::unexpected(Error::WindowInvalid);
     }
-    std::vector<std::byte> bgra(image.pixels.size());
-    for (std::size_t i = 0; i < image.pixels.size(); i += 4) {
-        const auto alpha = std::to_integer<unsigned>(image.pixels[i + 3]);
-        const auto straight = [&](std::size_t channel) {
-            const unsigned value = std::to_integer<unsigned>(image.pixels[i + channel]);
-            return static_cast<std::byte>(alpha == 0 ? 0u : std::min(255u, ((value * 255u) + (alpha / 2)) / alpha));
-        };
-        bgra[i] = straight(2);
-        bgra[i + 1] = straight(1);
-        bgra[i + 2] = straight(0);
-        bgra[i + 3] = image.pixels[i + 3];
-    }
+    std::vector<std::byte> bgra = BgraStraight(image);
     const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    HGLOBAL png = PngEncode(bgra, image.width, image.height);
+    std::size_t pngSize = 0;
+    HGLOBAL png = PngEncode(bgra, image.width, image.height, pngSize);
     if (SUCCEEDED(init)) {
         CoUninitialize();
     }

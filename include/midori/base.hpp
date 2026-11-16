@@ -33,6 +33,8 @@ enum struct Error : std::uint8_t {
     KeyBindingInvalid,
     ClipboardFailed,
     ImageDecodeFailed,
+    ImageEncodeFailed,
+    ImageTooLarge,
 };
 
 [[nodiscard]] constexpr std::string_view ErrorMessage(Error error) noexcept {
@@ -85,6 +87,10 @@ enum struct Error : std::uint8_t {
             return "the clipboard could not be read";
         case Error::ImageDecodeFailed:
             return "image not decoded";
+        case Error::ImageEncodeFailed:
+            return "image not encoded or written";
+        case Error::ImageTooLarge:
+            return "image larger than 16384 pixels a side";
     }
     return "unknown error";
 }

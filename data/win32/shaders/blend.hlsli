@@ -8,6 +8,8 @@ static const uint kBlendAdd = 2;
 static const uint kBlendScreen = 3;
 static const uint kBlendNormalOkLab = 4;
 static const uint kBlendErase = 5;
+static const uint kBlendMin = 6;
+static const uint kBlendMax = 7;
 
 float3 SrgbToLinear(float3 c) {
     return lerp(c / 12.92, pow((c + 0.055) / 1.055, 2.4), step(0.04045, c));
@@ -59,6 +61,12 @@ float4 Blend(float4 dst, float4 src, uint mode) {
             break;
         case kBlendScreen:
             color = src.rgb + dst.rgb - src.rgb * dst.rgb;
+            break;
+        case kBlendMin:
+            color = src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a) + min(src.rgb * dst.a, dst.rgb * src.a);
+            break;
+        case kBlendMax:
+            color = src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a) + max(src.rgb * dst.a, dst.rgb * src.a);
             break;
         case kBlendNormalOkLab: {
             // Straight colors mixed by their share of the result's alpha.

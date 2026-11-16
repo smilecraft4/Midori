@@ -15,9 +15,12 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -25,20 +28,6 @@
 #include <mdbx.h>
 #include <qoi.h>
 #include <tracy/Tracy.hpp>
-
-namespace Midori {
-
-// QOI's worst case for a tile: 5 bytes a texel, plus its header and end marker. Decoding needs less, 4 a texel.
-constexpr std::size_t kQoiBytesMax = (std::size_t{kTileSize} * kTileSize * 5) + 14 + 8;
-
-} // namespace Midori
-
-// QOI_MALLOC in qoi.c. A thread encodes or decodes one tile at a time, so each thread reuses one buffer, made on its
-// first call; QOI_FREE does nothing. A stream stays valid until the thread's next encode or decode.
-extern "C" void* MidoriQoiBuffer(std::size_t size) noexcept {
-    thread_local std::vector<std::byte> buffer(Midori::kQoiBytesMax);
-    return size <= buffer.size() ? buffer.data() : nullptr;
-}
 
 namespace Midori {
 
@@ -62,19 +51,38 @@ template<typename T>
 
 [[nodiscard]] std::filesystem::path LockPath(const std::filesystem::path& path) noexcept {
     std::filesystem::path lock = path;
-    lock += MDBX_LOCK_SUFFIX_W;
+    lock += MDBX_LOCK_SUFFIX;
     return lock;
+}
+
+// On Windows libmdbx reads a narrow path in the thread's ANSI code page, which the manifest's UTF-8 does not change, so
+// paths go through its wide calls there. Elsewhere the native path is already UTF-8.
+[[nodiscard]] int EnvOpen(MDBX_env* env, const std::filesystem::path& path, MDBX_env_flags_t flags,
+                          mdbx_mode_t mode) noexcept {
+#if defined(_WIN32)
+    return mdbx_env_openW(env, path.c_str(), flags, mode);
+#else
+    return mdbx_env_open(env, path.c_str(), flags, mode);
+#endif
+}
+
+// Empty when libmdbx has none.
+[[nodiscard]] std::filesystem::path EnvPath(const MDBX_env* env) noexcept {
+#if defined(_WIN32)
+    const wchar_t* path = nullptr;
+    return mdbx_env_get_pathW(env, &path) == MDBX_SUCCESS ? std::filesystem::path(path) : std::filesystem::path();
+#else
+    const char* path = nullptr;
+    return mdbx_env_get_path(env, &path) == MDBX_SUCCESS ? std::filesystem::path(path) : std::filesystem::path();
+#endif
 }
 
 // libmdbx keeps the lock file even in exclusive mode; nothing else can be using it once the env is closed.
 void CanvasFileClose(CanvasFile& file) noexcept {
     ZoneScopedN("CanvasFileClose");
     if (file.env) {
-        const wchar_t* path = nullptr;
-        std::filesystem::path lock;
-        if (mdbx_env_get_pathW(file.env, &path) == MDBX_SUCCESS) {
-            lock = LockPath(path);
-        }
+        const std::filesystem::path path = EnvPath(file.env);
+        const std::filesystem::path lock = path.empty() ? path : LockPath(path);
         mdbx_env_close(file.env);
         std::error_code ec;
         std::filesystem::remove(lock, ec);
@@ -103,8 +111,8 @@ void CanvasFileClose(CanvasFile& file) noexcept {
         return fail("mdbx_env_set_geometry", rc);
     }
     // Mode 0 opens an existing file only.
-    if (const int rc = mdbx_env_openW(file.env, path.c_str(), MDBX_NOSUBDIR | MDBX_EXCLUSIVE | envFlags,
-                                      static_cast<mdbx_mode_t>(create ? 0644 : 0));
+    if (const int rc = EnvOpen(file.env, path, MDBX_NOSUBDIR | MDBX_EXCLUSIVE | envFlags,
+                               static_cast<mdbx_mode_t>(create ? 0644 : 0));
         rc != MDBX_SUCCESS) {
         return fail("mdbx_env_open", rc);
     }
@@ -127,6 +135,10 @@ void CanvasFileClose(CanvasFile& file) noexcept {
     return file;
 }
 
+// A cache is named <kCachePrefix><ticks>-<canvas><kCacheExtension>, its lock file that with MDBX_LOCK_SUFFIX after.
+constexpr std::string_view kCachePrefix = "midori-";
+constexpr std::string_view kCacheExtension = ".cache";
+
 // A new file in the temp directory. Losing it in a crash loses nothing saved, so it is never synced.
 [[nodiscard]] CanvasFile CacheOpen(Canvas canvas) noexcept {
     ZoneScopedN("CacheOpen");
@@ -135,7 +147,7 @@ void CanvasFileClose(CanvasFile& file) noexcept {
     if (!ec) {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
         std::array<char, 64> name{};
-        std::format_to_n(name.data(), name.size() - 1, "midori-{}-{}.cache", stamp, canvas);
+        std::format_to_n(name.data(), name.size() - 1, "{}{}-{}{}", kCachePrefix, stamp, canvas, kCacheExtension);
         const auto cache = CanvasFileOpen(dir / name.data(), true, Error::TileCacheFailed, MDBX_UTTERLY_NOSYNC);
         if (cache) {
             return *cache;
@@ -147,15 +159,36 @@ void CanvasFileClose(CanvasFile& file) noexcept {
 
 void CacheClose(CanvasFile& cache) noexcept {
     ZoneScopedN("CacheClose");
-    std::filesystem::path path;
-    const wchar_t* raw = nullptr;
-    if (cache.env && mdbx_env_get_pathW(cache.env, &raw) == MDBX_SUCCESS) {
-        path = raw;
-    }
+    const std::filesystem::path path = cache.env ? EnvPath(cache.env) : std::filesystem::path();
     CanvasFileClose(cache);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+} // namespace
+
+void CacheLeftoversRemove() noexcept {
+    ZoneScopedN("CacheLeftoversRemove");
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (ec) {
+        return;
+    }
+    const std::string lockSuffix = PathUtf8(LockPath(kCacheExtension));
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string utf8 = PathUtf8(it->path().filename());
+        if (!utf8.starts_with(kCachePrefix) || (!utf8.ends_with(kCacheExtension) && !utf8.ends_with(lockSuffix))) {
+            continue;
+        }
+        // One in use, by another running Midori, refuses to go.
+        std::error_code removed;
+        if (std::filesystem::remove(it->path(), removed)) {
+            MIDORI_LOG_INFO("removed the leftover tile cache {}", utf8);
+        }
+    }
+}
+
+namespace {
 
 // Every texel transparent: premultiplied, so every byte is zero. Only level-0 tiles are removed for it; an empty
 // level 1-3 tile of a painted one would only be built again.
@@ -519,8 +552,38 @@ void CanvasEmptiesDelete(CanvasState& canvas, std::span<const TileKey> empties) 
     }
 }
 
+// The whole canvas into a new file at `temp` then renamed over `path`, so a failure leaves the old file as it was.
+[[nodiscard]] Result<void> CanvasFileWriteAside(CanvasState& canvas, const std::filesystem::path& path,
+                                                std::vector<TileKey>& empties) noexcept {
+    std::error_code ec;
+    std::filesystem::path temp = path;
+    temp += ".tmp";
+    std::filesystem::remove(temp, ec);
+    std::filesystem::remove(LockPath(temp), ec);
+    auto file = CanvasFileOpen(temp, true, Error::CanvasSaveFailed, MDBX_ENV_DEFAULTS);
+    if (!file) {
+        return std::unexpected(file.error());
+    }
+    const auto written = CanvasFileWrite(canvas, *file, true, empties);
+    CanvasFileClose(*file);
+    if (!written) {
+        std::filesystem::remove(temp, ec);
+        return written;
+    }
+    std::filesystem::rename(temp, path, ec);
+    if (ec) {
+        MIDORI_LOG_ERROR("replacing {} failed: {}", PathUtf8(path), ec.message());
+        std::filesystem::remove(temp, ec);
+        return std::unexpected(Error::CanvasSaveFailed);
+    }
+    return {};
+}
+
+// Its autosave is no longer needed.
 void CanvasMarkSaved(CanvasState& canvas) noexcept {
     ZoneScopedN("CanvasMarkSaved");
+    CanvasBackupRemove(canvas.backup);
+    canvas.backup.clear();
     for (TileState& tile : canvas.tiles) {
         if (!HasAnyFlag(tile.flags, TileFlags::Composite)
             && !HasAnyFlag(canvas.layers[TileKeyLayer(tile.key)].flags, LayerFlags::Mask)) {
@@ -1318,6 +1381,42 @@ Result<void> CanvasSave(Canvas canvas) noexcept {
     return {};
 }
 
+Result<void> CanvasBackup(Canvas canvas, const std::filesystem::path& path) noexcept {
+    ZoneScopedN("CanvasBackup");
+    CanvasState& state = gAppState.canvases[canvas];
+    MIDORI_ASSERT(state.id == canvas, "invalid canvas {}", canvas);
+    if (state.merge.result != kLayerInvalid) {
+        return std::unexpected(Error::CanvasBusy);
+    }
+    std::vector<TileKey> empties;
+    if (const auto written = CanvasFileWriteAside(state, path, empties); !written) {
+        return written;
+    }
+    const std::string original = PathUtf8(state.path);
+    std::ofstream note(CanvasBackupNote(path), std::ios::binary | std::ios::trunc);
+    note.write(original.data(), static_cast<std::streamsize>(original.size()));
+    if (!note) {
+        MIDORI_LOG_ERROR("CanvasBackup: writing the note beside {} failed", PathUtf8(path));
+        return std::unexpected(Error::CanvasSaveFailed);
+    }
+    return {};
+}
+
+std::filesystem::path CanvasBackupNote(const std::filesystem::path& backup) noexcept {
+    std::filesystem::path note = backup;
+    note.replace_extension(".txt");
+    return note;
+}
+
+void CanvasBackupRemove(const std::filesystem::path& backup) noexcept {
+    if (backup.empty()) {
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::remove(backup, ec);
+    std::filesystem::remove(CanvasBackupNote(backup), ec);
+}
+
 Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept {
     ZoneScopedN("CanvasSaveAs");
     CanvasState& state = gAppState.canvases[canvas];
@@ -1326,39 +1425,23 @@ Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) no
         return std::unexpected(Error::CanvasBusy);
     }
     std::error_code ec;
-    if (state.file.env && std::filesystem::equivalent(path, state.path, ec)) {
+    // A recovered canvas's file is its autosave, never the one `path` names.
+    if (state.file.env && state.recovered.empty() && std::filesystem::equivalent(path, state.path, ec)) {
         if (const auto res = CanvasSave(canvas); !res) {
             return std::unexpected(res.error());
         }
         return canvas;
     }
-
-    // Written aside then renamed over `path`, so a failed save leaves the old file as it was.
-    std::filesystem::path temp = path;
-    temp += L".tmp";
-    std::filesystem::remove(temp, ec);
-    std::filesystem::remove(LockPath(temp), ec);
-    auto file = CanvasFileOpen(temp, true, Error::CanvasSaveFailed, MDBX_ENV_DEFAULTS);
-    if (!file) {
-        return std::unexpected(file.error());
-    }
     std::vector<TileKey> empties;
-    const auto written = CanvasFileWrite(state, *file, true, empties);
-    CanvasFileClose(*file);
-    if (!written) {
-        std::filesystem::remove(temp, ec);
+    if (const auto written = CanvasFileWriteAside(state, path, empties); !written) {
         return std::unexpected(written.error());
-    }
-    std::filesystem::rename(temp, path, ec);
-    if (ec) {
-        MIDORI_LOG_ERROR("CanvasSaveAs: replacing {} failed: {}", PathUtf8(path), ec.message());
-        std::filesystem::remove(temp, ec);
-        return std::unexpected(Error::CanvasSaveFailed);
     }
 
     // Readers may still be loading tiles from the old file.
     JobsWaitIdle();
     CanvasFileClose(state.file);
+    CanvasBackupRemove(state.recovered);
+    state.recovered.clear();
     state.path = path;
     CanvasEmptiesDelete(state, empties);
     CanvasMarkSaved(state);
@@ -1376,6 +1459,9 @@ void CanvasDestroy(Canvas canvas) noexcept {
     ZoneScopedN("CanvasDestroy");
     MIDORI_ASSERT(canvas < kCanvasMax && gAppState.canvases[canvas].id == canvas, "invalid canvas {}", canvas);
     CanvasState& state = gAppState.canvases[canvas];
+    if (gAppState.exporting.canvas == canvas) {
+        gAppState.exporting = {};
+    }
     // Its jobs use its envs; after them, its slots either have no copy recorded yet, or finish on the GPU orphaned.
     JobsWaitIdle();
     TileJobsFinish();
@@ -1403,6 +1489,9 @@ void CanvasDestroy(Canvas canvas) noexcept {
     }
     CanvasFileClose(state.file);
     CacheClose(state.cache);
+    // Only a crash leaves autosaves behind.
+    CanvasBackupRemove(state.backup);
+    CanvasBackupRemove(state.recovered);
     // In place: a CanvasState is too large for a temporary on the stack.
     std::destroy_at(&state);
     std::construct_at(&state);

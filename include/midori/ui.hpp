@@ -40,6 +40,7 @@ struct UiPreferences {
     bool colorShown{true};
     bool helpShown{true};
     bool menuBarShown{true};
+    bool hidden{false};
     bool tagZoneShown{
         false}; // the tags panel's selected tag's tiles over the canvas, while the Tag tool is not current
 };

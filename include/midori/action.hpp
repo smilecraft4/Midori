@@ -99,6 +99,14 @@ enum struct ActionId : std::uint8_t {
     ViewPreviousTab,
     ViewActivate,
     LayerToggleLocked,
+    BrushSmaller,
+    BrushLarger,
+    BrushOpacitySet,
+    ViewZoomIn,
+    ViewZoomOut,
+    ViewZoomActual,
+    CanvasExport,
+    DebugBenchmark,
     Count_,
 };
 
@@ -170,7 +178,7 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "debug.tileCells", .description = "Show or hide the tile cells on the canvas"},
     {.name = "debug.statistics", .description = "Show or hide the memory, jobs, caches and queues behind the canvas"},
     {.name = "debug.imguiMetrics", .description = "Show or hide Dear ImGui's own metrics"},
-    {.name = "settings.language", .description = "Change the language, 0 follows the system", .argName = "index"},
+    {.name = "settings.language", .description = "Change the language, 0 follows the system", .argName = "id"},
     {.name = "settings.canvasFilter",
      .description = "Change how the canvas is drawn between its pixels",
      .argName = "filter"},
@@ -230,6 +238,16 @@ constexpr std::array<ActionInfo, std::to_underlying(ActionId::Count_)> kActions 
     {.name = "view.previousTab", .description = "Show the pane's previous tab", .kind = ActionKind::Repeat},
     {.name = "view.activate", .description = "Show a tab and focus its pane", .argName = "view"},
     {.name = "layer.toggleLocked", .description = "Lock or unlock the selected layers' pixels"},
+    {.name = "brush.smaller", .description = "Make the brush a step smaller", .kind = ActionKind::Repeat},
+    {.name = "brush.larger", .description = "Make the brush a step larger", .kind = ActionKind::Repeat},
+    {.name = "brush.opacitySet", .description = "Set the brush opacity", .argName = "percent"},
+    {.name = "view.zoomIn", .description = "Zoom in a step, around the view center", .kind = ActionKind::Repeat},
+    {.name = "view.zoomOut", .description = "Zoom out a step, around the view center", .kind = ActionKind::Repeat},
+    {.name = "view.zoomActual", .description = "Show the canvas at its actual size, one texel a pixel"},
+    {.name = "canvas.export",
+     .description = "Export what the canvas shows as a PNG image: the selection, or else everything drawn"},
+    {.name = "debug.benchmark",
+     .description = "Time painting, navigating, saving, opening and exporting a generated canvas, in a tab of its own"},
 }};
 
 // Where a binding applies. Each lies within the one before, so Navigate is active with Canvas and Global around it, and
@@ -280,6 +298,7 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "Ctrl+O", .action = ActionId::CanvasOpen},
     KeyBindingText{.keys = "Ctrl+S", .action = ActionId::CanvasSave},
     KeyBindingText{.keys = "Ctrl+Shift+S", .action = ActionId::CanvasSaveAs},
+    KeyBindingText{.keys = "Ctrl+Shift+E", .action = ActionId::CanvasExport},
     KeyBindingText{.keys = "Ctrl+K, N", .action = ActionId::WindowNew},
     KeyBindingText{.keys = "Ctrl+K, D", .action = ActionId::ViewDuplicate},
     KeyBindingText{.keys = "Ctrl+K, Right", .action = ActionId::ViewSplitRight},
@@ -316,6 +335,23 @@ constexpr std::array kDefaultBindings = {
     KeyBindingText{.keys = "F", .action = ActionId::BrushRadius, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Shift+F", .action = ActionId::BrushOpacity, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+F", .action = ActionId::BrushHardness, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "LeftBracket", .action = ActionId::BrushSmaller, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "RightBracket", .action = ActionId::BrushLarger, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "1", .action = ActionId::BrushOpacitySet, .arg = 10, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "2", .action = ActionId::BrushOpacitySet, .arg = 20, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "3", .action = ActionId::BrushOpacitySet, .arg = 30, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "4", .action = ActionId::BrushOpacitySet, .arg = 40, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "5", .action = ActionId::BrushOpacitySet, .arg = 50, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "6", .action = ActionId::BrushOpacitySet, .arg = 60, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "7", .action = ActionId::BrushOpacitySet, .arg = 70, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "8", .action = ActionId::BrushOpacitySet, .arg = 80, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "9", .action = ActionId::BrushOpacitySet, .arg = 90, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "0", .action = ActionId::BrushOpacitySet, .arg = 100, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Equal", .action = ActionId::ViewZoomIn, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Minus", .action = ActionId::ViewZoomOut, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "NumPadAdd", .action = ActionId::ViewZoomIn, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "NumPadSubtract", .action = ActionId::ViewZoomOut, .context = ActionContext::Canvas},
+    KeyBindingText{.keys = "Ctrl+1", .action = ActionId::ViewZoomActual, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+Shift+N", .action = ActionId::LayerNew, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+G", .action = ActionId::LayerNewFolder, .context = ActionContext::Canvas},
     KeyBindingText{.keys = "Ctrl+E", .action = ActionId::LayerMerge, .context = ActionContext::Canvas},
@@ -367,6 +403,8 @@ void KeymapLoad(KeymapState& keymap) noexcept;
 // it had; empty `keys` only unbinds it. The keymap is loaded again.
 Result<void> KeymapBind(KeymapState& keymap, std::string_view keys, ActionId action, std::uint32_t arg,
                         ActionContext context) noexcept;
+// As the current keyboard layout names its keys: "Maj+B".
+std::string KeyChordKeys(KeyChord chord) noexcept;
 // As keybinds.json writes it, whatever the keyboard layout: "Ctrl+K, Shift+1", "Shift(Hold)".
 std::string KeyBindingKeys(const KeyBinding& binding) noexcept;
 // The keys of the first binding of `action`, "" when it has none.

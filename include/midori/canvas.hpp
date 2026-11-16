@@ -402,9 +402,14 @@ struct CanvasState {
     SelectionBounds selectionBounds;
     Color::Srgb backgroundColor{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f}; // under every layer, not saved yet
     CanvasFile file;
-    CanvasFile cache;     // a temporary file holding evicted tiles, only its tiles table used; null when not created
+    CanvasFile cache; // a temporary file holding evicted tiles, only its tiles table used; null when not created
+    // Its last autosave in the recovery folder, empty when none; removed once saved, and with the canvas.
+    std::filesystem::path backup;
+    // When recovered after a crash, the autosave its `file` is, removed with it; saving then asks where, as for a new
+    // canvas, `path` only suggesting the file it was. Empty otherwise.
+    std::filesystem::path recovered;
     HistoryState history;
-    std::uint64_t tags{}; // bit i: tag i exists. Tags stay out of history
+    std::uint64_t tags{};             // bit i: tag i exists. Tags stay out of history
     std::uint64_t tagsChecked{};      // the tags the Tag tool edits and shows
     std::uint64_t tagsSelected{};     // tag.next and tag.previous go through the places carrying all of them
     Layer largestLayer{};
@@ -421,6 +426,7 @@ struct CanvasState {
 // counted from 0 in closing order, and reopen as its tabs.
 struct OpenFile {
     std::filesystem::path path;
+    Viewport viewport; // its tab's
     std::uint64_t tagsChecked;
     std::uint8_t window;
 };
@@ -435,6 +441,13 @@ struct OpenFile {
 [[nodiscard]] Result<void> CanvasSave(Canvas canvas) noexcept;
 // Writes the whole canvas into a new file that then replaces `path`, and keeps it as the canvas's file.
 [[nodiscard]] Result<Canvas> CanvasSaveAs(Canvas canvas, const std::filesystem::path& path) noexcept;
+// Writes the whole canvas into `path`, aside then renamed over it, without making it the canvas's file: an autosave.
+// Error::CanvasBusy while the canvas merges layers.
+[[nodiscard]] Result<void> CanvasBackup(Canvas canvas, const std::filesystem::path& path) noexcept;
+// An autosave and the note beside it naming the file it was made from; nothing for an empty path.
+void CanvasBackupRemove(const std::filesystem::path& backup) noexcept;
+// Beside an autosave, the UTF-8 path of the file it was made from, empty for a canvas never saved.
+[[nodiscard]] std::filesystem::path CanvasBackupNote(const std::filesystem::path& backup) noexcept;
 // The file's size on disk and what its pages hold, in bytes; zero without a file.
 struct CanvasFileSize {
     std::uint64_t file;
@@ -450,6 +463,8 @@ struct CanvasFileSize {
 
 // Unsaved changes are lost. Waits for every job.
 void CanvasDestroy(Canvas canvas) noexcept;
+// The tile caches a crash left in the temp directory; those another running Midori has open stay. Before any canvas.
+void CacheLeftoversRemove() noexcept;
 // Once per update, after the tiles shown this frame have `visibleFrame` set; never waits. Takes the finished jobs
 // and GPU copies, queues the root composites the views need (wanting the layer tiles they read), then sends the
 // loaded tiles no longer visible whose content is stored nowhere to their canvas's

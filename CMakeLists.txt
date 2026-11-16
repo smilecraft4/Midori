@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(Midori
-    VERSION 0.1.0
+    VERSION 0.2.5
     DESCRIPTION "Infinite rasterized painting app"
     LANGUAGES C CXX
 )
@@ -95,6 +95,7 @@ set(MIDORI_SOURCES
     src/layer.cpp
     src/mdsl.cpp
     src/preferences.cpp
+    src/qoi_buffer.cpp
     src/stroke.cpp
     src/tag.cpp
     src/text.cpp
@@ -136,48 +137,22 @@ configure_file(
     @ONLY
 )
 
-enable_language(RC)
-add_executable(midori WIN32
-    ${MIDORI_SOURCES}
-    ${MIDORI_SOURCES_WIN32}
-    ${CMAKE_CURRENT_BINARY_DIR}/generated/midori.rc
-    data/win32/midori.manifest
-)
-
-set_target_properties(midori PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-)
-
-# The ASan runtime lives next to cl.exe, only on PATH in a VS developer prompt: ship it next to the exe.
-string(FIND "${CMAKE_CXX_FLAGS_DEBUG}" "/fsanitize=address" MIDORI_ASAN_FLAG)
-if(NOT MIDORI_ASAN_FLAG EQUAL -1)
-    cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH MIDORI_COMPILER_DIR)
-    add_custom_command(TARGET midori POST_BUILD
-        COMMAND "$<$<CONFIG:Debug>:${CMAKE_COMMAND};-E;copy_if_different;${MIDORI_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll;$<TARGET_FILE_DIR:midori>>"
-        COMMAND_EXPAND_LISTS
-    )
-endif()
-
-target_include_directories(midori PRIVATE
+# Everything but the platform layer and the renderer, which the app adds and the tests and benchmark stand in for. What
+# every Midori target shares comes with it: includes, definitions, warnings.
+add_library(midori_core STATIC ${MIDORI_SOURCES})
+target_include_directories(midori_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
-
-target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
-target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
+target_include_directories(midori_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Preferences and translations are JSON. Exceptions are off: it aborts where it would throw.
-target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/json)
-target_compile_definitions(midori PRIVATE JSON_NOEXCEPTION)
-
-target_compile_definitions(midori PRIVATE
+target_include_directories(midori_core SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendors/json)
+target_compile_definitions(midori_core PUBLIC
+    JSON_NOEXCEPTION
     $<$<CONFIG:Debug>:MIDORI_DEBUG=1>
     MIDORI_PROFILE="$<CONFIG>"
     SPDLOG_ACTIVE_LEVEL=$<IF:$<CONFIG:Debug>,SPDLOG_LEVEL_TRACE,SPDLOG_LEVEL_INFO>
     MIDORI_WINDOWS=1
-)
-
-target_compile_definitions(midori PRIVATE
     UNICODE
     _UNICODE
     WINVER=0x0A00
@@ -185,31 +160,81 @@ target_compile_definitions(midori PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )
-
-target_compile_options(midori PRIVATE
+target_compile_options(midori_core PUBLIC
     "$<$<COMPILE_LANGUAGE:CXX>:/W4;/WX;/permissive-;/utf-8>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/Zc:preprocessor>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:Clang>>:-Wno-missing-field-initializers>"
 )
-
-target_precompile_headers(midori PRIVATE
+target_precompile_headers(midori_core PRIVATE
     <spdlog/spdlog.h>
     <expected>
     <string_view>
 )
+target_link_libraries(midori_core PUBLIC spdlog::spdlog Tracy::TracyClient imgui mdbx qoi)
+# round.mdsl, the built-in brush, painted with when brushes/round.mdsl cannot be. The tests and benchmark read it too.
+midori_target_embed(midori_core data/brushes/round.mdsl)
 
-target_link_libraries(midori PRIVATE spdlog::spdlog Tracy::TracyClient imgui mdbx qoi d3d12 dxgi dxguid dcomp d3dcompiler comdlg32 comctl32 shell32 ole32 windowscodecs)
+enable_language(RC)
+add_executable(midori WIN32
+    ${MIDORI_SOURCES_WIN32}
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/midori.rc
+    data/win32/midori.manifest
+)
+target_include_directories(midori PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
+target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
+target_precompile_headers(midori PRIVATE <spdlog/spdlog.h> <expected> <string_view>)
+target_link_libraries(midori PRIVATE midori_core d3d12 dxgi dxguid dcomp d3dcompiler comctl32 shell32 ole32 windowscodecs)
 
 midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})
 
-# Every brush is compiled at runtime into the stroke shader, so its source and includes are in the exe. So is round.mdsl,
-# the built-in brush, painted with when brushes/round.mdsl cannot be.
+# Every brush is compiled at runtime into the stroke shader, so its source and includes are in the exe.
 midori_target_embed(midori
-    data/brushes/round.mdsl
     data/win32/shaders/stroke.cs.hlsl
     data/win32/shaders/atlas.hlsli
     data/win32/shaders/blend.hlsli
 )
+
+# Headless, on the core library: the platform functions its files call come from tests/headless.cpp. The tests run with
+# `ctest`; the benchmark prints its timings.
+add_executable(midori_tests
+    tests/headless.cpp
+    tests/test_main.cpp
+    tests/test_color.cpp
+    tests/test_curve.cpp
+    tests/test_fuzzy.cpp
+    tests/test_keymap.cpp
+    tests/test_mdsl.cpp
+    tests/test_tile.cpp
+    tests/test_viewport.cpp
+)
+target_link_libraries(midori_tests PRIVATE midori_core)
+
+add_executable(midori_bench
+    tests/headless.cpp
+    bench/bench_main.cpp
+)
+target_link_libraries(midori_bench PRIVATE midori_core)
+
+enable_testing()
+add_test(NAME midori_tests COMMAND midori_tests)
+
+set_target_properties(midori midori_tests midori_bench PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+)
+
+# The ASan runtime lives next to cl.exe, only on PATH in a VS developer prompt: ship it next to the exe. All three
+# executables share one folder.
+string(FIND "${CMAKE_CXX_FLAGS_DEBUG}" "/fsanitize=address" MIDORI_ASAN_FLAG)
+if(NOT MIDORI_ASAN_FLAG EQUAL -1)
+    cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH MIDORI_COMPILER_DIR)
+    add_custom_command(TARGET midori POST_BUILD
+        COMMAND "$<$<CONFIG:Debug>:${CMAKE_COMMAND};-E;copy_if_different;${MIDORI_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll;$<TARGET_FILE_DIR:midori>>"
+        COMMAND_EXPAND_LISTS
+    )
+    add_dependencies(midori_tests midori)
+    add_dependencies(midori_bench midori)
+endif()
 
 # Translations are read from lang/ next to the exe, and brushes from brushes/, round.mdsl there the one painted with at
 # start.

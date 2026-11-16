@@ -54,6 +54,8 @@ enum struct Text : std::uint8_t {
     BlendAdd,
     BlendScreen,
     BlendNormalOkLab,
+    BlendMin,
+    BlendMax,
     Layers,
     NoCanvas,
     Merging,
@@ -247,6 +249,23 @@ enum struct Text : std::uint8_t {
     TabClose,
     LayerVisibleTip,
     LayerLockTip,
+    AskRecover,
+    AskRecoverContent,
+    AskRecoverYes,
+    AskRecoverNo,
+    GestureRightDrag,
+    GestureWheel,
+    GestureZoomPointer,
+    GestureRightDragWheel,
+    GestureRotatePointer,
+    Export,
+    ExportFileType,
+    ErrorExport,
+    ReasonExporting,
+    ReasonNothingDrawn,
+    ExportBackground,
+    Benchmark,
+    ReasonBenchmarking,
     Count_,
 };
 
@@ -300,6 +319,8 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "blendAdd", .english = "Add"},
     {.key = "blendScreen", .english = "Screen"},
     {.key = "blendNormalOkLab", .english = "Normal (OkLab)"},
+    {.key = "blendMin", .english = "Min"},
+    {.key = "blendMax", .english = "Max"},
     {.key = "layers", .english = "Layers"},
     {.key = "noCanvas", .english = "No canvas"},
     {.key = "merging", .english = "Merging, %d tiles left"},
@@ -501,18 +522,39 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "tabClose", .english = "Close tab"},
     {.key = "layerVisibleTip", .english = "Shown"},
     {.key = "layerLockTip",
-     .english = "Locked: no painting, erasing, cutting or transforming its pixels. A locked folder locks what it holds."},
+     .english =
+         "Locked: no painting, erasing, cutting or transforming its pixels. A locked folder locks what it holds."},
+    {.key = "askRecover", .english = "Recover the %u canvases left unsaved when Midori last closed unexpectedly?"},
+    {.key = "askRecoverContent",
+     .english = "They open as unsaved canvases, and saving asks where to write them. Discarded ones are gone for good; "
+                "Cancel keeps them for the next launch."},
+    {.key = "askRecoverYes", .english = "Recover"},
+    {.key = "askRecoverNo", .english = "Discard"},
+    {.key = "gestureRightDrag", .english = "Right drag"},
+    {.key = "gestureWheel", .english = "Wheel"},
+    {.key = "gestureZoomPointer", .english = "Zoom around the pointer"},
+    {.key = "gestureRightDragWheel", .english = "Right drag + wheel"},
+    {.key = "gestureRotatePointer", .english = "Rotate around the pointer, 15 degrees a notch"},
+    {.key = "export", .english = "Export..."},
+    {.key = "exportFileType", .english = "PNG image"},
+    {.key = "errorExport", .english = "Could not export %s"},
+    {.key = "reasonExporting", .english = "An export is in progress"},
+    {.key = "reasonNothingDrawn", .english = "Nothing is drawn"},
+    {.key = "exportBackground", .english = "Include the background colour"},
+    {.key = "benchmark", .english = "Benchmark"},
+    {.key = "reasonBenchmarking", .english = "A benchmark is running"},
 }};
 
 struct LanguageInfo {
+    std::uint32_t id; // settings.language's arg, kept when the list changes; 0 is the system's
     const char* code; // lang/<code>.json beside the executable; none for English
     const char* name; // in the language itself
 };
 
 constexpr std::array kLanguages = {
-    LanguageInfo{.code = "en", .name = "English"},
-    LanguageInfo{.code = "fr", .name = "Français"},
-    LanguageInfo{.code = "ja", .name = "日本語"},
+    LanguageInfo{.id = 1, .code = "en", .name = "English"},
+    LanguageInfo{.id = 2, .code = "fr", .name = "Français"},
+    LanguageInfo{.id = 3, .code = "ja", .name = "日本語"},
 };
 
 // Each text, then each action description, as `text` and as the Dear ImGui label `text###key`, null terminated in one
