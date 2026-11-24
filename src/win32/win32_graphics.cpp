@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -2205,12 +2206,14 @@ Result<void> GraphicsBrushTextureSet(std::uint32_t brush, std::uint32_t slot, co
     WaitIdle();
     Release(state.brushTextures[brush][slot]);
     state.device->CreateShaderResourceView(nullptr, &kBrushTextureSrvDesc, ViewCpu(view));
-    if (!image) {
+    if (!image || image->width == 0 || image->height == 0) {
         return {};
     }
+    const UINT mipLevels = static_cast<UINT>(std::bit_width(std::max(image->width, image->height)));
     const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
     const CD3DX12_RESOURCE_DESC desc =
-        CD3DX12_RESOURCE_DESC::Tex2D(kBrushTextureSrvDesc.Format, image->width, image->height, 1, 1);
+        CD3DX12_RESOURCE_DESC::Tex2D(kBrushTextureSrvDesc.Format, image->width, image->height, 1,
+                                     static_cast<UINT16>(mipLevels));
     ID3D12Resource* texture = nullptr;
     if (const HRESULT hr = state.device->CreateCommittedResource(
             &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture));
@@ -2218,9 +2221,9 @@ Result<void> GraphicsBrushTextureSet(std::uint32_t brush, std::uint32_t slot, co
         LogHresult("ID3D12Device::CreateCommittedResource", hr);
         return std::unexpected(Error::GraphicsTransferFailed);
     }
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(mipLevels);
     UINT64 uploadSize = 0;
-    state.device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &uploadSize);
+    state.device->GetCopyableFootprints(&desc, 0, mipLevels, 0, footprints.data(), nullptr, nullptr, &uploadSize);
     const auto upload = TileBufferCreate(D3D12_HEAP_TYPE_UPLOAD, static_cast<std::size_t>(uploadSize));
     void* mapped = nullptr;
     const D3D12_RANGE noRead{.Begin = 0, .End = 0};
@@ -2231,18 +2234,54 @@ Result<void> GraphicsBrushTextureSet(std::uint32_t brush, std::uint32_t slot, co
         texture->Release();
         return std::unexpected(Error::GraphicsTransferFailed);
     }
-    const std::size_t row = std::size_t{image->width} * 4;
-    for (std::uint32_t y = 0; y < image->height; ++y) {
-        std::memcpy(static_cast<std::byte*>(mapped) + footprint.Offset
-                        + (std::size_t{y} * footprint.Footprint.RowPitch),
-                    image->pixels.data() + (y * row), row);
+    std::vector<std::byte> prev = image->pixels;
+    std::uint32_t prevWidth = image->width;
+    std::uint32_t prevHeight = image->height;
+    for (UINT mip = 0; mip < mipLevels; ++mip) {
+        const std::uint32_t width = std::max(1u, image->width >> mip);
+        const std::uint32_t height = std::max(1u, image->height >> mip);
+        if (mip > 0) {
+            std::vector<std::byte> next(std::size_t{width} * height * 4);
+            for (std::uint32_t y = 0; y < height; ++y) {
+                const std::uint32_t y0 = std::min(y * 2, prevHeight - 1);
+                const std::uint32_t y1 = std::min((y * 2) + 1, prevHeight - 1);
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    const std::uint32_t x0 = std::min(x * 2, prevWidth - 1);
+                    const std::uint32_t x1 = std::min((x * 2) + 1, prevWidth - 1);
+                    const std::size_t i00 = ((std::size_t{y0} * prevWidth) + x0) * 4;
+                    const std::size_t i10 = ((std::size_t{y0} * prevWidth) + x1) * 4;
+                    const std::size_t i01 = ((std::size_t{y1} * prevWidth) + x0) * 4;
+                    const std::size_t i11 = ((std::size_t{y1} * prevWidth) + x1) * 4;
+                    const std::size_t dst = ((std::size_t{y} * width) + x) * 4;
+                    for (std::size_t c = 0; c < 4; ++c) {
+                        const unsigned sum = std::to_integer<unsigned>(prev[i00 + c])
+                                           + std::to_integer<unsigned>(prev[i10 + c])
+                                           + std::to_integer<unsigned>(prev[i01 + c])
+                                           + std::to_integer<unsigned>(prev[i11 + c]);
+                        next[dst + c] = static_cast<std::byte>((sum + 2) / 4);
+                    }
+                }
+            }
+            prev = std::move(next);
+            prevWidth = width;
+            prevHeight = height;
+        }
+        const std::size_t row = std::size_t{width} * 4;
+        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint = footprints[mip];
+        for (std::uint32_t y = 0; y < height; ++y) {
+            std::memcpy(static_cast<std::byte*>(mapped) + footprint.Offset
+                            + (std::size_t{y} * footprint.Footprint.RowPitch),
+                        prev.data() + (y * row), row);
+        }
     }
     (*upload)->Unmap(0, nullptr);
 
     ListBeginAndWait();
-    const CD3DX12_TEXTURE_COPY_LOCATION dst(texture, 0);
-    const CD3DX12_TEXTURE_COPY_LOCATION src(*upload, footprint);
-    state.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    for (UINT mip = 0; mip < mipLevels; ++mip) {
+        const CD3DX12_TEXTURE_COPY_LOCATION dst(texture, mip);
+        const CD3DX12_TEXTURE_COPY_LOCATION src(*upload, footprints[mip]);
+        state.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
     const CD3DX12_RESOURCE_BARRIER toShader = CD3DX12_RESOURCE_BARRIER::Transition(
         texture, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     state.list->ResourceBarrier(1, &toShader);
@@ -2250,7 +2289,9 @@ Result<void> GraphicsBrushTextureSet(std::uint32_t brush, std::uint32_t slot, co
     (*upload)->Release();
 
     state.brushTextures[brush][slot] = texture;
-    state.device->CreateShaderResourceView(texture, &kBrushTextureSrvDesc, ViewCpu(view));
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = kBrushTextureSrvDesc;
+    srvDesc.Texture2D.MipLevels = mipLevels;
+    state.device->CreateShaderResourceView(texture, &srvDesc, ViewCpu(view));
     return {};
 }
 

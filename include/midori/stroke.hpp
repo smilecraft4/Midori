@@ -120,6 +120,8 @@ struct StrokeBeginInfo {
     BrushState brush;
     Color::Srgb color; // Paint: the paint. Erase: how much of each channel goes, white for all of them
     StrokePoint point;
+    float smoothing{};
+    float smoothingTail{1.0f};
     Layer layer;
     CanvasView view;
     StrokeMode mode;
@@ -151,11 +153,16 @@ struct StrokeState {
     std::array<float, kMdslCurveFloats> curves{}; // brush's, baked
     Color::Srgb color;
     StrokePoint first;                            // the first input point
-    StrokePoint last;                             // the last input point
+    StrokePoint last;                             // the last point stepped to
+    StrokePoint filtered;                         // the last input point after smoothing's low-pass filter
+    StrokePoint tail;                             // the last raw input point
+    std::array<StrokePoint, 3> knots{};           // the last Catmull-Rom knots, up to knotCount
     MdslDab inputs;                               // at `last`
     SelectionBounds selectionBefore;              // a stroke of the selection's mask: its canvas's bounds before it
     StrokeTransform transform;                    // Transform: where the pixels lifted from under selectionBefore go
     float toNextDab{};                            // canvas units along the path
+    float smoothing{};                            // as StrokeBeginInfo's
+    float smoothingTail{1.0f};                    // as StrokeBeginInfo's
     std::uint32_t seed{};                         // MdslDab::random's, a new one each stroke
     std::uint32_t stamps{};                       // placed, dropped ones included
     TileGridPos origin;            // the tile of the first point, the dabs and the GPU work relative to it
@@ -165,6 +172,7 @@ struct StrokeState {
     StrokeMode mode{};
     BlendMode blendMode{};
     StrokeShape shape{};
+    std::uint8_t knotCount{};
     std::uint32_t shader{};   // as StrokeBeginInfo's
     std::uint32_t endFrame{}; // gAppState.frame when it ended
     bool ended{};             // the GPU records what is left, then StrokeUpdate frees the backups
@@ -194,6 +202,97 @@ constexpr double kStrokeVelocitySmoothing = 0.03;
 // reading `curves`, its curves baked. `brush` follows `source`'s params.
 StrokeStamp StrokeStampAt(const MdslBrush& source, const BrushState& brush,
                           std::span<const float, kMdslCurveFloats> curves, const MdslDab& inputs) noexcept;
+
+// Centripetal Catmull-Rom (alpha = 0.5) on [p1, p2] at `t` in 0..1, its tangents scaled by `tension` in 0..1 (0 is the
+// straight segment from p1 to p2, 1 the full spline).
+[[nodiscard]] inline StrokePoint StrokeCatmullRomAt(const StrokePoint& p0, const StrokePoint& p1, const StrokePoint& p2,
+                                                    const StrokePoint& p3, double t, float tension = 1.0f) noexcept {
+    const double u = std::clamp(t, 0.0, 1.0);
+    const double dx = p2.x - p1.x;
+    const double dy = p2.y - p1.y;
+    const double d01 = std::sqrt(std::hypot(p1.x - p0.x, p1.y - p0.y));
+    const double d12 = std::sqrt(std::hypot(dx, dy));
+    const double d23 = std::sqrt(std::hypot(p3.x - p2.x, p3.y - p2.y));
+    double m1x = dx;
+    double m1y = dy;
+    if (d01 > 1e-6 && d12 > 1e-6) {
+        const double w0 = (d12 * d12) / (d01 * (d01 + d12));
+        const double w1 = d01 / (d01 + d12);
+        m1x = (w0 * (p1.x - p0.x)) + (w1 * dx);
+        m1y = (w0 * (p1.y - p0.y)) + (w1 * dy);
+    }
+    double m2x = dx;
+    double m2y = dy;
+    if (d12 > 1e-6 && d23 > 1e-6) {
+        const double w1 = d23 / (d12 + d23);
+        const double w2 = (d12 * d12) / (d23 * (d12 + d23));
+        m2x = (w1 * dx) + (w2 * (p3.x - p2.x));
+        m2y = (w1 * dy) + (w2 * (p3.y - p2.y));
+    }
+    const double s = std::clamp(static_cast<double>(tension), 0.0, 1.0);
+    const double t1x = std::lerp(dx, m1x, s);
+    const double t1y = std::lerp(dy, m1y, s);
+    const double t2x = std::lerp(dx, m2x, s);
+    const double t2y = std::lerp(dy, m2y, s);
+    const double u2 = u * u;
+    const double u3 = u2 * u;
+    const double h00 = (2.0 * u3) - (3.0 * u2) + 1.0;
+    const double h10 = u3 - (2.0 * u2) + u;
+    const double h01 = (-2.0 * u3) + (3.0 * u2);
+    const double h11 = u3 - u2;
+    const auto at = static_cast<float>(u);
+    return StrokePoint{
+        .x = (h00 * p1.x) + (h10 * t1x) + (h01 * p2.x) + (h11 * t2x),
+        .y = (h00 * p1.y) + (h10 * t1y) + (h01 * p2.y) + (h11 * t2y),
+        .time = std::lerp(p1.time, p2.time, u),
+        .pressure = std::lerp(p1.pressure, p2.pressure, at),
+        .tiltX = std::lerp(p1.tiltX, p2.tiltX, at),
+        .tiltY = std::lerp(p1.tiltY, p2.tiltY, at),
+    };
+}
+
+// Extrapolates the final spline segment [p1, p2] past p0 with zero curvature at p2 (m2 = 1.5 * (p2 - p1) - 0.5 * m1):
+// position stops at `t * tail` along the curve, while time, pressure and tilt lerp across the full 0..1 `t` to `p2`.
+[[nodiscard]] inline StrokePoint StrokeCatmullRomTailAt(const StrokePoint& p0, const StrokePoint& p1,
+                                                        const StrokePoint& p2, double t, float tail,
+                                                        float tension = 1.0f) noexcept {
+    const double s = std::clamp(t, 0.0, 1.0);
+    const double u = s * std::clamp(static_cast<double>(tail), 0.0, 1.0);
+    const double dx = p2.x - p1.x;
+    const double dy = p2.y - p1.y;
+    const double d01 = std::sqrt(std::hypot(p1.x - p0.x, p1.y - p0.y));
+    const double d12 = std::sqrt(std::hypot(dx, dy));
+    double m1x = dx;
+    double m1y = dy;
+    if (d01 > 1e-6 && d12 > 1e-6) {
+        const double w0 = (d12 * d12) / (d01 * (d01 + d12));
+        const double w1 = d01 / (d01 + d12);
+        m1x = (w0 * (p1.x - p0.x)) + (w1 * dx);
+        m1y = (w0 * (p1.y - p0.y)) + (w1 * dy);
+    }
+    const double m2x = (1.5 * dx) - (0.5 * m1x);
+    const double m2y = (1.5 * dy) - (0.5 * m1y);
+    const double k = std::clamp(static_cast<double>(tension), 0.0, 1.0);
+    const double t1x = std::lerp(dx, m1x, k);
+    const double t1y = std::lerp(dy, m1y, k);
+    const double t2x = std::lerp(dx, m2x, k);
+    const double t2y = std::lerp(dy, m2y, k);
+    const double u2 = u * u;
+    const double u3 = u2 * u;
+    const double h00 = (2.0 * u3) - (3.0 * u2) + 1.0;
+    const double h10 = u3 - (2.0 * u2) + u;
+    const double h01 = (-2.0 * u3) + (3.0 * u2);
+    const double h11 = u3 - u2;
+    const auto at = static_cast<float>(s);
+    return StrokePoint{
+        .x = (h00 * p1.x) + (h10 * t1x) + (h01 * p2.x) + (h11 * t2x),
+        .y = (h00 * p1.y) + (h10 * t1y) + (h01 * p2.y) + (h11 * t2y),
+        .time = std::lerp(p1.time, p2.time, s),
+        .pressure = std::lerp(p1.pressure, p2.pressure, at),
+        .tiltX = std::lerp(p1.tiltX, p2.tiltX, at),
+        .tiltY = std::lerp(p1.tiltY, p2.tiltY, at),
+    };
+}
 
 // The GPU has a backup or dirty texels to record.
 [[nodiscard]] constexpr bool StrokeTilePending(const StrokeTile& tile) noexcept {

@@ -65,12 +65,18 @@ float BrushCurve(uint c, float x) {
     return lerp(a, b, t - i);
 }
 
-// Straight, repeating every 1. A texture without an image is white.
-float4 BrushTexture(uint t, float2 uv) {
+// Straight, repeating every 1, at the mip level matching the stamp's 2 * radius footprint shifted by `bias`. A
+// texture without an image is white.
+float4 BrushTexture(uint t, float2 uv, float radius = 0.0, float bias = 0.0) {
     if ((brushTextures & (1u << t)) == 0) {
         return 1.0;
     }
-    return brushTextureMaps[t].SampleLevel(brushSampler, uv, 0.0);
+    uint width = 1;
+    uint height = 1;
+    uint levels = 1;
+    brushTextureMaps[t].GetDimensions(0, width, height, levels);
+    const float lod = radius > 0.0 ? max(log2(max((float)max(width, height), 1.0) / (radius * 2.0)) + bias, 0.0) : 0.0;
+    return brushTextureMaps[t].SampleLevel(brushSampler, uv, lod);
 }
 
 // Paint, PaintMake and BrushPaint: the brush's, translated from its mdsl at runtime.

@@ -111,6 +111,7 @@ enum struct EyedropperSource : std::uint8_t {
 
 constexpr std::size_t kToolNameLenMax = 32;
 constexpr std::uint32_t kToolShadersMax = 32;
+constexpr float kToolSmoothingMax = 10.0f;
 
 // The image one of a shader's textures reads, by its index in MdslBrush::textures. The shader's source names one, next
 // to its file, unless one was picked in the Tool window.
@@ -143,6 +144,8 @@ struct ToolState {
     std::array<char, kToolNameLenMax> name{};
     std::uint32_t id{};     // stable, never 0: what tool.select(id) and the toolbar name
     std::uint32_t shader{}; // ToolsState::shaders
+    float smoothing{};      // 0: straight segments; > 0: Centripetal Catmull-Rom, stabilized above 1
+    float smoothingTail{1.0f}; // 0..1: share of the extrapolated end segment drawn on release
     BlendMode blendMode{};
     SelectionOp selectionOp{};
     ToolShape shape{};

@@ -268,6 +268,11 @@ enum struct Text : std::uint16_t {
     ReasonBenchmarking,
     TileLodBias,
     TileLodBiasTip,
+    Smoothing,
+    SmoothingTip,
+    SmoothingTail,
+    SmoothingTailTip,
+    ZoomDefault,
     Count_,
 };
 
@@ -549,6 +554,15 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "tileLodBiasTip",
      .english = "Shifts the mip level chosen for a view's zoom: negative keeps finer tiles when zoomed out, positive "
                 "picks coarser tiles sooner."},
+    {.key = "smoothing", .english = "Smoothing"},
+    {.key = "smoothingTip",
+     .english = "Smooths the stroke path with a Catmull-Rom spline: 0 draws straight segments, 1 fits the curve, "
+                "higher values filter out hand tremor."},
+    {.key = "smoothingTail", .english = "Stroke tail"},
+    {.key = "smoothingTailTip",
+     .english = "How far the extrapolated spline continues when the pen is released: 0 stops at the last segment, 1 "
+                "reaches the end. Pressure and tilt still interpolate to the end."},
+    {.key = "zoomDefault", .english = "Default zoom"},
 }};
 
 struct LanguageInfo {

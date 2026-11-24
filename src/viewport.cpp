@@ -53,9 +53,9 @@ Viewport ViewportSnap(Viewport viewport, float dpiScale) noexcept {
     return viewport;
 }
 
-Viewport ViewportResetZoomRotation(Viewport viewport) noexcept {
-    viewport.zoomX = std::copysign(1.0f, viewport.zoomX);
-    viewport.zoomY = std::copysign(1.0f, viewport.zoomY);
+Viewport ViewportResetZoomRotation(Viewport viewport, float zoom) noexcept {
+    viewport.zoomX = std::copysign(zoom, viewport.zoomX);
+    viewport.zoomY = std::copysign(zoom, viewport.zoomY);
     viewport.rot = 0.0f;
     return viewport;
 }

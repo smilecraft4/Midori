@@ -23,6 +23,7 @@ struct Preferences {
     WindowCreateInfo window;                        // where the first window opens; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2};
     float tileLodBias{0.0f};                        // within [kTileLodBiasMin, kTileLodBiasMax]
+    float zoomDefault{1.0f};                        // within [kViewportZoomMin, kViewportZoomMax]
     float zoomMin{kViewportZoomMin};                // within [kViewportZoomMin, kViewportZoomMax], zoomMin <= zoomMax
     float zoomMax{kViewportZoomMax};
     std::vector<std::filesystem::path> recentFiles; // the most recent first, up to kRecentFilesMax

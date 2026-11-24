@@ -1060,7 +1060,8 @@ Value CallFunction(Translator& t, const Token& at, const Function& function, con
     return Value{.code = code + ")", .type = function.ret};
 }
 
-// A curve takes any number type, component-wise; a texture vec2 coordinates, on the GPU only.
+// A curve takes any number type, component-wise; a texture vec2 coordinates and an optional float LOD bias, on the GPU
+// only.
 Value CallSampler(Translator& t, const Token& at, const Symbol& symbol, const std::vector<Value>& args) {
     const std::string index = std::to_string(symbol.index);
     if (symbol.kind == SymbolKind::Curve) {
@@ -1070,11 +1071,15 @@ Value CallSampler(Translator& t, const Token& at, const Symbol& symbol, const st
         Emit(t, MdslOpCode::Curve, 0, symbol.index, MdslComponents(args[0].type));
         return Value{.code = Cat("s_curve(", index, ", ", args[0].code, ")"), .type = args[0].type};
     }
-    if (args.size() != 1 || args[0].type != MdslType::Vec2) {
-        return Bad(t, at, Cat(symbol.name, "() takes vec2 coordinates"));
+    if ((args.size() != 1 && args.size() != 2) || args[0].type != MdslType::Vec2
+        || (args.size() == 2 && args[1].type != MdslType::Float)) {
+        return Bad(t, at, Cat(symbol.name, "() takes vec2 coordinates and an optional float LOD bias"));
     }
+    t.depth -= static_cast<std::uint32_t>(args.size()) - 1;
     t.stages = static_cast<std::uint8_t>(t.stages & kStagePaint);
-    return Value{.code = Cat("BrushTexture(", index, ", ", args[0].code, ")"), .type = MdslType::Vec4};
+    const std::string bias = args.size() == 2 ? args[1].code : "0.0";
+    return Value{.code = Cat("BrushTexture(", index, ", ", args[0].code, ", m_radius, ", bias, ")"),
+                 .type = MdslType::Vec4};
 }
 
 Value Call(Translator& t, const Token& callee) {

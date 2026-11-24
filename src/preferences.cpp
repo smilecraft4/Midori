@@ -459,6 +459,8 @@ ToolState ReadTool(const Json& json, ToolsState& tools) noexcept {
     if (const int shape = ReadName(json, "shape", kToolShapeNames); shape >= 0) {
         tool.shape = static_cast<ToolShape>(shape);
     }
+    Read(json, "smoothing", tool.smoothing, 0.0f, kToolSmoothingMax);
+    Read(json, "smoothingTail", tool.smoothingTail, 0.0f, 1.0f);
     // For now a Selection takes a Box or a Lasso only.
     if (tool.target == ToolTarget::Selection && tool.shape == ToolShape::Path) {
         tool.shape = ToolShape::Box;
@@ -474,6 +476,8 @@ Json ToolJson(const ToolState& tool, const ToolsState& tools) noexcept {
         {"shape", kToolShapeNames[std::to_underlying(tool.shape)]},
         {"blendMode", kBlendModeNames[std::to_underlying(tool.blendMode)]},
         {"selectionOp", kSelectionOpNames[std::to_underlying(tool.selectionOp)]},
+        {"smoothing", tool.smoothing},
+        {"smoothingTail", tool.smoothingTail},
         {"shader", ShaderPathWrite(tools.shaders[tool.shader].path)},
         {"brush", BrushJson(tool.brush, ToolSource(tools, tool))},
     };
@@ -561,9 +565,11 @@ Result<Preferences> PreferencesLoad() noexcept {
         preferences.canvasFilter = static_cast<CanvasFilter>(filter);
     }
     Read(root, "tileLodBias", preferences.tileLodBias, kTileLodBiasMin, kTileLodBiasMax);
+    Read(root, "zoomDefault", preferences.zoomDefault, kViewportZoomMin, kViewportZoomMax);
     Read(root, "zoomMin", preferences.zoomMin, kViewportZoomMin, kViewportZoomMax);
     Read(root, "zoomMax", preferences.zoomMax, kViewportZoomMin, kViewportZoomMax);
     preferences.zoomMax = std::max(preferences.zoomMax, preferences.zoomMin);
+    preferences.zoomDefault = std::clamp(preferences.zoomDefault, preferences.zoomMin, preferences.zoomMax);
     // Version 1 kept the color with the paint tool, then a single color stood for the first slot.
     if (const auto paint = root.find("paint"); paint != root.end() && paint->is_object()) {
         Read(*paint, "color", preferences.colors[0]);
@@ -672,6 +678,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         {"language", preferences.language},
         {"canvasFilter", kCanvasFilterNames[std::to_underlying(preferences.canvasFilter)]},
         {"tileLodBias", preferences.tileLodBias},
+        {"zoomDefault", preferences.zoomDefault},
         {"zoomMin", preferences.zoomMin},
         {"zoomMax", preferences.zoomMax},
         {"colors", ColorsJson(preferences.colors)},

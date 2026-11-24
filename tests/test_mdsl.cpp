@@ -30,6 +30,17 @@ void TestMdsl(TestContext& t) noexcept {
     // What is no brush says so.
     const auto broken = MdslTranslate("this is not a brush");
     MIDORI_CHECK(t, !broken && !broken.error().message.empty());
+
+    // A texture takes vec2 coordinates and an optional float LOD bias in paint().
+    const auto textured = MdslTranslate("param texture alpha;\n"
+                                        "StampOutput stamp(StampInput input) { StampOutput o; return o; }\n"
+                                        "PaintOutput paint(PaintInput input) {\n"
+                                        "    PaintOutput o;\n"
+                                        "    vec4 a = alpha(input.local) * alpha(input.local, 0.5);\n"
+                                        "    o.amount = a.r;\n"
+                                        "    return o;\n"
+                                        "}\n");
+    MIDORI_CHECK(t, textured.has_value());
 }
 
 } // namespace Midori

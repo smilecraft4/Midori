@@ -29,8 +29,8 @@ struct Viewport {
                                     float zoomMax) noexcept;
 // Turns clockwise on screen around the view center.
 [[nodiscard]] Viewport ViewportRotate(Viewport viewport, float amount) noexcept;
-// Back to zoom 1 and no rotation around the view center; flips are kept.
-[[nodiscard]] Viewport ViewportResetZoomRotation(Viewport viewport) noexcept;
+// Back to `zoom` and no rotation around the view center; flips are kept.
+[[nodiscard]] Viewport ViewportResetZoomRotation(Viewport viewport, float zoom = 1.0f) noexcept;
 // Moves pos by less than a physical pixel so the whole canvas point at it lands on a whole pixel from the view center,
 // which the renderer floors to a pixel too. Where zoom and rotation map texels to whole pixels, every texel then
 // covers whole pixels and stays sharp. Anchored next to pos rather than at the canvas origin, so the rounding of the

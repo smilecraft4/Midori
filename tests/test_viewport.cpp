@@ -33,6 +33,9 @@ void TestViewport(TestContext& t) noexcept {
     const Viewport reset =
         ViewportResetZoomRotation({.posX = 0.0, .posY = 0.0, .zoomX = -3.0f, .zoomY = 2.0f, .rot = 1.0f});
     MIDORI_CHECK(t, reset.zoomX == -1.0f && reset.zoomY == 1.0f && reset.rot == 0.0f);
+    const Viewport resetHalf =
+        ViewportResetZoomRotation({.posX = 0.0, .posY = 0.0, .zoomX = -3.0f, .zoomY = 2.0f, .rot = 1.0f}, 0.5f);
+    MIDORI_CHECK(t, resetHalf.zoomX == -0.5f && resetHalf.zoomY == 0.5f && resetHalf.rot == 0.0f);
 
     // Snapped, the point at the view center lands on a whole physical pixel.
     const Viewport offPixel{.posX = 10.3, .posY = 4.0, .zoomX = 1.0f, .zoomY = 1.0f, .rot = 0.0f};

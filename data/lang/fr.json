@@ -347,5 +347,10 @@
     "benchmark": "Banc d'essai",
     "reasonBenchmarking": "Un banc d'essai est en cours",
     "tileLodBias": "Biais de niveau de détail des tuiles",
-    "tileLodBiasTip": "Décale le niveau de mip choisi selon le zoom de la vue : négatif garde des tuiles plus fines en dézoomant, positif choisit des tuiles plus grossières plus tôt."
+    "tileLodBiasTip": "Décale le niveau de mip choisi selon le zoom de la vue : négatif garde des tuiles plus fines en dézoomant, positif choisit des tuiles plus grossières plus tôt.",
+    "smoothing": "Lissage",
+    "smoothingTip": "Lisse le tracé avec une spline de Catmull-Rom : 0 trace des segments droits, 1 suit la courbe, les valeurs plus hautes filtrent les tremblements.",
+    "smoothingTail": "Fin de trait",
+    "smoothingTailTip": "Longueur de la spline extrapolée au relâchement : 0 s'arrête au dernier segment, 1 va jusqu'au bout. La pression et l'inclinaison sont interpolées jusqu'à la fin.",
+    "zoomDefault": "Zoom par défaut"
 }

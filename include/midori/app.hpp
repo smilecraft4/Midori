@@ -288,6 +288,7 @@ struct AppState {
     WindowCreateInfo windowPlacement; // the last window closed, or the first open at exit; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2}; // every view's
     float tileLodBias{0.0f};                           // added to log2(1 / zoom) when picking a view's tile level
+    float zoomDefault{1.0f};                           // the zoom a new or reset view takes
     float zoomMin{kViewportZoomMin};                   // the settings' limits of every view
     float zoomMax{kViewportZoomMax};
     // Shared by every window. Bumped at the start of a frame, right before the views report their visible

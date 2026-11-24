@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(Midori
-    VERSION 0.2.6
+    VERSION 0.2.9
     DESCRIPTION "Infinite rasterized painting app"
     LANGUAGES C CXX
 )
@@ -130,6 +130,7 @@ set(MIDORI_SHADERS_WIN32
 )
 
 set(MIDORI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/data/win32/icon.ico")
+set(MIDORI_ICON_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/data/win32/icon_d.ico")
 set(MIDORI_RESOURCE_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/win32/win32_resource.h")
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/data/win32/midori.rc.in

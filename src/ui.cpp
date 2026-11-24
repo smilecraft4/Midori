@@ -829,6 +829,16 @@ void ToolWindow(Window window, ToolsState& tools) noexcept {
                              static_cast<int>(blendModeNames.size()))) {
                 tool.blendMode = static_cast<BlendMode>(blendMode);
             }
+            if (tool.shape == ToolShape::Path) {
+                ImGui::SliderFloat(TextLabel(Text::Smoothing), &tool.smoothing, 0.0f, kToolSmoothingMax, "%.1f",
+                                   ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SetItemTooltip("%s", TextGet(Text::SmoothingTip));
+                ImGui::BeginDisabled(tool.smoothing <= 0.0f);
+                ImGui::SliderFloat(TextLabel(Text::SmoothingTail), &tool.smoothingTail, 0.0f, 1.0f, "%.2f",
+                                   ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SetItemTooltip("%s", TextGet(Text::SmoothingTailTip));
+                ImGui::EndDisabled();
+            }
             BrushSourceEdit(window, tools.shaders[tool.shader]);
             BrushEdit(window, tool.brush, tools.shaders[tool.shader]);
         } else {
@@ -2028,16 +2038,23 @@ void SettingsWindow(Window window) noexcept {
     ImGui::SetItemTooltip("%s", TextGet(Text::TileLodBiasTip));
     // In percent, as the view panel shows the zoom.
     constexpr ImGuiSliderFlags kZoomFlags = ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp;
+    float zoomDefault = gAppState.zoomDefault * 100.0f;
+    if (ImGui::SliderFloat(TextLabel(Text::ZoomDefault), &zoomDefault, kViewportZoomMin * 100.0f,
+                           kViewportZoomMax * 100.0f, "%.1f%%", kZoomFlags)) {
+        gAppState.zoomDefault = std::clamp(zoomDefault / 100.0f, gAppState.zoomMin, gAppState.zoomMax);
+    }
     float zoomMin = gAppState.zoomMin * 100.0f;
     if (ImGui::SliderFloat(TextLabel(Text::ZoomMin), &zoomMin, kViewportZoomMin * 100.0f, kViewportZoomMax * 100.0f,
                            "%.1f%%", kZoomFlags)) {
         gAppState.zoomMin = std::min(zoomMin / 100.0f, gAppState.zoomMax);
+        gAppState.zoomDefault = std::max(gAppState.zoomDefault, gAppState.zoomMin);
     }
     ImGui::SetItemTooltip(TextGet(Text::ZoomMinTip), AppZoomSupported(window) * 100.0f);
     float zoomMax = gAppState.zoomMax * 100.0f;
     if (ImGui::SliderFloat(TextLabel(Text::ZoomMax), &zoomMax, kViewportZoomMin * 100.0f, kViewportZoomMax * 100.0f,
                            "%.1f%%", kZoomFlags)) {
         gAppState.zoomMax = std::max(zoomMax / 100.0f, gAppState.zoomMin);
+        gAppState.zoomDefault = std::min(gAppState.zoomDefault, gAppState.zoomMax);
     }
     ImGui::Checkbox(TextLabel(Text::TagZoneShown), &gUiState.preferences.tagZoneShown);
     ImGui::SetItemTooltip("%s", TextGet(Text::TagZoneShownTip));
@@ -2938,7 +2955,8 @@ void UiWindowFrame(Window window, Viewport* viewport, Color::Srgb* backgroundCol
             }
             ImGui::SameLine();
             if (ImGui::Button(ShortcutLabel(Text::Reset, ActionId::ViewReset).data())) {
-                *viewport = ViewportSnap(ViewportResetZoomRotation(*viewport), state->dpiScale);
+                const float zoom = std::clamp(gAppState.zoomDefault, gAppState.zoomMin, gAppState.zoomMax);
+                *viewport = ViewportSnap(ViewportResetZoomRotation(*viewport, zoom), state->dpiScale);
             }
             ImGui::ColorEdit4(TextLabel(Text::Background), &backgroundColor->r);
         }

@@ -342,7 +342,9 @@ void LayersPropertiesEdit(CanvasState& canvas, std::span<const Layer> layers,
             return {};
         }
     }
-    if (ViewTabAdd(window, gAppState.layouts[window].focused, canvas, {}) == kCanvasViewInvalid) {
+    const float zoom = std::clamp(gAppState.zoomDefault, gAppState.zoomMin, gAppState.zoomMax);
+    if (ViewTabAdd(window, gAppState.layouts[window].focused, canvas, Viewport{.zoomX = zoom, .zoomY = zoom})
+        == kCanvasViewInvalid) {
         if (!CanvasShownElsewhere(canvas, kCanvasViewInvalid)) {
             CanvasDestroy(canvas);
         }
@@ -791,7 +793,9 @@ void ViewReset(Window window) noexcept {
     if (app.navigate.mode == NavigateMode::None) {
         NavigationPush(view, app.canvasViews[view].viewport);
     }
-    app.canvasViews[view].viewport = ViewportSnap(ViewportResetZoomRotation(app.canvasViews[view].viewport), dpiScale);
+    const float zoom = std::clamp(app.zoomDefault, app.zoomMin, app.zoomMax);
+    app.canvasViews[view].viewport =
+        ViewportSnap(ViewportResetZoomRotation(app.canvasViews[view].viewport, zoom), dpiScale);
     if (app.navigate.mode != NavigateMode::None) {
         NavigateBegin(app.navigate.view, app.navigate.mode);
     }
@@ -2000,6 +2004,8 @@ void ColorRecentPush(ToolsState& tools, Color::Srgb color) noexcept {
         .brush = ToolCurrent(tools).brush,
         .color = erase ? Color::Srgb{.r = 1.0f, .g = 1.0f, .b = 1.0f, .a = 1.0f} : tools.colors[tools.colorSlot],
         .point = point,
+        .smoothing = ToolCurrent(tools).smoothing,
+        .smoothingTail = ToolCurrent(tools).smoothingTail,
         .layer = layer,
         .view = view,
         .mode = erase ? StrokeMode::Erase : StrokeMode::Paint,
@@ -3245,7 +3251,9 @@ void EyedropperSample() noexcept {
             }
             if (event.button.inputState == InputState::Release) {
                 if (painting) {
+                    const bool wasModified = gAppState.canvases[stroke.canvas].modified;
                     StrokeEnd();
+                    CanvasEdited(stroke.canvas, wasModified);
                 }
                 return painting;
             }
@@ -3303,7 +3311,9 @@ void EyedropperSample() noexcept {
         }
         case EventType::WindowFocus:
             if (painting && !event.windowFocus.focused) {
+                const bool wasModified = gAppState.canvases[stroke.canvas].modified;
                 StrokeEnd();
+                CanvasEdited(stroke.canvas, wasModified);
             }
             return false;
         default:
@@ -3916,6 +3926,7 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gAppState.windowPlacement = preferences->window;
         gAppState.canvasFilter = preferences->canvasFilter;
         gAppState.tileLodBias = preferences->tileLodBias;
+        gAppState.zoomDefault = preferences->zoomDefault;
         gAppState.zoomMin = preferences->zoomMin;
         gAppState.zoomMax = preferences->zoomMax;
         gAppState.recentFiles = preferences->recentFiles;
@@ -4229,6 +4240,7 @@ void AppTerminate() noexcept {
         .window = gAppState.windowPlacement,
         .canvasFilter = gAppState.canvasFilter,
         .tileLodBias = gAppState.tileLodBias,
+        .zoomDefault = gAppState.zoomDefault,
         .zoomMin = gAppState.zoomMin,
         .zoomMax = gAppState.zoomMax,
         .recentFiles = gAppState.recentFiles,

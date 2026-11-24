@@ -39,6 +39,11 @@ float BrushInputValue(BrushInput input, const MdslDab& inputs) noexcept {
 
 // How many updates an ended stroke waits for its tiles to stream in before what they missed is dropped.
 constexpr std::uint32_t kStrokeWaitUpdates = 300;
+// DIPs of low-pass filter distance per unit of smoothing above 1, and DIPs between Catmull-Rom knots per unit.
+constexpr double kStrokeSmoothingFilterDips = 3.0;
+constexpr double kStrokeSmoothingKnotDips = 1.5;
+constexpr double kStrokeSplineStepDips = 1.5;
+constexpr int kStrokeSplineStepsMax = 64;
 
 [[nodiscard]] std::uint16_t TileTexel(float pos, TileAxis origin) noexcept {
     return static_cast<std::uint16_t>(std::clamp(static_cast<TileAxis>(pos) - origin, 0, kTileSize));
@@ -391,6 +396,83 @@ void LassoAdd(StrokeState& stroke, StrokePoint point) noexcept {
              std::max({first.y, last.y, added.y}) + 1.0f, 0, StrokeCreates(stroke.mode));
 }
 
+// Steps dabs along the straight segment from `stroke.last` to `point`.
+void StrokeSegment(StrokeState& stroke, const StrokePoint& point) noexcept {
+    const StrokePoint from = stroke.last;
+    const MdslDab before = stroke.inputs;
+    const MdslDab after = InputsAt(stroke, point);
+    const double length = std::hypot(point.x - from.x, point.y - from.y);
+    double along = stroke.toNextDab;
+    while (along <= length) {
+        const double t = length > 0.0 ? along / length : 0.0;
+        const auto at = static_cast<float>(t);
+        const MdslDab inputs{
+            .pressure = std::lerp(before.pressure, after.pressure, at),
+            .tiltX = std::lerp(before.tiltX, after.tiltX, at),
+            .tiltY = std::lerp(before.tiltY, after.tiltY, at),
+            .velocityX = std::lerp(before.velocityX, after.velocityX, at),
+            .velocityY = std::lerp(before.velocityY, after.velocityY, at),
+            .directionX = after.directionX,
+            .directionY = after.directionY,
+            .random = 0.0f,
+            .along = before.along + static_cast<float>(along),
+            .time = std::lerp(before.time, after.time, at),
+        };
+        along += DabAdd(stroke, std::lerp(from.x, point.x, t), std::lerp(from.y, point.y, t), inputs);
+    }
+    stroke.toNextDab = static_cast<float>(along - length);
+    stroke.last = point;
+    stroke.inputs = after;
+}
+
+[[nodiscard]] double StrokeViewZoom(const StrokeState& stroke) noexcept {
+    if (stroke.view == kCanvasViewInvalid) {
+        return 1.0;
+    }
+    const double zoom = std::abs(gAppState.canvasViews[stroke.view].viewport.zoomX);
+    return zoom > 0.0 ? zoom : 1.0;
+}
+
+// Mirrors `neighbor` across `endpoint`, so an end segment starts or finishes along its chord.
+[[nodiscard]] StrokePoint KnotReflect(const StrokePoint& endpoint, const StrokePoint& neighbor) noexcept {
+    StrokePoint reflected = endpoint;
+    reflected.x = (2.0 * endpoint.x) - neighbor.x;
+    reflected.y = (2.0 * endpoint.y) - neighbor.y;
+    return reflected;
+}
+
+void StrokeSplineSegment(StrokeState& stroke, const StrokePoint& p0, const StrokePoint& p1, const StrokePoint& p2,
+                         const StrokePoint& p3, double zoom) noexcept {
+    const double chordDips = std::hypot(p2.x - p1.x, p2.y - p1.y) * zoom;
+    const int steps =
+        std::clamp(static_cast<int>(std::ceil(chordDips / kStrokeSplineStepDips)), 1, kStrokeSplineStepsMax);
+    const float tension = std::min(stroke.smoothing, 1.0f);
+    for (int i = 1; i <= steps; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(steps);
+        StrokeSegment(stroke, StrokeCatmullRomAt(p0, p1, p2, p3, t, tension));
+    }
+}
+
+// Advances the 3-knot window by `knot`, drawing the segment before the lookahead knot once 3 knots are known.
+void StrokeKnotPush(StrokeState& stroke, const StrokePoint& knot, double zoom) noexcept {
+    if (stroke.knotCount == 1) {
+        stroke.knots[1] = knot;
+        stroke.knotCount = 2;
+        return;
+    }
+    if (stroke.knotCount == 2) {
+        stroke.knots[2] = knot;
+        stroke.knotCount = 3;
+        StrokeSplineSegment(stroke, KnotReflect(stroke.knots[0], stroke.knots[1]), stroke.knots[0], stroke.knots[1],
+                            stroke.knots[2], zoom);
+        return;
+    }
+    StrokeSplineSegment(stroke, stroke.knots[0], stroke.knots[1], stroke.knots[2], knot, zoom);
+    stroke.knots[0] = stroke.knots[1];
+    stroke.knots[1] = stroke.knots[2];
+    stroke.knots[2] = knot;
+}
+
 } // namespace
 
 void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
@@ -403,6 +485,12 @@ void StrokeBegin(const StrokeBeginInfo& beginInfo) noexcept {
     stroke.color = beginInfo.color;
     stroke.first = beginInfo.point;
     stroke.last = beginInfo.point;
+    stroke.filtered = beginInfo.point;
+    stroke.tail = beginInfo.point;
+    stroke.knots = {beginInfo.point, {}, {}};
+    stroke.knotCount = 1;
+    stroke.smoothing = std::clamp(beginInfo.smoothing, 0.0f, kToolSmoothingMax);
+    stroke.smoothingTail = std::clamp(beginInfo.smoothingTail, 0.0f, 1.0f);
     stroke.inputs = MdslDab{
         .pressure = beginInfo.point.pressure,
         .tiltX = beginInfo.point.tiltX,
@@ -497,31 +585,30 @@ void StrokeTo(StrokePoint point) noexcept {
         }
         return;
     }
-    const StrokePoint from = stroke.last;
-    const MdslDab before = stroke.inputs;
-    const MdslDab after = InputsAt(stroke, point);
-    const double length = std::hypot(point.x - from.x, point.y - from.y);
-    double along = stroke.toNextDab;
-    while (along <= length) {
-        const double t = along / length;
-        const auto at = static_cast<float>(t);
-        const MdslDab inputs{
-            .pressure = std::lerp(before.pressure, after.pressure, at),
-            .tiltX = std::lerp(before.tiltX, after.tiltX, at),
-            .tiltY = std::lerp(before.tiltY, after.tiltY, at),
-            .velocityX = std::lerp(before.velocityX, after.velocityX, at),
-            .velocityY = std::lerp(before.velocityY, after.velocityY, at),
-            .directionX = after.directionX,
-            .directionY = after.directionY,
-            .random = 0.0f,
-            .along = before.along + static_cast<float>(along),
-            .time = std::lerp(before.time, after.time, at),
-        };
-        along += DabAdd(stroke, std::lerp(from.x, point.x, t), std::lerp(from.y, point.y, t), inputs);
+    if (stroke.smoothing <= 0.0f) {
+        StrokeSegment(stroke, point);
+        return;
     }
-    stroke.toNextDab = static_cast<float>(along - length);
-    stroke.last = point;
-    stroke.inputs = after;
+    stroke.tail = point;
+    const double zoom = StrokeViewZoom(stroke);
+    const double filterLength =
+        std::max(static_cast<double>(stroke.smoothing) - 1.0, 0.0) * kStrokeSmoothingFilterDips / zoom;
+    const double distance = std::hypot(point.x - stroke.filtered.x, point.y - stroke.filtered.y);
+    const double follow = filterLength > 0.0 ? (1.0 - std::exp(-distance / filterLength)) : 1.0;
+    const auto followF = static_cast<float>(follow);
+    stroke.filtered = StrokePoint{
+        .x = std::lerp(stroke.filtered.x, point.x, follow),
+        .y = std::lerp(stroke.filtered.y, point.y, follow),
+        .time = point.time,
+        .pressure = std::lerp(stroke.filtered.pressure, point.pressure, followF),
+        .tiltX = std::lerp(stroke.filtered.tiltX, point.tiltX, followF),
+        .tiltY = std::lerp(stroke.filtered.tiltY, point.tiltY, followF),
+    };
+    const StrokePoint& lastKnot = stroke.knots[stroke.knotCount - 1];
+    const double knotSpacing = std::max(1.0, static_cast<double>(stroke.smoothing) * kStrokeSmoothingKnotDips) / zoom;
+    if (std::hypot(stroke.filtered.x - lastKnot.x, stroke.filtered.y - lastKnot.y) >= knotSpacing) {
+        StrokeKnotPush(stroke, stroke.filtered, zoom);
+    }
 }
 
 StrokeStamp StrokeStampAt(const MdslBrush& source, const BrushState& brush,
@@ -568,8 +655,33 @@ void StrokeTransformTo(const StrokeTransform& transform) noexcept {
 
 void StrokeEnd() noexcept {
     ZoneScopedN("StrokeEnd");
-    gAppState.stroke.ended = true;
-    gAppState.stroke.endFrame = gAppState.frame;
+    StrokeState& stroke = gAppState.stroke;
+    if (!stroke.ended && stroke.shape == StrokeShape::Brush && stroke.smoothing > 0.0f && stroke.smoothingTail > 0.0f
+        && stroke.knotCount > 0) {
+        const StrokePoint p1 = stroke.last;
+        const StrokePoint p2{
+            .x = stroke.filtered.x,
+            .y = stroke.filtered.y,
+            .time = stroke.tail.time,
+            .pressure = stroke.tail.pressure,
+            .tiltX = stroke.tail.tiltX,
+            .tiltY = stroke.tail.tiltY,
+        };
+        const double chord = std::hypot(p2.x - p1.x, p2.y - p1.y);
+        if (chord > 1e-4) {
+            const StrokePoint p0 = stroke.knotCount == 3 ? stroke.knots[0] : KnotReflect(p1, p2);
+            const double chordDips = chord * static_cast<double>(stroke.smoothingTail) * StrokeViewZoom(stroke);
+            const int steps =
+                std::clamp(static_cast<int>(std::ceil(chordDips / kStrokeSplineStepDips)), 1, kStrokeSplineStepsMax);
+            const float tension = std::min(stroke.smoothing, 1.0f);
+            for (int i = 1; i <= steps; ++i) {
+                const double t = static_cast<double>(i) / static_cast<double>(steps);
+                StrokeSegment(stroke, StrokeCatmullRomTailAt(p0, p1, p2, t, stroke.smoothingTail, tension));
+            }
+        }
+    }
+    stroke.ended = true;
+    stroke.endFrame = gAppState.frame;
 }
 
 void StrokeUpdate() noexcept {

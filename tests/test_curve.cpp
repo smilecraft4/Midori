@@ -1,6 +1,7 @@
 #include "test.hpp"
 
 #include "midori/curve.hpp"
+#include "midori/stroke.hpp"
 
 #include <array>
 #include <limits>
@@ -66,6 +67,39 @@ void TestCurve(TestContext& t) noexcept {
     MIDORI_CHECK_NEAR(t, CurveSample(samples, 0.37f), CurveEval(bent, 0.37f), 1e-2);
     MIDORI_CHECK_NEAR(t, CurveSample(samples, 5.0f), samples.back(), 1e-6);
     MIDORI_CHECK(t, CurveSample(samples, nan) == samples.front());
+
+    // Centripetal Catmull-Rom: hits p1 at 0 and p2 at 1, degenerates to a line at tension 0, and bows outward on an
+    // arc without looping when a long chord meets a short turn.
+    const StrokePoint p0{.x = -10.0, .y = 0.0, .time = 0.0, .pressure = 0.2f};
+    const StrokePoint p1{.x = 0.0, .y = 10.0, .time = 1.0, .pressure = 0.4f};
+    const StrokePoint p2{.x = 10.0, .y = 10.0, .time = 2.0, .pressure = 0.8f};
+    const StrokePoint p3{.x = 20.0, .y = 0.0, .time = 3.0, .pressure = 1.0f};
+    const StrokePoint at0 = StrokeCatmullRomAt(p0, p1, p2, p3, 0.0);
+    const StrokePoint at1 = StrokeCatmullRomAt(p0, p1, p2, p3, 1.0);
+    MIDORI_CHECK_NEAR(t, at0.x, p1.x, 1e-6);
+    MIDORI_CHECK_NEAR(t, at0.y, p1.y, 1e-6);
+    MIDORI_CHECK_NEAR(t, at1.x, p2.x, 1e-6);
+    MIDORI_CHECK_NEAR(t, at1.y, p2.y, 1e-6);
+    const StrokePoint linear = StrokeCatmullRomAt(p0, p1, p2, p3, 0.5, 0.0f);
+    MIDORI_CHECK_NEAR(t, linear.x, 5.0, 1e-6);
+    MIDORI_CHECK_NEAR(t, linear.y, 10.0, 1e-6);
+    const StrokePoint arc = StrokeCatmullRomAt(p0, p1, p2, p3, 0.5, 1.0f);
+    MIDORI_CHECK_NEAR(t, arc.x, 5.0, 1e-6);
+    MIDORI_CHECK(t, arc.y > 10.0);
+    MIDORI_CHECK_NEAR(t, arc.pressure, 0.6f, 1e-6);
+    const StrokePoint far0{.x = -1000.0, .y = -1000.0};
+    const StrokePoint tight = StrokeCatmullRomAt(far0, p1, p2, p3, 0.5, 1.0f);
+    MIDORI_CHECK(t, tight.x > p1.x && tight.x < p2.x && tight.y >= 10.0 && tight.y < 15.0);
+
+    // Extrapolated tail: position stops at `tail` along the segment, while pressure, tilt and time reach p2's values.
+    const StrokePoint tailHalf = StrokeCatmullRomTailAt(p0, p1, p2, 1.0, 0.5f, 1.0f);
+    MIDORI_CHECK_NEAR(t, tailHalf.x, 5.0, 1e-6);
+    MIDORI_CHECK(t, tailHalf.y > 10.0);
+    MIDORI_CHECK_NEAR(t, tailHalf.pressure, p2.pressure, 1e-6);
+    MIDORI_CHECK_NEAR(t, tailHalf.time, p2.time, 1e-6);
+    const StrokePoint tailFull = StrokeCatmullRomTailAt(p0, p1, p2, 1.0, 1.0f, 1.0f);
+    MIDORI_CHECK_NEAR(t, tailFull.x, p2.x, 1e-6);
+    MIDORI_CHECK_NEAR(t, tailFull.y, p2.y, 1e-6);
 }
 
 } // namespace Midori

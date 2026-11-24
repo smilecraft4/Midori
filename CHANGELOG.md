@@ -5,6 +5,33 @@ All notable changes to Midori are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] - 2026-11-24
+
+### Added
+
+- Canvas
+  - *Off-theme:* "Default zoom" slider in Settings > Display (`zoomDefault` in `preferences.json`): sets the zoom a new
+    or reset view takes (`view.reset` and the Reset button in the View panel).
+
+## [0.2.8] - 2026-11-24
+
+### Changed
+
+- Development
+  - Debug builds embed `data/win32/icon_d.ico` as the executable and window icon instead of `data/win32/icon.ico`.
+
+## [0.2.7] - 2026-11-24
+
+### Added
+
+- Painting
+  - *Off-theme:* "Smoothing" and "Stroke tail" sliders in the Tool panel for path brush tools (`smoothing` in 0.0..10.0
+    and `smoothingTail` in 0.0..1.0 in `tools.json`): interpolates the stroke path with a Centripetal Catmull-Rom
+    spline, filters out hand tremor above 1.0, and extrapolates the final spline segment on release up to the chosen
+    tail length while interpolating pressure and tilt to the end.
+  - Brush textures build a full mip chain on load and sample the mip level matching the stamp's diameter on the canvas,
+    with an optional float LOD bias as a second argument in `mdsl` (`tex(uv, bias)`).
+
 ## [0.2.6] - 2026-11-24
 
 ### Added
