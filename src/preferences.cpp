@@ -560,6 +560,7 @@ Result<Preferences> PreferencesLoad() noexcept {
     if (const int filter = ReadName(root, "canvasFilter", kCanvasFilterNames); filter >= 0) {
         preferences.canvasFilter = static_cast<CanvasFilter>(filter);
     }
+    Read(root, "tileLodBias", preferences.tileLodBias, kTileLodBiasMin, kTileLodBiasMax);
     Read(root, "zoomMin", preferences.zoomMin, kViewportZoomMin, kViewportZoomMax);
     Read(root, "zoomMax", preferences.zoomMax, kViewportZoomMin, kViewportZoomMax);
     preferences.zoomMax = std::max(preferences.zoomMax, preferences.zoomMin);
@@ -670,6 +671,7 @@ Result<void> PreferencesSave(const Preferences& preferences) noexcept {
         {"version", kPreferencesVersion},
         {"language", preferences.language},
         {"canvasFilter", kCanvasFilterNames[std::to_underlying(preferences.canvasFilter)]},
+        {"tileLodBias", preferences.tileLodBias},
         {"zoomMin", preferences.zoomMin},
         {"zoomMax", preferences.zoomMax},
         {"colors", ColorsJson(preferences.colors)},

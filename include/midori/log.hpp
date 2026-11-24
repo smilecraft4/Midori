@@ -36,10 +36,17 @@ template<typename... Args>
 
 } // namespace Midori
 
+#if defined (MIDORI_DEBUG)
 #define MIDORI_LOG_TRACE(...) SPDLOG_TRACE(__VA_ARGS__)
 #define MIDORI_LOG_INFO(...)  SPDLOG_INFO(__VA_ARGS__)
 #define MIDORI_LOG_WARN(...)  SPDLOG_WARN(__VA_ARGS__)
 #define MIDORI_LOG_ERROR(...) SPDLOG_ERROR(__VA_ARGS__)
+#else
+#define MIDORI_LOG_TRACE(...) 
+#define MIDORI_LOG_INFO(...)  SPDLOG_INFO(__VA_ARGS__)
+#define MIDORI_LOG_WARN(...)  SPDLOG_WARN(__VA_ARGS__)
+#define MIDORI_LOG_ERROR(...) SPDLOG_ERROR(__VA_ARGS__)
+#endif
 
 // MIDORI_ASSERT(cond, fmt, args...): debug-only, for checks too costly to ship.
 // MIDORI_ASSERT_ALWAYS(cond, fmt, args...): every build, for cheap invariants whose violation would

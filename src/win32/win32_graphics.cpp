@@ -421,7 +421,7 @@ void TilePoolsTransition(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES aft
         .regionOrigin = regionOrigin,
         .regionWidth = static_cast<std::uint32_t>(tileOf(maxX) + 2 - regionOrigin.x),
         .regionHeight = static_cast<std::uint32_t>(tileOf(maxY) + 2 - regionOrigin.y),
-        .level = TileLevelForZoom(viewport.zoomX),
+        .level = TileLevelForZoom(viewport.zoomX, gAppState.tileLodBias),
         .filter = std::to_underlying(gAppState.canvasFilter),
         .selection = 0,
     };

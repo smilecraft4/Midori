@@ -1085,7 +1085,7 @@ void TileCellsOverlay(const CanvasViewState* view, const WindowState& windowStat
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     constexpr auto kSize = static_cast<double>(kTileSize);
     const CanvasState& canvas = gAppState.canvases[view->canvas];
-    const TileMip level = TileLevelForZoom(viewport.zoomX);
+    const TileMip level = TileLevelForZoom(viewport.zoomX, gAppState.tileLodBias);
     for (const TileState& tile : canvas.tiles) {
         if (!TileDrawn(canvas, tile, level)) {
             continue;
@@ -2023,6 +2023,9 @@ void SettingsWindow(Window window) noexcept {
         ActionRequestPush(window, ActionId::SettingsCanvasFilter, static_cast<std::uint32_t>(filter));
     }
     ImGui::SetItemTooltip("%s", TextGet(Text::CanvasFilterTip));
+    ImGui::SliderFloat(TextLabel(Text::TileLodBias), &gAppState.tileLodBias, kTileLodBiasMin, kTileLodBiasMax, "%+.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("%s", TextGet(Text::TileLodBiasTip));
     // In percent, as the view panel shows the zoom.
     constexpr ImGuiSliderFlags kZoomFlags = ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp;
     float zoomMin = gAppState.zoomMin * 100.0f;

@@ -345,5 +345,7 @@
     "exportBackground": "Inclure la couleur de fond",
     "debug.benchmark": "Chronométrer le dessin, la navigation, l'enregistrement, l'ouverture et l'export d'un canevas généré, dans un onglet à part",
     "benchmark": "Banc d'essai",
-    "reasonBenchmarking": "Un banc d'essai est en cours"
+    "reasonBenchmarking": "Un banc d'essai est en cours",
+    "tileLodBias": "Biais de niveau de détail des tuiles",
+    "tileLodBiasTip": "Décale le niveau de mip choisi selon le zoom de la vue : négatif garde des tuiles plus fines en dézoomant, positif choisit des tuiles plus grossières plus tôt."
 }

@@ -604,7 +604,7 @@ void TilesMarkVisible() noexcept {
         // The view's level, and the level drawn meanwhile, see TileDrawnLevel. Where the view's level is missing,
         // level 0 too: loading it builds the level.
         CanvasState& canvas = gAppState.canvases[view.canvas];
-        const TileMip level = TileLevelForZoom(view.viewport.zoomX);
+        const TileMip level = TileLevelForZoom(view.viewport.zoomX, gAppState.tileLodBias);
         const Layer root = canvas.layersOrder.back();
         for (TileState& tile : canvas.tiles) {
             const TileGridPos gridPos = TileKeyGridPos(tile.key);
@@ -3130,7 +3130,8 @@ void TagDragEnd() noexcept {
         shown = TileTexelAt(pixels, canvas.pixelFormat, 0, gridPos, x, y);
     } else if (const TileKey key = TileKeyMake(canvas.layersOrder.back(), 0, gridPos);
                canvas.tileIndices.contains(key)) {
-        const TileMip level = TileDrawnLevel(canvas, key, TileLevelForZoom(viewState.viewport.zoomX));
+        const TileMip level =
+            TileDrawnLevel(canvas, key, TileLevelForZoom(viewState.viewport.zoomX, gAppState.tileLodBias));
         if (level == kTileMipMax) {
             return std::nullopt;
         }
@@ -3914,6 +3915,7 @@ Result<void> AppInit(AppInitInfo initInfo) noexcept {
         gUiState.preferences = preferences->ui;
         gAppState.windowPlacement = preferences->window;
         gAppState.canvasFilter = preferences->canvasFilter;
+        gAppState.tileLodBias = preferences->tileLodBias;
         gAppState.zoomMin = preferences->zoomMin;
         gAppState.zoomMax = preferences->zoomMax;
         gAppState.recentFiles = preferences->recentFiles;
@@ -4226,6 +4228,7 @@ void AppTerminate() noexcept {
         .ui = gUiState.preferences,
         .window = gAppState.windowPlacement,
         .canvasFilter = gAppState.canvasFilter,
+        .tileLodBias = gAppState.tileLodBias,
         .zoomMin = gAppState.zoomMin,
         .zoomMax = gAppState.zoomMax,
         .recentFiles = gAppState.recentFiles,
@@ -4666,7 +4669,7 @@ float AppZoomSupported(Window window) noexcept {
                                   ? CanvasViewRect{.x = 0, .y = 0, .width = state->width, .height = state->height}
                                   : gAppState.canvasViews[view].rect;
     return TileZoomMin(static_cast<float>(rect.width) / state->dpiScale,
-                       static_cast<float>(rect.height) / state->dpiScale);
+                       static_cast<float>(rect.height) / state->dpiScale, gAppState.tileLodBias);
 }
 
 Result<void> AppToggleFullscreen(Window window) noexcept {

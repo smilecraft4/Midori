@@ -11,7 +11,7 @@
 
 namespace Midori {
 
-enum struct Text : std::uint8_t {
+enum struct Text : std::uint16_t {
     Untitled,
     AskSave,
     AskSaveContent,
@@ -266,6 +266,8 @@ enum struct Text : std::uint8_t {
     ExportBackground,
     Benchmark,
     ReasonBenchmarking,
+    TileLodBias,
+    TileLodBiasTip,
     Count_,
 };
 
@@ -543,6 +545,10 @@ constexpr std::array<TextInfo, std::to_underlying(Text::Count_)> kTexts = {{
     {.key = "exportBackground", .english = "Include the background colour"},
     {.key = "benchmark", .english = "Benchmark"},
     {.key = "reasonBenchmarking", .english = "A benchmark is running"},
+    {.key = "tileLodBias", .english = "Tile LOD bias"},
+    {.key = "tileLodBiasTip",
+     .english = "Shifts the mip level chosen for a view's zoom: negative keeps finer tiles when zoomed out, positive "
+                "picks coarser tiles sooner."},
 }};
 
 struct LanguageInfo {

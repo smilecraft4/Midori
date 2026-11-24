@@ -5,6 +5,15 @@ All notable changes to Midori are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-11-24
+
+### Added
+
+- Canvas
+  - *Off-theme:* "Tile LOD bias" slider in Settings > Display (`tileLodBias` in `preferences.json`, from -3.00 to
+    +3.00): shifts the tile mip level chosen for a view's zoom. Negative values keep finer tiles when zoomed out;
+    positive values pick coarser tiles sooner.
+
 ## [0.2.5] - 2026-11-16
 
 ### Fixed

@@ -3,6 +3,7 @@
 #include "midori/base.hpp"
 #include "midori/canvas.hpp"
 #include "midori/platform.hpp"
+#include "midori/tile.hpp"
 #include "midori/tool.hpp"
 #include "midori/ui.hpp"
 #include <cstddef>
@@ -21,6 +22,7 @@ struct Preferences {
     UiPreferences ui;
     WindowCreateInfo window;                        // where the first window opens; its title unused
     CanvasFilter canvasFilter{CanvasFilter::Lanczos2};
+    float tileLodBias{0.0f};                        // within [kTileLodBiasMin, kTileLodBiasMax]
     float zoomMin{kViewportZoomMin};                // within [kViewportZoomMin, kViewportZoomMax], zoomMin <= zoomMax
     float zoomMax{kViewportZoomMax};
     std::vector<std::filesystem::path> recentFiles; // the most recent first, up to kRecentFilesMax

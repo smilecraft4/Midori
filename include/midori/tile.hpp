@@ -93,20 +93,24 @@ constexpr TileKey TileKeyWithMip(TileKey key, TileMip mip) noexcept {
     return (key & ~mask) | (static_cast<TileKey>(mip) << kTileMipBitOffset);
 }
 
-// The level a view shows at this zoom: one texel per DIP or more.
-[[nodiscard]] inline TileMip TileLevelForZoom(float zoom) noexcept {
-    const float level = std::floor(std::log2(1.0f / std::abs(zoom)));
+constexpr float kTileLodBiasMin = -3.0f;
+constexpr float kTileLodBiasMax = 3.0f;
+
+// The level a view shows at this zoom: one texel per DIP or more, shifted by `bias` (negative for finer levels,
+// positive for coarser ones).
+[[nodiscard]] inline TileMip TileLevelForZoom(float zoom, float bias = 0.0f) noexcept {
+    const float level = std::floor(std::log2(1.0f / std::abs(zoom)) + bias);
     return static_cast<TileMip>(std::clamp(level, 0.0f, static_cast<float>(kTileMipMax - 1)));
 }
 
 // The smallest zoom whose tiles a view of `width` x `height` DIPs shows, at the level it draws them and with the ring
 // around, take at most half the atlas blocks at any rotation; the other half holds the level-0 tiles composites read.
-[[nodiscard]] inline float TileZoomMin(float width, float height) noexcept {
+[[nodiscard]] inline float TileZoomMin(float width, float height, float bias = 0.0f) noexcept {
     // The widest the view spans at any rotation.
     const float diagonal = std::hypot(width, height);
     constexpr float kBlocks = static_cast<float>(std::uint32_t{kTileAtlasPageMax} * kTileAtlasBlocks) / 2.0f;
-    // From the coarsest level, whose tiles take the fewest blocks: TileLevelForZoom draws level L from 2^-(L+1),
-    // exclusive, to 2^-L.
+    // From the coarsest level, whose tiles take the fewest blocks: TileLevelForZoom draws level L from 2^(bias-L-1),
+    // exclusive, to 2^(bias-L).
     for (int level = kTileMipMax - 1; level >= 0; --level) {
         const auto blocks = static_cast<float>(TileAtlasLevelBlocks(static_cast<std::uint8_t>(level)));
         const float tiles = std::sqrt(kBlocks / blocks) - 2.0f;
@@ -114,7 +118,7 @@ constexpr TileKey TileKeyWithMip(TileKey key, TileMip mip) noexcept {
             continue;
         }
         const float zoom = diagonal / (static_cast<float>(kTileSize) * tiles);
-        if (level == 0 || zoom <= std::exp2(static_cast<float>(-level))) {
+        if (level == 0 || zoom <= std::exp2(bias - static_cast<float>(level))) {
             return zoom;
         }
     }

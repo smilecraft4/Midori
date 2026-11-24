@@ -45,6 +45,10 @@ void TestTileKeys(TestContext& t) noexcept {
     MIDORI_CHECK(t, TileBytes(PixelFormat::RGBA8) == std::size_t{256} * 256 * 4);
     // Rows pad to the 256 bytes GPU copies need.
     MIDORI_CHECK(t, TileLevelPitch(3, PixelFormat::RGBA8) == 256);
+
+    MIDORI_CHECK(t, TileLevelForZoom(1.0f) == 0 && TileLevelForZoom(0.5f) == 1 && TileLevelForZoom(0.25f) == 2);
+    MIDORI_CHECK(t, TileLevelForZoom(0.5f, -0.5f) == 0 && TileLevelForZoom(0.5f, -1.0f) == 0);
+    MIDORI_CHECK(t, TileLevelForZoom(1.0f, 1.0f) == 1 && TileLevelForZoom(0.75f, 0.7f) == 1);
 }
 
 void TestAtlasCells(TestContext& t) noexcept {

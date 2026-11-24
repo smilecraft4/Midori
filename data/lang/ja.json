@@ -345,5 +345,7 @@
     "exportBackground": "背景色を含める",
     "debug.benchmark": "生成したキャンバスの描画・ナビゲーション・保存・読み込み・書き出しを専用のタブで計測",
     "benchmark": "ベンチマーク",
-    "reasonBenchmarking": "ベンチマーク実行中です"
+    "reasonBenchmarking": "ベンチマーク実行中です",
+    "tileLodBias": "タイルLODバイアス",
+    "tileLodBiasTip": "ビューのズームに対して選ばれるミップレベルをずらします：負の値は縮小表示でも高精細なタイルを保ち、正の値はより早く粗いタイルに切り替えます。"
 }

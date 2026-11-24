@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(Midori
-    VERSION 0.2.5
+    VERSION 0.2.6
     DESCRIPTION "Infinite rasterized painting app"
     LANGUAGES C CXX
 )
