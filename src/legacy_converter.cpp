@@ -162,7 +162,7 @@ struct LegacyLayer {
     const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
     const auto bigEndian = [data](std::size_t offset) {
         return (std::uint32_t{data[offset]} << 24) | (std::uint32_t{data[offset + 1]} << 16)
-             | (std::uint32_t{data[offset + 2]} << 8) | (std::uint32_t{data[offset + 3]};
+             | (std::uint32_t{data[offset + 2]} << 8) | (std::uint32_t{data[offset + 3]});
     };
     const std::uint32_t width = bigEndian(4);
     const std::uint32_t height = bigEndian(8);
