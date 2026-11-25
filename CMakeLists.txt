@@ -79,12 +79,15 @@ target_sources(midori PRIVATE
 add_subdirectory(tests)
 add_subdirectory(benchmarks)
 
-# Standalone legacy folder -> .mori (v2) converter
+# Standalone legacy folder / LMDB -> .mori (v2) converter
 add_executable(midori-legacy-converter
     "src/legacy_converter.cpp"
+    "deps/liblmdb/mdb.c"
+    "deps/liblmdb/midl.c"
     "deps/libmdbx/mdbx.c"
 )
 target_include_directories(midori-legacy-converter SYSTEM PRIVATE
+    "deps/liblmdb"
     "deps/libmdbx"
     "deps"
 )
