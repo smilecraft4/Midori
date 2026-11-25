@@ -54,7 +54,7 @@ constexpr float kBrushSizeStep = 1.25f;
 // How often, at most, a modified canvas is written to the recovery folder.
 constexpr std::chrono::minutes kAutosaveInterval{3};
 
-constexpr std::string_view kCanvasTypeName = "Midori canvas";
+constexpr std::string_view kCanvasTypeName = MIDORI_NAME " canvas";
 constexpr std::string_view kCanvasExtension = "mori";
 
 static_assert(kCanvasViewMax >= kWindowMax, "a window without a view always finds a free one");

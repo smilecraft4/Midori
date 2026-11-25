@@ -5,6 +5,21 @@ All notable changes to Midori are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] - 2026-11-25
+
+### Added
+
+- Development
+  - NSIS Windows installer (`packages/installer.nsi`, built on demand with `--target midori_installer` into
+    `build/<preset>/installer/midori-v<version>-setup.exe`): installs `midori.exe`, `lang/` and `brushes/round.mdsl`,
+    with optional Start Menu and Desktop shortcuts, `.mori` file association and an uninstaller.
+
+### Changed
+
+- Development
+  - Standardized the CMake project and app name (`PROJECT_NAME` / `MIDORI_NAME`) to lowercase `midori`.
+  - Updated `README.md` with a concise overview of Midori's current features.
+
 ## [0.2.9] - 2026-11-24
 
 ### Added

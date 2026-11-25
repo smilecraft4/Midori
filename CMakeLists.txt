@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(Midori
-    VERSION 0.2.9
+project(midori
+    VERSION 0.2.10
     DESCRIPTION "Infinite rasterized painting app"
     LANGUAGES C CXX
 )
@@ -21,7 +21,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(MIDORI_COMPANY "smilecraft4")
 set(MIDORI_COPYRIGHT "Copyright (C) 2025")
-set(MIDORI_EXECUTABLE "midori.exe")
+set(MIDORI_EXECUTABLE "${PROJECT_NAME}.exe")
 string(TOLOWER "${CMAKE_CXX_COMPILER_ID}" MIDORI_COMPILER)
 string(TOLOWER "${CMAKE_CXX_COMPILER_ARCHITECTURE_ID}" MIDORI_ARCHITECTURE)
 
@@ -140,15 +140,15 @@ configure_file(
 
 # Everything but the platform layer and the renderer, which the app adds and the tests and benchmark stand in for. What
 # every Midori target shares comes with it: includes, definitions, warnings.
-add_library(midori_core STATIC ${MIDORI_SOURCES})
-target_include_directories(midori_core PUBLIC
+add_library(${PROJECT_NAME}_core STATIC ${MIDORI_SOURCES})
+target_include_directories(${PROJECT_NAME}_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
-target_include_directories(midori_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(${PROJECT_NAME}_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Preferences and translations are JSON. Exceptions are off: it aborts where it would throw.
-target_include_directories(midori_core SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendors/json)
-target_compile_definitions(midori_core PUBLIC
+target_include_directories(${PROJECT_NAME}_core SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendors/json)
+target_compile_definitions(${PROJECT_NAME}_core PUBLIC
     JSON_NOEXCEPTION
     $<$<CONFIG:Debug>:MIDORI_DEBUG=1>
     MIDORI_PROFILE="$<CONFIG>"
@@ -161,36 +161,36 @@ target_compile_definitions(midori_core PUBLIC
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )
-target_compile_options(midori_core PUBLIC
+target_compile_options(${PROJECT_NAME}_core PUBLIC
     "$<$<COMPILE_LANGUAGE:CXX>:/W4;/WX;/permissive-;/utf-8>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/Zc:preprocessor>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:Clang>>:-Wno-missing-field-initializers>"
 )
-target_precompile_headers(midori_core PRIVATE
+target_precompile_headers(${PROJECT_NAME}_core PRIVATE
     <spdlog/spdlog.h>
     <expected>
     <string_view>
 )
-target_link_libraries(midori_core PUBLIC spdlog::spdlog Tracy::TracyClient imgui mdbx qoi)
+target_link_libraries(${PROJECT_NAME}_core PUBLIC spdlog::spdlog Tracy::TracyClient imgui mdbx qoi)
 # round.mdsl, the built-in brush, painted with when brushes/round.mdsl cannot be. The tests and benchmark read it too.
-midori_target_embed(midori_core data/brushes/round.mdsl)
+midori_target_embed(${PROJECT_NAME}_core data/brushes/round.mdsl)
 
 enable_language(RC)
-add_executable(midori WIN32
+add_executable(${PROJECT_NAME} WIN32
     ${MIDORI_SOURCES_WIN32}
     ${CMAKE_CURRENT_BINARY_DIR}/generated/midori.rc
     data/win32/midori.manifest
 )
-target_include_directories(midori PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
-target_include_directories(midori SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
-target_precompile_headers(midori PRIVATE <spdlog/spdlog.h> <expected> <string_view>)
-target_link_libraries(midori PRIVATE midori_core d3d12 dxgi dxguid dcomp d3dcompiler comctl32 shell32 ole32 windowscodecs)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/wintab)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendors/DirectX-Headers/include)
+target_precompile_headers(${PROJECT_NAME} PRIVATE <spdlog/spdlog.h> <expected> <string_view>)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_core d3d12 dxgi dxguid dcomp d3dcompiler comctl32 shell32 ole32 windowscodecs)
 
-midori_target_shaders(midori ${MIDORI_SHADERS_WIN32})
+midori_target_shaders(${PROJECT_NAME} ${MIDORI_SHADERS_WIN32})
 
 # Every brush is compiled at runtime into the stroke shader, so its source and includes are in the exe.
-midori_target_embed(midori
+midori_target_embed(${PROJECT_NAME}
     data/win32/shaders/stroke.cs.hlsl
     data/win32/shaders/atlas.hlsli
     data/win32/shaders/blend.hlsli
@@ -198,7 +198,7 @@ midori_target_embed(midori
 
 # Headless, on the core library: the platform functions its files call come from tests/headless.cpp. The tests run with
 # `ctest`; the benchmark prints its timings.
-add_executable(midori_tests
+add_executable(${PROJECT_NAME}_tests
     tests/headless.cpp
     tests/test_main.cpp
     tests/test_color.cpp
@@ -209,18 +209,18 @@ add_executable(midori_tests
     tests/test_tile.cpp
     tests/test_viewport.cpp
 )
-target_link_libraries(midori_tests PRIVATE midori_core)
+target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${PROJECT_NAME}_core)
 
-add_executable(midori_bench
+add_executable(${PROJECT_NAME}_bench
     tests/headless.cpp
     bench/bench_main.cpp
 )
-target_link_libraries(midori_bench PRIVATE midori_core)
+target_link_libraries(${PROJECT_NAME}_bench PRIVATE ${PROJECT_NAME}_core)
 
 enable_testing()
-add_test(NAME midori_tests COMMAND midori_tests)
+add_test(NAME ${PROJECT_NAME}_tests COMMAND ${PROJECT_NAME}_tests)
 
-set_target_properties(midori midori_tests midori_bench PROPERTIES
+set_target_properties(${PROJECT_NAME} ${PROJECT_NAME}_tests ${PROJECT_NAME}_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
 
@@ -229,17 +229,42 @@ set_target_properties(midori midori_tests midori_bench PROPERTIES
 string(FIND "${CMAKE_CXX_FLAGS_DEBUG}" "/fsanitize=address" MIDORI_ASAN_FLAG)
 if(NOT MIDORI_ASAN_FLAG EQUAL -1)
     cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH MIDORI_COMPILER_DIR)
-    add_custom_command(TARGET midori POST_BUILD
-        COMMAND "$<$<CONFIG:Debug>:${CMAKE_COMMAND};-E;copy_if_different;${MIDORI_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll;$<TARGET_FILE_DIR:midori>>"
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND "$<$<CONFIG:Debug>:${CMAKE_COMMAND};-E;copy_if_different;${MIDORI_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll;$<TARGET_FILE_DIR:${PROJECT_NAME}>>"
         COMMAND_EXPAND_LISTS
     )
-    add_dependencies(midori_tests midori)
-    add_dependencies(midori_bench midori)
+    add_dependencies(${PROJECT_NAME}_tests ${PROJECT_NAME})
+    add_dependencies(${PROJECT_NAME}_bench ${PROJECT_NAME})
 endif()
 
 # Translations are read from lang/ next to the exe, and brushes from brushes/, round.mdsl there the one painted with at
 # start.
-add_custom_command(TARGET midori POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/lang $<TARGET_FILE_DIR:midori>/lang
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/brushes $<TARGET_FILE_DIR:midori>/brushes
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/lang $<TARGET_FILE_DIR:${PROJECT_NAME}>/lang
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/brushes $<TARGET_FILE_DIR:${PROJECT_NAME}>/brushes
+)
+
+# On-demand Windows installer (`cmake --build --preset <preset> --target midori_installer`), built with NSIS.
+cmake_path(NATIVE_PATH CMAKE_CURRENT_SOURCE_DIR NSIS_SOURCE_DIR)
+cmake_path(NATIVE_PATH MIDORI_ICON NSIS_ICON_FILE)
+set(MIDORI_NSIS_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/generated/config.nsh")
+cmake_path(NATIVE_PATH MIDORI_NSIS_CONFIG NSIS_CONFIG_PATH)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/packages/config.nsh.in
+    ${MIDORI_NSIS_CONFIG}
+    @ONLY
+)
+add_custom_target(${PROJECT_NAME}_installer
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/installer"
+    COMMAND makensis.exe
+        "/DNSIS_CONFIG_PATH=${NSIS_CONFIG_PATH}"
+        "/DNSIS_BIN_DIR=$<SHELL_PATH:$<TARGET_FILE_DIR:${PROJECT_NAME}>>"
+        "/DNSIS_OUT_FILE=$<SHELL_PATH:${CMAKE_BINARY_DIR}/installer/${PROJECT_NAME}-v${PROJECT_VERSION}-setup.exe>"
+        "${CMAKE_CURRENT_SOURCE_DIR}/packages/installer.nsi"
+    DEPENDS
+        ${PROJECT_NAME}
+        "${CMAKE_CURRENT_SOURCE_DIR}/packages/installer.nsi"
+        "${MIDORI_NSIS_CONFIG}"
+        "${MIDORI_ICON}"
+    VERBATIM
 )
