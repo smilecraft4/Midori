@@ -79,6 +79,29 @@ target_sources(midori PRIVATE
 add_subdirectory(tests)
 add_subdirectory(benchmarks)
 
+# Standalone legacy folder -> .mori (v2) converter
+add_executable(midori-legacy-converter
+    "src/legacy_converter.cpp"
+    "deps/libmdbx/mdbx.c"
+)
+target_include_directories(midori-legacy-converter SYSTEM PRIVATE
+    "deps/libmdbx"
+    "deps"
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(midori-legacy-converter PRIVATE
+        _WIN32_WINNT=0x0A00
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+    if(MSVC)
+        target_link_options(midori-legacy-converter PRIVATE "/ENTRY:wmainCRTStartup")
+    endif()
+    target_link_libraries(midori-legacy-converter PRIVATE ntdll)
+endif()
+
 # Install
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     include(GNUInstallDirs)
